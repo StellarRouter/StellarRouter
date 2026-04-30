@@ -25,8 +25,9 @@ class LocalSigner implements Signer {
 class FreighterSigner implements Signer {
   async publicKey() { return await getPublicKey(); }
   async sign(tx: Transaction) {
-    const signed = await signTransaction(tx.toXDR(), { network: "TESTNET" });
-    return TransactionBuilder.fromXDR(signed, Networks.TESTNET);
+    const network = process.env.STELLAR_NETWORK || "TESTNET";
+    const signed = await signTransaction(tx.toXDR(), { network });
+    return TransactionBuilder.fromXDR(signed, network === "PUBLIC" ? Networks.PUBLIC : Networks.TESTNET);
   }
 }
 
@@ -34,7 +35,8 @@ class FreighterSigner implements Signer {
 import { RouterClient, LocalSigner } from "stellar-router-sdk";
 
 const signer = new LocalSigner(Keypair.fromSecret("S..."));
-const client = new RouterClient({ network: "testnet", coreContractId: "C...", signer });
+const network = process.env.STELLAR_NETWORK?.toLowerCase() || "testnet";
+const client = new RouterClient({ network, coreContractId: "C...", signer });
 
 await client.registerRoute("oracle", "C...");
 

@@ -18,10 +18,12 @@ pub struct TestnetConfig {
 impl Default for TestnetConfig {
     fn default() -> Self {
         Self {
-            network: "testnet".to_string(),
+            network: env::var("STELLAR_NETWORK")
+                .unwrap_or_else(|_| "testnet".to_string()),
             rpc_url: env::var("STELLAR_RPC_URL")
                 .unwrap_or_else(|_| "https://soroban-testnet.stellar.org".to_string()),
-            network_passphrase: "Test SDF Network ; September 2015".to_string(),
+            network_passphrase: env::var("STELLAR_NETWORK_PASSPHRASE")
+                .unwrap_or_else(|_| "Test SDF Network ; September 2015".to_string()),
         }
     }
 }
@@ -70,11 +72,11 @@ impl TestAccount {
     }
 
     /// Fund this account using Friendbot
-    pub fn fund(&self) -> Result<(), String> {
-        println!("Funding account {} via Friendbot...", self.address);
+    pub fn fund(&self, network: &str) -> Result<(), String> {
+        println!("Funding account {} via Friendbot on {}...", self.address, network);
 
         let output = Command::new("stellar")
-            .args(["keys", "fund", &self.address, "--network", "testnet"])
+            .args(["keys", "fund", &self.address, "--network", network])
             .output()
             .map_err(|e| format!("Failed to fund account: {}", e))?;
 
@@ -91,13 +93,13 @@ impl TestAccount {
     }
 
     /// Get account balance
-    pub fn get_balance(&self) -> Result<String, String> {
+    pub fn get_balance(&self, network: &str) -> Result<String, String> {
         let output = Command::new("stellar")
             .args([
                 "contract",
                 "invoke",
                 "--network",
-                "testnet",
+                network,
                 "--source",
                 &self.address,
                 "--",
@@ -124,6 +126,7 @@ impl DeployedContract {
         wasm_path: &str,
         name: &str,
         source_account: &TestAccount,
+        network: &str,
     ) -> Result<Self, String> {
         println!("Deploying {} from {}...", name, wasm_path);
 
@@ -134,7 +137,7 @@ impl DeployedContract {
                 "--wasm",
                 wasm_path,
                 "--network",
-                "testnet",
+                network,
                 "--source",
                 &source_account.address,
             ])
@@ -166,6 +169,7 @@ impl DeployedContract {
         method: &str,
         args: &[&str],
         source_account: &TestAccount,
+        network: &str,
     ) -> Result<String, String> {
         let mut cmd_args = vec![
             "contract",
@@ -173,7 +177,7 @@ impl DeployedContract {
             "--id",
             &self.contract_id,
             "--network",
-            "testnet",
+            network,
             "--source",
             &source_account.address,
             "--",
@@ -202,6 +206,7 @@ impl DeployedContract {
         method: &str,
         args: &[&str],
         source_account: &TestAccount,
+        network: &str,
     ) -> Result<String, String> {
         let mut cmd_args = vec![
             "contract",
@@ -209,7 +214,7 @@ impl DeployedContract {
             "--id",
             &self.contract_id,
             "--network",
-            "testnet",
+            network,
             "--source",
             &source_account.address,
             "--",
@@ -252,17 +257,19 @@ impl TestFixture {
     pub fn new() -> Result<Self, String> {
         println!("Setting up test fixture...");
 
+        let config = TestnetConfig::default();
+
         let admin = TestAccount::generate()?;
-        admin.fund()?;
+        admin.fund(&config.network)?;
 
         let user1 = TestAccount::generate()?;
-        user1.fund()?;
+        user1.fund(&config.network)?;
 
         let user2 = TestAccount::generate()?;
-        user2.fund()?;
+        user2.fund(&config.network)?;
 
         Ok(Self {
-            config: TestnetConfig::default(),
+            config,
             admin,
             user1,
             user2,
@@ -279,41 +286,49 @@ impl TestFixture {
     pub fn deploy_all_contracts(&mut self) -> Result<(), String> {
         println!("Deploying all router contracts...");
 
+        let network = &self.config.network;
+
         // Deploy in dependency order
         self.router_registry = Some(DeployedContract::deploy(
             "target/wasm32-unknown-unknown/release/router_registry.wasm",
             "router-registry",
             &self.admin,
+            network,
         )?);
 
         self.router_access = Some(DeployedContract::deploy(
             "target/wasm32-unknown-unknown/release/router_access.wasm",
             "router-access",
             &self.admin,
+            network,
         )?);
 
         self.router_middleware = Some(DeployedContract::deploy(
             "target/wasm32-unknown-unknown/release/router_middleware.wasm",
             "router-middleware",
             &self.admin,
+            network,
         )?);
 
         self.router_timelock = Some(DeployedContract::deploy(
             "target/wasm32-unknown-unknown/release/router_timelock.wasm",
             "router-timelock",
             &self.admin,
+            network,
         )?);
 
         self.router_multicall = Some(DeployedContract::deploy(
             "target/wasm32-unknown-unknown/release/router_multicall.wasm",
             "router-multicall",
             &self.admin,
+            network,
         )?);
 
         self.router_core = Some(DeployedContract::deploy(
             "target/wasm32-unknown-unknown/release/router_core.wasm",
             "router-core",
             &self.admin,
+            network,
         )?);
 
         println!("All contracts deployed successfully!");
@@ -324,15 +339,17 @@ impl TestFixture {
     pub fn initialize_all_contracts(&self) -> Result<(), String> {
         println!("Initializing all contracts...");
 
+        let network = &self.config.network;
+
         // Initialize router-core
         if let Some(ref core) = self.router_core {
-            core.invoke("initialize", &["--admin", &self.admin.address], &self.admin)?;
+            core.invoke("initialize", &["--admin", &self.admin.address], &self.admin, network)?;
             println!("✓ router-core initialized");
         }
 
         // Initialize router-registry
         if let Some(ref registry) = self.router_registry {
-            registry.invoke("initialize", &["--admin", &self.admin.address], &self.admin)?;
+            registry.invoke("initialize", &["--admin", &self.admin.address], &self.admin, network)?;
             println!("✓ router-registry initialized");
         }
 
@@ -342,13 +359,14 @@ impl TestFixture {
                 "initialize",
                 &["--super_admin", &self.admin.address],
                 &self.admin,
+                network,
             )?;
             println!("✓ router-access initialized");
         }
 
         // Initialize router-middleware
         if let Some(ref middleware) = self.router_middleware {
-            middleware.invoke("initialize", &["--admin", &self.admin.address], &self.admin)?;
+            middleware.invoke("initialize", &["--admin", &self.admin.address], &self.admin, network)?;
             println!("✓ router-middleware initialized");
         }
 
@@ -358,6 +376,7 @@ impl TestFixture {
                 "initialize",
                 &["--admin", &self.admin.address, "--min_delay", "60"],
                 &self.admin,
+                network,
             )?;
             println!("✓ router-timelock initialized");
         }
@@ -368,6 +387,7 @@ impl TestFixture {
                 "initialize",
                 &["--admin", &self.admin.address, "--max_batch_size", "10"],
                 &self.admin,
+                network,
             )?;
             println!("✓ router-multicall initialized");
         }
@@ -399,7 +419,7 @@ mod tests {
     #[ignore]
     fn test_account_funding() {
         let account = TestAccount::generate().expect("Failed to generate account");
-        account.fund().expect("Failed to fund account");
+        account.fund("testnet").expect("Failed to fund account");
         println!("Funded account: {}", account.address);
     }
 }
