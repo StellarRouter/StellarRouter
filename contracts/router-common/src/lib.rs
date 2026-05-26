@@ -114,3 +114,41 @@ macro_rules! require_admin_simple {
         )
     };
 }
+
+/// Helper macro for transferring admin in contracts.
+///
+/// Performs the standard admin transfer pattern:
+/// - Requires `current` to authenticate
+/// - Validates `current` is the admin
+/// - Sets `new_admin` as the new admin in storage
+/// - Publishes an `admin_transferred` event
+///
+/// # Arguments
+/// * `$env` - The Soroban environment
+/// * `$current` - The current admin address (must authenticate and be admin)
+/// * `$new_admin` - The new admin address
+/// * `$error_type` - The error type (must have NotInitialized and Unauthorized variants)
+///
+/// # Example
+/// ```ignore
+/// pub fn transfer_admin(
+///     env: Env,
+///     current: Address,
+///     new_admin: Address,
+/// ) -> Result<(), MyError> {
+///     $crate::transfer_admin_helper!(&env, &current, &new_admin, MyError, DataKey::Admin)
+/// }
+/// ```
+#[macro_export]
+macro_rules! transfer_admin_helper {
+    ($env:expr, $current:expr, $new_admin:expr, $error_type:ty, $data_key:expr) => {{
+        $current.require_auth();
+        $crate::require_admin_simple!($env, $current, $data_key, $error_type)?;
+        $env.storage().instance().set($data_key, $new_admin);
+        $env.events().publish(
+            (soroban_sdk::Symbol::new($env, "admin_transferred"),),
+            ($current, $new_admin),
+        );
+        Ok::<(), $error_type>(())
+    }};
+}
