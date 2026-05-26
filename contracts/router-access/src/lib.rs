@@ -19,6 +19,8 @@ pub enum DataKey {
     RoleMembers(String),   // role -> Vec<Address>
     AddressRoles(Address), // address -> Vec<String>
     RoleExpiry(String, Address),
+    BlacklistReason(Address),
+    BlacklistExpiry(Address),
 }
 
 // ── Errors ────────────────────────────────────────────────────────────────────
@@ -218,7 +220,13 @@ impl RouterAccess {
     }
 
     /// Blacklist an address.
-    pub fn blacklist(env: Env, caller: Address, target: Address) -> Result<(), AccessError> {
+    pub fn blacklist(
+        env: Env,
+        caller: Address,
+        target: Address,
+        reason: Option<String>,
+        expires_at: Option<u64>,
+    ) -> Result<(), AccessError> {
         caller.require_auth();
         Self::require_super_admin(&env, &caller)?;
 
@@ -231,11 +239,28 @@ impl RouterAccess {
             return Err(AccessError::CannotBlacklistAdmin);
         }
 
+        // Default storage of a blacklist entry; reason and expiry are optional
         env.storage()
             .instance()
             .set(&DataKey::Blacklisted(target.clone()), &true);
-        env.events()
-            .publish((Symbol::new(&env, "address_blacklisted"),), target);
+
+        if let Some(r) = reason {
+            env.storage()
+                .instance()
+                .set(&DataKey::BlacklistReason(target.clone()), &r);
+        }
+
+        if let Some(exp) = expires_at {
+            env.storage()
+                .instance()
+                .set(&DataKey::BlacklistExpiry(target.clone()), &exp);
+        }
+
+        env.events().publish(
+            (Symbol::new(&env, "address_blacklisted"),),
+            (target, reason, expires_at),
+        );
+
         Ok(())
     }
 
@@ -243,9 +268,9 @@ impl RouterAccess {
     pub fn unblacklist(env: Env, caller: Address, target: Address) -> Result<(), AccessError> {
         caller.require_auth();
         Self::require_super_admin(&env, &caller)?;
-        env.storage()
-            .instance()
-            .remove(&DataKey::Blacklisted(target.clone()));
+        env.storage().instance().remove(&DataKey::Blacklisted(target.clone()));
+        env.storage().instance().remove(&DataKey::BlacklistReason(target.clone()));
+        env.storage().instance().remove(&DataKey::BlacklistExpiry(target.clone()));
         env.events()
             .publish((Symbol::new(&env, "address_unblacklisted"),), target);
         Ok(())
@@ -256,10 +281,37 @@ impl RouterAccess {
     }
 
     fn is_blacklisted_internal(env: &Env, target: &Address) -> bool {
-        env.storage()
+        let is_blacklisted = env
+            .storage()
             .instance()
             .get::<DataKey, bool>(&DataKey::Blacklisted(target.clone()))
-            .unwrap_or(false)
+            .unwrap_or(false);
+
+        if !is_blacklisted {
+            return false;
+        }
+
+        // If an expiry is set and has passed, treat as not blacklisted and clean up
+        if let Some(expires_at) = env
+            .storage()
+            .instance()
+            .get::<DataKey, u64>(&DataKey::BlacklistExpiry(target.clone()))
+        {
+            let current_timestamp = env.ledger().timestamp();
+            if current_timestamp >= expires_at {
+                // Expired: remove stored blacklist data
+                env.storage().instance().remove(&DataKey::Blacklisted(target.clone()));
+                env.storage()
+                    .instance()
+                    .remove(&DataKey::BlacklistExpiry(target.clone()));
+                env.storage()
+                    .instance()
+                    .remove(&DataKey::BlacklistReason(target.clone()));
+                return false;
+            }
+        }
+
+        true
     }
 
     pub fn get_role_members(env: Env, role: String) -> Vec<Address> {
@@ -472,7 +524,7 @@ mod tests {
         let blacklisted_addr = Address::generate(&env);
 
         // Blacklist the address
-        client.blacklist(&admin, &blacklisted_addr);
+        client.blacklist(&admin, &blacklisted_addr, &None::<String>, &None);
 
         // Try to set blacklisted address as role admin
         let result = client.try_set_role_admin(&admin, &role, &blacklisted_addr);
@@ -509,7 +561,7 @@ mod tests {
         client.set_role_admin(&admin, &role, &attacker);
 
         // Blacklist the attacker
-        client.blacklist(&admin, &attacker);
+        client.blacklist(&admin, &attacker, &None::<String>, &None);
 
         // Try to grant role - should fail with Blacklisted
         let result = client.try_grant_role(&attacker, &victim, &role, &None);
@@ -531,7 +583,7 @@ mod tests {
             .grant_role(&admin, &victim, &role, &None);
 
         // Blacklist the attacker
-        client.blacklist(&admin, &attacker);
+        client.blacklist(&admin, &attacker, &None::<String>, &None);
 
         // Try to revoke role - should fail with Blacklisted
         let result = client.try_revoke_role(&attacker, &role, &victim);
@@ -620,7 +672,7 @@ mod tests {
         let role = String::from_str(&env, "operator");
         let blacklisted_user = Address::generate(&env);
 
-        client.blacklist(&admin, &blacklisted_user);
+        client.blacklist(&admin, &blacklisted_user, &None::<String>, &None);
 
         let result = client.try_grant_role(&admin, &blacklisted_user, &role, &None);
         assert_eq!(result, Err(Ok(AccessError::Blacklisted)));
@@ -659,7 +711,7 @@ mod tests {
         client.grant_role(&admin, &user, &role, &None);
         assert!(client.has_role(&user, &role));
 
-        client.blacklist(&admin, &user);
+        client.blacklist(&admin, &user, &None::<String>, &None);
         assert!(!client.has_role(&user, &role));
 
         client.unblacklist(&admin, &user);
