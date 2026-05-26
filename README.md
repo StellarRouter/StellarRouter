@@ -205,9 +205,19 @@ stellar contract deploy \
   --wasm target/wasm32-unknown-unknown/release/router_multicall.wasm \
   --network testnet --source <your-account>
 
-# 6. Deploy core last (depends on all others)
+# 6. Deploy core
 stellar contract deploy \
   --wasm target/wasm32-unknown-unknown/release/router_core.wasm \
+  --network testnet --source <your-account>
+
+# 7. Deploy execution (depends on router-core)
+stellar contract deploy \
+  --wasm target/wasm32-unknown-unknown/release/router_execution.wasm \
+  --network testnet --source <your-account>
+
+# 8. Deploy quote last (depends on router-execution)
+stellar contract deploy \
+  --wasm target/wasm32-unknown-unknown/release/router_quote.wasm \
   --network testnet --source <your-account>
 ```
 
