@@ -1478,6 +1478,70 @@ mod tests {
         assert_eq!(state_after_recovery.opened_at, 0);
     }
 
+    // ── Issue #455: rate limit window boundary conditions ─────────────────────
+
+    #[test]
+    fn test_rate_limit_call_at_exact_window_boundary_resets() {
+        // A call at exactly window_start + window_seconds should start a new window.
+        let (env, admin, client) = setup();
+        let route = String::from_str(&env, "oracle/price");
+        // max 1 call per 60s window
+        client.configure_route(&admin, &route, &1, &60, &true, &0, &0, &0);
+
+        let caller = Address::generate(&env);
+        let t0 = env.ledger().timestamp();
+
+        // Exhaust the window
+        client.pre_call(&caller, &route);
+        assert_eq!(
+            client.try_pre_call(&caller, &route),
+            Err(Ok(MiddlewareError::RateLimitExceeded))
+        );
+
+        // Advance to exactly window_start + window_seconds
+        env.ledger().with_mut(|l| l.timestamp = t0 + 60);
+
+        // window_elapsed = now >= window_start + window_seconds → true → new window
+        assert!(client.try_pre_call(&caller, &route).is_ok());
+    }
+
+    #[test]
+    fn test_rate_limit_window_jump_multiple_windows() {
+        // Ledger timestamp jumps several windows at once; counter must reset.
+        let (env, admin, client) = setup();
+        let route = String::from_str(&env, "oracle/price");
+        client.configure_route(&admin, &route, &1, &60, &true, &0, &0, &0);
+
+        let caller = Address::generate(&env);
+        let t0 = env.ledger().timestamp();
+
+        // Exhaust window
+        client.pre_call(&caller, &route);
+
+        // Jump 5 full windows ahead
+        env.ledger().with_mut(|l| l.timestamp = t0 + 300);
+
+        // Should succeed — counter reset regardless of how many windows elapsed
+        assert!(client.try_pre_call(&caller, &route).is_ok());
+        let state = client.rate_limit_state(&route, &caller).unwrap();
+        assert_eq!(state.calls_in_window, 1);
+        assert_eq!(state.window_start, t0 + 300);
+    }
+
+    #[test]
+    fn test_configure_route_window_zero_max_zero_is_unlimited() {
+        // window_seconds=0 and max_calls=0 means unlimited (no rate limiting).
+        let (env, admin, client) = setup();
+        let route = String::from_str(&env, "oracle/price");
+        client.configure_route(&admin, &route, &0, &0, &true, &0, &0, &0);
+
+        let caller = Address::generate(&env);
+        // Many calls should all succeed
+        for _ in 0..20 {
+            assert!(client.try_pre_call(&caller, &route).is_ok());
+        }
+    }
+
     // ── Issue #311: set_global_enabled emits event ────────────────────────────
 
     #[test]
