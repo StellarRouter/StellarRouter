@@ -46,6 +46,9 @@ use alloc::string::ToString;
 //! - Returns expected output amount, fees, and route details
 //! - Does not execute transactions (read-only preview)
 //! - Works with any plugin implementing the get_quote interface
+//!
+//! ## Events (following naming convention: past tense verbs in snake_case)
+//! - `quote_requested` — Quote request logged (route_name, token_in, token_out, amount_in)
 
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, Address, Env, String, Symbol, Vec,

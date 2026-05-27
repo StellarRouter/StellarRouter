@@ -10,6 +10,14 @@
 //! - Call event logging with timestamps
 //! - Configurable per-route fees
 //! - Admin-controlled hook enable/disable
+//!
+//! ## Events (following naming convention: past tense verbs in snake_case)
+//! - `pre_call` — Pre-call validation hook executed
+//! - `post_call` — Post-call hook executed
+//! - `circuit_opened` — Circuit breaker opened for route
+//! - `middleware_enabled` — Global middleware enabled/disabled
+//! - `call_log_cleared` — Call log cleared for route
+//! - `admin_transferred` — Admin transferred to new address
 
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, Address, Env, String, Symbol, Vec,

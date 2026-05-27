@@ -11,6 +11,11 @@
 //! - Retry logic for transient (network) failures
 //! - Centralized error event logging
 //! - Fee estimation endpoint with edge-case handling
+//!
+//! ## Events (following naming convention: past tense verbs in snake_case)
+//! - `execution_result` — Execution result logged (target, function, success, attempts)
+//! - `fee_estimated` — Fee estimation completed (total_fee, surge_pricing)
+//! - `simulation_result` — Pre-execution simulation result (target, function, success)
 
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, Address, Env, String, Symbol, Vec,

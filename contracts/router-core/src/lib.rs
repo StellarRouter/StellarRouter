@@ -11,6 +11,22 @@
 //! - Admin-controlled route registration and removal
 //! - Pause/unpause individual routes or all routing
 //! - Event emission on every route operation
+//!
+//! ## Events (following naming convention: past tense verbs in snake_case)
+//! - `route_registered` — Route registered (route_name, address)
+//! - `route_updated` — Route updated (route_name)
+//! - `route_overwritten` — Route overwritten by same name (route_name)
+//! - `route_removed` — Route removed (route_name)
+//! - `route_paused` — Route paused/unpaused (route_name, paused)
+//! - `route_resolve_paused` — Route resolution paused (route_name)
+//! - `routed` — Route resolved (route_name, address)
+//! - `router_paused` — Router globally paused/unpaused (paused)
+//! - `metadata_updated` — Route metadata updated (route_name, metadata)
+//! - `alias_added` — Route alias added (existing_name, alias_name)
+//! - `alias_removed` — Route alias removed (alias_name)
+//! - `route_scored` — Route score updated (route_name, score)
+//! - `best_route_selected` — Best route selected (route_name)
+//! - `admin_transferred` — Admin transferred (old_admin, new_admin)
 
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, Address, Env, String, Symbol, Vec,

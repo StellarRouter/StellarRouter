@@ -14,6 +14,17 @@
 //! parent of `viewer`, then an address with `admin` also has `editor` and
 //! `viewer` without needing explicit grants.
 //!
+//! ## Events (following naming convention: past tense verbs in snake_case)
+//! - `role_granted` — Role granted to address (role, account, expiry_timestamp)
+//! - `role_revoked` — Role revoked from address (role, target)
+//! - `role_parent_set` — Parent role set (role, parent_role)
+//! - `role_parent_removed` — Parent role removed (role, parent_role)
+//! - `role_admin_set` — Admin set for role (role, admin)
+//! - `address_blacklisted` — Address blacklisted (address)
+//! - `address_unblacklisted` — Address unblacklisted (address)
+//! - `role_expired` — Role grant expired (role, target)
+//! - `admin_transferred` — Admin transferred (old_admin, new_admin)
+//!
 //! The hierarchy is stored as a directed acyclic graph (DAG). Cycles are
 //! prevented by `set_role_parent` — a role cannot be set as its own ancestor.
 //!
@@ -162,7 +173,7 @@ impl RouterAccess {
         env.storage().instance().set(&key, &expiry_timestamp);
 
         env.events().publish(
-            (Symbol::new(&env, "role_grant"),),
+            (Symbol::new(&env, "role_granted"),),
             (account, role, expiry_timestamp),
         );
         Ok(())

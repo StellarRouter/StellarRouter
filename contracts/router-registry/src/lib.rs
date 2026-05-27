@@ -10,6 +10,11 @@
 //! - Lookup latest or specific version of a contract
 //! - Deprecate old versions
 //! - Admin-controlled with ownership transfer
+//!
+//! ## Events (following naming convention: past tense verbs in snake_case)
+//! - `contract_registered` — Contract registered (contract_name, version)
+//! - `contract_deprecated` — Contract version deprecated (contract_name, version)
+//! - `admin_transferred` — Admin transferred (old_admin, new_admin)
 
 extern crate alloc;
 use alloc::string::ToString;

@@ -5,6 +5,11 @@
 //! Delayed execution queue for sensitive router configuration changes.
 //! Operations must wait a configurable minimum delay before execution.
 //! Operations can be cancelled before execution.
+//!
+//! ## Events (following naming convention: past tense verbs in snake_case)
+//! - `op_queued` — Operation queued (op_id, target, eta)
+//! - `op_executed` — Operation executed (op_id, target)
+//! - `op_cancelled` — Operation cancelled (op_id)
 
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, crypto::Hash, Address, Bytes, Env,
