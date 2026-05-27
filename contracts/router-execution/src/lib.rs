@@ -29,6 +29,7 @@ pub enum DataKey {
     MaxRetries,
     TotalExecutions,
     TotalErrors,
+    ExecHistory,   // Vec<ExecutionRecord>
 }
 
 // ── Error Types ───────────────────────────────────────────────────────────────
@@ -86,6 +87,17 @@ pub struct ExecutionRequest {
     /// Maximum number of retries for transient (network) errors.
     /// Capped at the contract-level `max_retries` setting.
     pub max_retries: u32,
+}
+
+/// A single entry in the per-execution history log.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct ExecutionRecord {
+    pub timestamp: u64,
+    pub target: Address,
+    pub function: Symbol,
+    pub success: bool,
+    pub fee_paid: i128,
 }
 
 /// Result of a single execution attempt.
@@ -225,6 +237,7 @@ impl RouterExecution {
             match result {
                 Ok(_) => {
                     Self::increment_counter(&env, &DataKey::TotalExecutions);
+                    Self::append_history(&env, &request.target, &request.function, true, 0);
                     let exec_result = ExecutionResult {
                         target: request.target.clone(),
                         function: request.function.clone(),
@@ -245,6 +258,7 @@ impl RouterExecution {
                         continue;
                     }
                     Self::log_error(&env, &request.target, &request.function, ExecutionError::ContractRejected, attempts);
+                    Self::append_history(&env, &request.target, &request.function, false, 0);
                     return Err(ExecutionError::ContractRejected);
                 }
             }
@@ -371,6 +385,86 @@ impl RouterExecution {
         })
     }
 
+    /// Transfer admin to a new address.
+    ///
+    /// # Errors
+    /// * [`ExecutionError::Unauthorized`] — if `current` is not the admin.
+    /// * [`ExecutionError::NotInitialized`] — if the contract is not initialized.
+    pub fn transfer_admin(
+        env: Env,
+        current: Address,
+        new_admin: Address,
+    ) -> Result<(), ExecutionError> {
+        current.require_auth();
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(ExecutionError::NotInitialized)?;
+        if admin != current {
+            return Err(ExecutionError::Unauthorized);
+        }
+        router_common::admin_transfer_complete!(&env, &current, &new_admin, &DataKey::Admin);
+        Ok(())
+    }
+
+    /// Update the global max-retries cap (admin only).
+    ///
+    /// # Errors
+    /// * [`ExecutionError::Unauthorized`] — if `caller` is not the admin.
+    /// * [`ExecutionError::NotInitialized`] — if the contract is not initialized.
+    /// * [`ExecutionError::InvalidConfig`] — if `new_max` > 5.
+    pub fn set_max_retries(
+        env: Env,
+        caller: Address,
+        new_max: u32,
+    ) -> Result<(), ExecutionError> {
+        caller.require_auth();
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(ExecutionError::NotInitialized)?;
+        if admin != caller {
+            return Err(ExecutionError::Unauthorized);
+        }
+        if new_max > 5 {
+            return Err(ExecutionError::InvalidConfig);
+        }
+        env.storage().instance().set(&DataKey::MaxRetries, &new_max);
+        Ok(())
+    }
+
+    /// Return up to `limit` most-recent execution history records (newest first).
+    ///
+    /// # Errors
+    /// * [`ExecutionError::NotInitialized`] — if the contract is not initialized.
+    pub fn get_execution_history(
+        env: Env,
+        limit: u32,
+    ) -> Result<Vec<ExecutionRecord>, ExecutionError> {
+        if !env.storage().instance().has(&DataKey::Admin) {
+            return Err(ExecutionError::NotInitialized);
+        }
+        let history: Vec<ExecutionRecord> = env
+            .storage()
+            .instance()
+            .get(&DataKey::ExecHistory)
+            .unwrap_or(Vec::new(&env));
+        let len = history.len();
+        let take = if limit as u32 > len { len } else { limit as u32 };
+        let mut result = Vec::new(&env);
+        // Return newest-first: iterate from the end
+        let mut i = len;
+        let mut collected = 0u32;
+        while i > 0 && collected < take {
+            i -= 1;
+            result.push_back(history.get(i).unwrap());
+            collected += 1;
+        }
+        Ok(result)
+    }
+
     /// Get the current admin address.
     pub fn admin(env: Env) -> Address {
         env.storage()
@@ -403,6 +497,22 @@ impl RouterExecution {
     fn increment_counter(env: &Env, key: &DataKey) {
         let val: u64 = env.storage().instance().get(key).unwrap_or(0);
         env.storage().instance().set(key, &(val + 1));
+    }
+
+    fn append_history(env: &Env, target: &Address, function: &Symbol, success: bool, fee_paid: i128) {
+        let mut history: Vec<ExecutionRecord> = env
+            .storage()
+            .instance()
+            .get(&DataKey::ExecHistory)
+            .unwrap_or(Vec::new(env));
+        history.push_back(ExecutionRecord {
+            timestamp: env.ledger().timestamp(),
+            target: target.clone(),
+            function: function.clone(),
+            success,
+            fee_paid,
+        });
+        env.storage().instance().set(&DataKey::ExecHistory, &history);
     }
 }
 
@@ -497,6 +607,63 @@ mod tests {
         let result = client.simulate(&caller, &target, &function);
         assert!(!result.success);
         assert!(result.would_fail);
+    }
+
+    #[test]
+    fn test_transfer_admin() {
+        let (_, admin, client) = setup();
+        let env = Env::default();
+        env.mock_all_auths();
+        let new_admin = Address::generate(&env);
+        client.transfer_admin(&admin, &new_admin);
+        assert_eq!(client.admin(), new_admin);
+    }
+
+    #[test]
+    fn test_transfer_admin_unauthorized_fails() {
+        let (env, _, client) = setup();
+        let attacker = Address::generate(&env);
+        let new_admin = Address::generate(&env);
+        let result = client.try_transfer_admin(&attacker, &new_admin);
+        assert_eq!(result, Err(Ok(ExecutionError::Unauthorized)));
+    }
+
+    #[test]
+    fn test_transfer_admin_emits_event() {
+        let (env, admin, client) = setup();
+        let new_admin = Address::generate(&env);
+        client.transfer_admin(&admin, &new_admin);
+        let event = env.events().all().last().unwrap().clone();
+        let topic: Symbol = event.1.get(0).unwrap().into_val(&env);
+        assert_eq!(topic, Symbol::new(&env, "admin_transferred"));
+    }
+
+    #[test]
+    fn test_set_max_retries() {
+        let (_, admin, client) = setup();
+        client.set_max_retries(&admin, &3);
+    }
+
+    #[test]
+    fn test_set_max_retries_too_high_fails() {
+        let (_, admin, client) = setup();
+        let result = client.try_set_max_retries(&admin, &6);
+        assert_eq!(result, Err(Ok(ExecutionError::InvalidConfig)));
+    }
+
+    #[test]
+    fn test_set_max_retries_unauthorized_fails() {
+        let (env, _, client) = setup();
+        let attacker = Address::generate(&env);
+        let result = client.try_set_max_retries(&attacker, &2);
+        assert_eq!(result, Err(Ok(ExecutionError::Unauthorized)));
+    }
+
+    #[test]
+    fn test_get_execution_history_empty() {
+        let (_, _, client) = setup();
+        let history = client.get_execution_history(&10);
+        assert_eq!(history.len(), 0);
     }
 
     #[test]
