@@ -521,7 +521,7 @@ impl RouterExecution {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use soroban_sdk::{testutils::Address as _, Env};
+    use soroban_sdk::{testutils::{Address as _, Events as _}, Env, IntoVal};
 
     fn setup() -> (Env, Address, RouterExecutionClient<'static>) {
         let env = Env::default();
@@ -611,9 +611,7 @@ mod tests {
 
     #[test]
     fn test_transfer_admin() {
-        let (_, admin, client) = setup();
-        let env = Env::default();
-        env.mock_all_auths();
+        let (env, admin, client) = setup();
         let new_admin = Address::generate(&env);
         client.transfer_admin(&admin, &new_admin);
         assert_eq!(client.admin(), new_admin);
