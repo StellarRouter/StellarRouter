@@ -46,8 +46,8 @@ dashmap = { version = "6.1.0" }
 tokio-util = { version = "0.7.15" }
 
 # OpenAPI/Swagger
-utoipa = { version = "4.2.3", features = ["axum"] }
-utoipa-swagger-ui = { version = "7.1.1", features = ["axum"] }
+utoipa = { version = "4.2.3", features = ["axum_extras"] }
+utoipa-swagger-ui = { version = "7.1.0", features = ["axum"] }
 
 [dev-dependencies]
 tower = { version = "0.5.3" }

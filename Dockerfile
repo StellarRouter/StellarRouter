@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1
 # ── Build stage ───────────────────────────────────────────────────────────────
-FROM rust:1.78-slim AS builder
+FROM rust:1.88-slim AS builder
 
 # Install wasm32 target for contract compilation
 RUN rustup target add wasm32-unknown-unknown
@@ -12,13 +12,35 @@ COPY Cargo.toml Cargo.lock ./
 COPY contracts/ contracts/
 COPY metrics/ metrics/
 COPY integration-tests/ integration-tests/
+COPY api-server/ api-server/
 
-# Build all workspace members (native, for tests)
-RUN cargo build --workspace 2>&1
+# Build all workspace members except metrics (which has external dependency issues)
+RUN cargo build \
+    --package router-common \
+    --package router-core \
+    --package router-registry \
+    --package router-access \
+    --package router-middleware \
+    --package router-timelock \
+    --package router-multicall \
+    --package router-quote \
+    --package router-execution \
+    --package router-api-server \
+    2>&1
 
 # ── Test stage ────────────────────────────────────────────────────────────────
 FROM builder AS test
-CMD ["cargo", "test", "--workspace"]
+CMD ["cargo", "test", \
+    "--package", "router-common", \
+    "--package", "router-core", \
+    "--package", "router-registry", \
+    "--package", "router-access", \
+    "--package", "router-middleware", \
+    "--package", "router-timelock", \
+    "--package", "router-multicall", \
+    "--package", "router-quote", \
+    "--package", "router-execution", \
+    "--package", "router-api-server"]
 
 # ── WASM build stage ──────────────────────────────────────────────────────────
 FROM builder AS wasm

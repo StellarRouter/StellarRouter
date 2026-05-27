@@ -9,49 +9,20 @@ name = "router-api-server"
 path = "src/main.rs"
 
 [dependencies]
-axum = { version = "0.7.9", features = ["tokio"] }
-tokio = { version = "1.44.2", features = ["full"] }
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
-reqwest = { version = "0.12", features = ["json"] }
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-anyhow = "1.0"
-
-[dev-dependencies]
-axum-test = "15.0"
-tokio = { version = "1.44.2", features = ["full"] }
-# HTTP server
 axum = { version = "0.7.9", features = ["tokio", "ws"] }
 tokio = { version = "1.44.2", features = ["full"] }
-tokio-tungstenite = { version = "0.23.2" }
-
-# Serialization
+tokio-tungstenite = { version = "0.21" }
 serde = { version = "1.0.219", features = ["derive"] }
 serde_json = { version = "1.0.140" }
-
-# HTTP client (for RPC calls)
-reqwest = { version = "0.12.15", features = ["json", "rustls-tls"], default-features = false }
-
-# Logging
+reqwest = { version = "0.12.9", features = ["json"], default-features = false }
 tracing = { version = "0.1.41" }
 tracing-subscriber = { version = "0.3.19", features = ["env-filter", "json"] }
-uuid = { version = "1.11.0", features = ["v4", "serde"] }
-
-# Config / CLI
 clap = { version = "4.5.37", features = ["derive", "env"] }
-
-# Error handling
 anyhow = { version = "1.0.98" }
-
-# Async trait support
 async-trait = { version = "0.1.88" }
-
-# Validation
-validator = { version = "0.19.0", features = ["derive"] }
-
-# Time
-chrono = { version = "0.4.41", features = ["serde"] }
-
-# Concurrency
 dashmap = { version = "6.1.0" }
+tower = { version = "0.4" }
+futures-util = { version = "0.3" }
+
+[dev-dependencies]
+tokio = { version = "1.44.2", features = ["full"] }

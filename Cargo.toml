@@ -9,13 +9,10 @@ members = [
     "contracts/router-timelock",
     "contracts/router-multicall",
     "contracts/router-quote",
-<<<<<<< feat/400-401-402-403
-=======
     "contracts/router-execution",
     "metrics",
     "integration-tests",
     "api-server",
->>>>>>> main
 ]
 
 [workspace.dependencies]
