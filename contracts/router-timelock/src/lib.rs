@@ -233,11 +233,14 @@ impl RouterTimelock {
     }
 
     /// Get the admin.
-    pub fn admin(env: Env) -> Address {
+    ///
+    /// # Errors
+    /// Returns `TimelockError::NotInitialized` if the contract has not been initialized.
+    pub fn admin(env: Env) -> Result<Address, TimelockError> {
         env.storage()
             .instance()
             .get(&DataKey::Admin)
-            .expect("not initialized")
+            .ok_or(TimelockError::NotInitialized)
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────────

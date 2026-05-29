@@ -176,7 +176,7 @@ impl RouterAccess {
             .set(&DataKey::HasRole(role.clone(), target.clone()), &true);
 
         env.events().publish(
-            (Symbol::new(&env, "role_granted"),),
+            (Symbol::new(&env, router_common::EVENT_ROLE_GRANTED),),
             (role, target),
             .set(&DataKey::AddressRoles(account.clone()), &roles);
 
@@ -185,7 +185,7 @@ impl RouterAccess {
         env.storage().instance().set(&key, &expiry_timestamp);
 
         env.events().publish(
-            (Symbol::new(&env, "role_granted"),),
+            (Symbol::new(&env, router_common::EVENT_ROLE_GRANTED),),
             (account, role, expiry_timestamp),
         );
         Ok(())
@@ -226,7 +226,7 @@ impl RouterAccess {
             .remove(&DataKey::RoleMemberIndex(role.clone(), target.clone()));
 
         env.events().publish(
-            (Symbol::new(&env, "role_revoked"),),
+            (Symbol::new(&env, router_common::EVENT_ROLE_REVOKED),),
             (role, target),
         );
         Ok(())
@@ -273,7 +273,7 @@ impl RouterAccess {
             .set(&DataKey::RoleParent(role.clone()), &parent_role);
 
         env.events().publish(
-            (Symbol::new(&env, "role_parent_set"),),
+            (Symbol::new(&env, router_common::EVENT_ROLE_PARENT_SET),),
             (role, parent_role),
         );
         Ok(())
@@ -295,7 +295,7 @@ impl RouterAccess {
         Self::require_super_admin(&env, &caller)?;
         env.storage().instance().remove(&DataKey::RoleParent(role.clone()));
         env.events().publish(
-            (Symbol::new(&env, "role_parent_removed"),),
+            (Symbol::new(&env, router_common::EVENT_ROLE_PARENT_REMOVED),),
             role,
         );
         Ok(())
@@ -449,7 +449,7 @@ impl RouterAccess {
         }
 
         env.events().publish(
-            (Symbol::new(&env, "address_blacklisted"),),
+            (Symbol::new(&env, router_common::EVENT_ADDRESS_BLACKLISTED),),
             (target, reason, expires_at),
         );
 
@@ -565,7 +565,7 @@ impl RouterAccess {
             .instance()
             .set(&DataKey::SuperAdmin, &new_admin);
         env.events().publish(
-            (Symbol::new(&env, "admin_transferred"),),
+            (Symbol::new(&env, router_common::EVENT_ADMIN_TRANSFERRED),),
             (current, new_admin),
         );
         Ok(())

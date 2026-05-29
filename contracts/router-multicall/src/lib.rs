@@ -347,14 +347,15 @@ impl RouterMulticall {
     /// # Panics
     /// * Panics if the contract has not been initialized.
     /// 
-    /// Note: This is a breaking change from the previous Result-based API.
-    /// Calling admin() on an uninitialized contract is considered a programming error
-    /// rather than a runtime condition, consistent with how similar getters work.
-    pub fn admin(env: Env) -> Address {
+    /// Get the current admin address.
+    ///
+    /// # Errors
+    /// Returns `MulticallError::NotInitialized` if the contract has not been initialized.
+    pub fn admin(env: Env) -> Result<Address, MulticallError> {
         env.storage()
             .instance()
             .get(&DataKey::Admin)
-            .expect("not initialized")
+            .ok_or(MulticallError::NotInitialized)
     }
 
     /// Transfer admin to a new address.

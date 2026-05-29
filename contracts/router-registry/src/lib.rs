@@ -577,14 +577,15 @@ impl RouterRegistry {
     /// # Panics
     /// * Panics if the contract has not been initialized.
     /// 
-    /// Note: This is a breaking change from the previous Result-based API.
-    /// Calling admin() on an uninitialized contract is considered a programming error
-    /// rather than a runtime condition, consistent with how similar getters work.
-    pub fn admin(env: Env) -> Address {
+    /// Get the current admin address.
+    ///
+    /// # Errors
+    /// Returns `RegistryError::NotInitialized` if the contract has not been initialized.
+    pub fn admin(env: Env) -> Result<Address, RegistryError> {
         env.storage()
             .instance()
             .get(&DataKey::Admin)
-            .expect("not initialized")
+            .ok_or(RegistryError::NotInitialized)
     }
 
     /// Get all registered versions for a name.
@@ -1061,6 +1062,34 @@ mod tests {
             results.get(2).unwrap(),
             Err(RegistryError::AlreadyDeprecated)
         );
+    }
+
+    #[test]
+    fn test_deprecate_many_unauthorized_caller() {
+        let (env, admin, client) = setup();
+        let unauthorized = Address::generate(&env);
+        let name = String::from_str(&env, "oracle");
+        let (a1, a2, a3) = (
+            Address::generate(&env),
+            Address::generate(&env),
+            Address::generate(&env),
+        );
+        
+        // Register some versions as admin
+        client.register(&admin, &name, &a1, &1);
+        client.register(&admin, &name, &a2, &2);
+        client.register(&admin, &name, &a3, &3);
+
+        // Try to deprecate with unauthorized caller
+        let entries = vec![
+            &env,
+            (name.clone(), 1u32),
+            (name.clone(), 2u32),
+            (name.clone(), 3u32),
+        ];
+        
+        let result = client.try_deprecate_many(&unauthorized, &entries);
+        assert_eq!(result, Err(Ok(RegistryError::Unauthorized)));
     }
 
     #[test]

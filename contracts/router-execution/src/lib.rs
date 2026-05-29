@@ -539,11 +539,14 @@ impl RouterExecution {
     }
 
     /// Get the current admin address.
-    pub fn admin(env: Env) -> Address {
+    ///
+    /// # Errors
+    /// Returns `ExecutionError::NotInitialized` if the contract has not been initialized.
+    pub fn admin(env: Env) -> Result<Address, ExecutionError> {
         env.storage()
             .instance()
             .get(&DataKey::Admin)
-            .expect("router-execution not initialized")
+            .ok_or(ExecutionError::NotInitialized)
     }
 
     /// Get cumulative execution statistics.

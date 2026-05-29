@@ -155,14 +155,15 @@ impl RouterQuote {
     }
 
     /// Return the current admin address.
+    /// Get the current admin address.
     ///
-    /// # Panics
-    /// Panics if the contract has not been initialized.
-    pub fn admin(env: Env) -> Address {
+    /// # Errors
+    /// Returns `QuoteError::NotInitialized` if the contract has not been initialized.
+    pub fn admin(env: Env) -> Result<Address, QuoteError> {
         env.storage()
             .instance()
             .get(&DataKey::Admin)
-            .expect("router-quote not initialized")
+            .ok_or(QuoteError::NotInitialized)
     }
 
     /// Transfer admin to a new address.
