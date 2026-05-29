@@ -27,14 +27,11 @@ use soroban_sdk::{
 #[contracttype]
 pub enum DataKey {
     Admin,
-    Entry(String, u32), // (name, version) -> ContractEntry
-    Versions(String),   // name -> Vec<u32>
-    ContractNames,      // Vec<String> of all registered names
-    AddressIndex(Address), // address -> (name, version)
     Entry(String, u32),    // (name, version) -> ContractEntry
     Versions(String),      // name -> Vec<u32>
     ContractNames,         // Vec<String> of all registered names
     AddressIndex(Address), // address -> (name, version) for O(1) reverse lookup
+    LatestVersion(String), // name -> u32: cached latest non-deprecated version
 }
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -54,8 +51,6 @@ pub struct ContractEntry {
     pub deprecation_reason: Option<String>,
     /// Who registered it
     pub registered_by: Address,
-    /// Optional reason recorded when this entry was deprecated
-    pub deprecation_reason: Option<String>,
 }
 
 // ── Errors ────────────────────────────────────────────────────────────────────
@@ -163,7 +158,6 @@ impl RouterRegistry {
             deprecated: false,
             deprecation_reason: None,
             registered_by: caller,
-            deprecation_reason: None,
         };
 
         env.storage()
@@ -200,8 +194,103 @@ impl RouterRegistry {
             .instance()
             .set(&DataKey::AddressIndex(entry.address.clone()), &(name.clone(), version));
 
+        // New version is always the highest (validated above), so it becomes the new latest.
+        env.storage()
+            .instance()
+            .set(&DataKey::LatestVersion(name.clone()), &version);
+
         env.events()
             .publish((Symbol::new(&env, "contract_registered"),), (name, version, None::<String>));
+
+        Ok(())
+    }
+
+    /// Register multiple contract entries atomically.
+    ///
+    /// Validates and registers all entries in `entries`. If any entry fails
+    /// validation or registration, the function returns immediately with that
+    /// error and no further entries are registered (fail-fast / roll-back on
+    /// first failure).
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban environment.
+    /// * `caller` - The address initiating the call; must be the admin.
+    /// * `entries` - A list of `(name, address, version)` tuples to register.
+    ///
+    /// # Returns
+    /// `Ok(())` if all entries were registered successfully.
+    ///
+    /// # Errors
+    /// * [`RegistryError::Unauthorized`] — if `caller` is not the admin.
+    /// * [`RegistryError::InvalidVersion`] — if any version is 0 or not monotonically increasing.
+    /// * [`RegistryError::AlreadyRegistered`] — if any `(name, version)` is already registered.
+    /// * [`RegistryError::NotInitialized`] — if the contract has not been initialized.
+    pub fn bulk_register(
+        env: Env,
+        caller: Address,
+        entries: Vec<(String, Address, u32)>,
+    ) -> Result<(), RegistryError> {
+        caller.require_auth();
+        Self::require_admin(&env, &caller)?;
+
+        for (name, address, version) in entries.iter() {
+            if version == 0 {
+                return Err(RegistryError::InvalidVersion);
+            }
+            if env
+                .storage()
+                .instance()
+                .has(&DataKey::Entry(name.clone(), version))
+            {
+                return Err(RegistryError::AlreadyRegistered);
+            }
+            let versions = Self::get_versions_list(&env, &name);
+            for v in versions.iter() {
+                if version <= v {
+                    return Err(RegistryError::InvalidVersion);
+                }
+            }
+
+            let entry = ContractEntry {
+                address: address.clone(),
+                name: name.clone(),
+                version,
+                deprecated: false,
+                deprecation_reason: None,
+                registered_by: caller.clone(),
+            };
+
+            env.storage()
+                .instance()
+                .set(&DataKey::Entry(name.clone(), version), &entry);
+
+            env.storage()
+                .instance()
+                .set(&DataKey::AddressIndex(address.clone()), &(name.clone(), version));
+
+            let mut versions = Self::get_versions_list(&env, &name);
+            versions.push_back(version);
+            env.storage()
+                .instance()
+                .set(&DataKey::Versions(name.clone()), &versions);
+
+            let mut names: Vec<String> = env
+                .storage()
+                .instance()
+                .get(&DataKey::ContractNames)
+                .unwrap_or_else(|| Vec::new(&env));
+            if !names.contains(&name) {
+                names.push_back(name.clone());
+                env.storage()
+                    .instance()
+                    .set(&DataKey::ContractNames, &names);
+            }
+
+            env.events().publish(
+                (Symbol::new(&env, "contract_registered"),),
+                (name.clone(), version, None::<String>),
+            );
+        }
 
         Ok(())
     }
@@ -240,26 +329,15 @@ impl RouterRegistry {
     /// # Errors
     /// * [`RegistryError::NotFound`] — if no non-deprecated entry exists for `name`.
     pub fn get_latest(env: Env, name: String) -> Result<ContractEntry, RegistryError> {
-        let versions = Self::get_versions_list(&env, &name);
-        if versions.is_empty() {
-            return Err(RegistryError::NotFound);
-        }
-        // Iterate in reverse to find latest non-deprecated
-        let len = versions.len();
-        let mut i = len;
-        while i > 0 {
-            i -= 1;
-            let v = versions.get(i).ok_or(RegistryError::NotFound)?;
-            let entry: ContractEntry = env
-                .storage()
-                .instance()
-                .get(&DataKey::Entry(name.clone(), v))
-                .ok_or(RegistryError::NotFound)?;
-            if !entry.deprecated {
-                return Ok(entry);
-            }
-        }
-        Err(RegistryError::AllVersionsDeprecated)
+        let version: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::LatestVersion(name.clone()))
+            .ok_or(RegistryError::NotFound)?;
+        env.storage()
+            .instance()
+            .get(&DataKey::Entry(name, version))
+            .ok_or(RegistryError::AllVersionsDeprecated)
     }
 
     /// Get the latest non-deprecated entry matching a semver constraint.
@@ -285,23 +363,9 @@ impl RouterRegistry {
     ) -> Result<ContractEntry, RegistryError> {
         let versions = Self::get_versions_list(&env, &name);
 
-        // If no constraint, use get_latest logic
+        // If no constraint, delegate to get_latest (uses cache).
         if constraint.is_none() {
-            let len = versions.len();
-            let mut i = len;
-            while i > 0 {
-                i -= 1;
-                let v = versions.get(i).ok_or(RegistryError::NotFound)?;
-                let entry: ContractEntry = env
-                    .storage()
-                    .instance()
-                    .get(&DataKey::Entry(name.clone(), v))
-                    .ok_or(RegistryError::NotFound)?;
-                if !entry.deprecated {
-                    return Ok(entry);
-                }
-            }
-            return Err(RegistryError::AllVersionsDeprecated);
+            return Self::get_latest(env.clone(), name);
         }
 
         let constraint_str = constraint.unwrap();
@@ -373,7 +437,6 @@ impl RouterRegistry {
         Self::deprecate_one(&env, name, version, reason)
     }
 
-    fn deprecate_one(env: &Env, name: String, version: u32, reason: Option<String>) -> Result<(), RegistryError> {
     fn deprecate_one(
         env: &Env,
         name: String,
@@ -391,7 +454,6 @@ impl RouterRegistry {
         }
 
         entry.deprecated = true;
-        entry.deprecation_reason = reason;
         entry.deprecation_reason = reason.clone();
         env.storage()
             .instance()
@@ -401,6 +463,35 @@ impl RouterRegistry {
         env.storage()
             .instance()
             .remove(&DataKey::AddressIndex(entry.address.clone()));
+
+        // Update LatestVersion cache: scan versions in reverse for new latest non-deprecated.
+        let versions = Self::get_versions_list(env, &name);
+        let len = versions.len();
+        let mut new_latest: Option<u32> = None;
+        let mut i = len;
+        while i > 0 {
+            i -= 1;
+            let v = versions.get(i).unwrap();
+            let e: ContractEntry = env
+                .storage()
+                .instance()
+                .get(&DataKey::Entry(name.clone(), v))
+                .unwrap();
+            if !e.deprecated {
+                new_latest = Some(v);
+                break;
+            }
+        }
+        match new_latest {
+            Some(v) => env
+                .storage()
+                .instance()
+                .set(&DataKey::LatestVersion(name.clone()), &v),
+            None => env
+                .storage()
+                .instance()
+                .remove(&DataKey::LatestVersion(name.clone())),
+        }
 
         env.events().publish(
             (Symbol::new(&env, "contract_deprecated"),),

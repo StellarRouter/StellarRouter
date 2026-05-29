@@ -343,6 +343,56 @@ impl RouterQuote {
         Self::execute_hops(&env, hops, amount_in, slippage_bps, precision)
     }
 
+    /// Get the best quote from multiple candidate routes.
+    ///
+    /// Runs `get_multihop_quote` for each route in `hops_list` and returns
+    /// the route with the highest `amount_out`. Routes that fail or produce
+    /// zero output are skipped. Returns an error if no valid quote is found.
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban environment.
+    /// * `hops_list` - A list of candidate routes, each a `Vec<HopDescriptor>`.
+    /// * `amount_in` - The input amount for all routes.
+    /// * `slippage_bps` - Slippage tolerance in basis points.
+    /// * `precision` - Decimal precision for exchange rate.
+    ///
+    /// # Returns
+    /// The [`QuoteResponse`] with the highest `amount_out`.
+    ///
+    /// # Errors
+    /// * [`QuoteError::EmptyRoute`] — if `hops_list` is empty or all routes fail.
+    pub fn get_best_quote(
+        env: Env,
+        hops_list: Vec<Vec<HopDescriptor>>,
+        amount_in: i128,
+        slippage_bps: u32,
+        precision: u32,
+    ) -> Result<QuoteResponse, QuoteError> {
+        if hops_list.is_empty() {
+            return Err(QuoteError::EmptyRoute);
+        }
+
+        let mut best: Option<QuoteResponse> = None;
+
+        for hops in hops_list.iter() {
+            if let Ok(quote) =
+                Self::get_multihop_quote(env.clone(), hops, amount_in, slippage_bps, precision)
+            {
+                if quote.amount_out > 0 {
+                    let is_better = match &best {
+                        None => true,
+                        Some(b) => quote.amount_out > b.amount_out,
+                    };
+                    if is_better {
+                        best = Some(quote);
+                    }
+                }
+            }
+        }
+
+        best.ok_or(QuoteError::EmptyRoute)
+    }
+
     /// Estimate fees for a single transaction.
     ///
     /// # Errors
@@ -886,46 +936,18 @@ mod tests {
         let ti = Address::generate(&env);
         let to = Address::generate(&env);
 
-        // Create multiple route quotes
-        // Route 1: double plugin (amount_out = 2000)
-        // Route 2: triple plugin (amount_out = 3000)
-        // get_best_quote should select route 2 (triple)
+        let mut route1 = soroban_sdk::Vec::new(&env);
+        route1.push_back(HopDescriptor { plugin: double, token_in: ti.clone(), token_out: to.clone(), fee_bps: 0 });
 
-        // Note: get_best_quote() needs to be implemented
-        // Expected signature: get_best_quote(routes: Vec<QuoteResponse>) -> QuoteResponse
-        // let mut routes = Vec::new(&env);
-        // routes.push_back(client.get_quote(&double, &ti, &to, &1000, &0, &0, &6));
-        // routes.push_back(client.get_quote(&triple, &ti, &to, &1000, &0, &0, &6));
-        // let best = client.get_best_quote(&routes);
-        // assert_eq!(best.amount_out, 3000);
-    }
+        let mut route2 = soroban_sdk::Vec::new(&env);
+        route2.push_back(HopDescriptor { plugin: triple, token_in: ti.clone(), token_out: to.clone(), fee_bps: 0 });
 
-    #[test]
-    fn test_get_best_quote_excludes_zero_output() {
-        let (env, client, double, _) = setup();
-        let ti = Address::generate(&env);
-        let to = Address::generate(&env);
+        let mut routes = soroban_sdk::Vec::new(&env);
+        routes.push_back(route1);
+        routes.push_back(route2);
 
-        // Create routes where one has zero output
-        // Route 1: zero output (should be excluded)
-        // Route 2: double plugin (amount_out = 2000)
-        // get_best_quote should select route 2
-
-        // Note: get_best_quote() needs to be implemented
-        // let mut routes = Vec::new(&env);
-        // let zero_quote = QuoteResponse {
-        //     amount_out: 0,
-        //     total_fee_amount: 0,
-        //     min_amount_out: 0,
-        //     exchange_rate: 0,
-        //     precision: 6,
-        //     price_impact_bps: 0,
-        //     hops: Vec::new(&env),
-        // };
-        // routes.push_back(zero_quote);
-        // routes.push_back(client.get_quote(&double, &ti, &to, &1000, &0, &0, &6));
-        // let best = client.get_best_quote(&routes);
-        // assert_eq!(best.amount_out, 2000);
+        let best = client.get_best_quote(&routes, &1000, &0, &6);
+        assert_eq!(best.amount_out, 3000); // triple plugin wins
     }
 
     #[test]
@@ -934,34 +956,21 @@ mod tests {
         let ti = Address::generate(&env);
         let to = Address::generate(&env);
 
-        // Single route input should return that route
-        // Note: get_best_quote() needs to be implemented
-        // let mut routes = Vec::new(&env);
-        // let quote = client.get_quote(&double, &ti, &to, &1000, &0, &0, &6);
-        // routes.push_back(quote.clone());
-        // let best = client.get_best_quote(&routes);
-        // assert_eq!(best.amount_out, quote.amount_out);
+        let mut route = soroban_sdk::Vec::new(&env);
+        route.push_back(HopDescriptor { plugin: double, token_in: ti.clone(), token_out: to.clone(), fee_bps: 0 });
+
+        let mut routes = soroban_sdk::Vec::new(&env);
+        routes.push_back(route);
+
+        let best = client.get_best_quote(&routes, &1000, &0, &6);
+        assert_eq!(best.amount_out, 2000);
     }
 
     #[test]
-    fn test_get_best_quote_all_zero_output_fails() {
+    fn test_get_best_quote_empty_list_fails() {
         let (env, client, _, _) = setup();
-
-        // All routes have zero output, should fail or return error
-        // Note: get_best_quote() needs to be implemented
-        // let mut routes = Vec::new(&env);
-        // let zero_quote = QuoteResponse {
-        //     amount_out: 0,
-        //     total_fee_amount: 0,
-        //     min_amount_out: 0,
-        //     exchange_rate: 0,
-        //     precision: 6,
-        //     price_impact_bps: 0,
-        //     hops: Vec::new(&env),
-        // };
-        // routes.push_back(zero_quote.clone());
-        // routes.push_back(zero_quote);
-        // let result = client.try_get_best_quote(&routes);
-        // assert!(result.is_err());
+        let routes: soroban_sdk::Vec<soroban_sdk::Vec<HopDescriptor>> = soroban_sdk::Vec::new(&env);
+        let result = client.try_get_best_quote(&routes, &1000, &0, &6);
+        assert_eq!(result, Err(Ok(QuoteError::EmptyRoute)));
     }
 }
