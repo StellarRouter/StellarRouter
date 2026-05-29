@@ -1,9 +1,12 @@
+#![no_std]
+
 //! # router-common
 //!
 //! Shared macros and utilities for the stellar-router suite.
 //!
 //! ## Macros
 //! - [`require_admin!`] — inline admin check used across router contracts
+//! - [`require_admin_simple!`] — convenience version with standard error variants
 
 /// Checks that `caller` matches the admin address stored under `key`.
 ///
@@ -36,6 +39,23 @@ macro_rules! require_admin {
         }
         Ok::<(), _>(())
     }};
+}
+
+/// Convenience version when using DataKey::Admin and standard error variants.
+///
+/// This eliminates the repetitive `require_admin` / `require_super_admin` boilerplate
+/// across all router contracts while allowing each contract to use its own error enum.
+#[macro_export]
+macro_rules! require_admin_simple {
+    ($env:expr, $caller:expr, $data_key:expr, $error_type:ty) => {
+        $crate::require_admin!(
+            $env,
+            $caller,
+            $data_key,
+            <$error_type>::NotInitialized,
+            <$error_type>::Unauthorized
+        )
+    };
 }
 
 /// Returns `true` if `s` is empty or consists entirely of ASCII whitespace
@@ -99,40 +119,4 @@ mod tests {
     fn test_name_with_surrounding_spaces_is_not_whitespace_only() {
         assert!(!is_whitespace_only(" oracle "));
     }
-#![no_std]
-
-use soroban_sdk::{Address, Env, Symbol};
-
-/// Macro to require admin with custom error types.
-///
-/// This eliminates the repetitive `require_admin` / `require_super_admin` boilerplate
-/// across all router contracts while allowing each contract to use its own error enum.
-#[macro_export]
-macro_rules! require_admin {
-    ($env:expr, $caller:expr, $data_key:expr, $not_init_err:expr, $unauth_err:expr) => {{
-        let admin: soroban_sdk::Address = $env
-            .storage()
-            .instance()
-            .get($data_key)
-            .ok_or($not_init_err)?;
-
-        if &admin != $caller {
-            return Err($unauth_err);
-        }
-        Ok(())
-    }};
-}
-
-/// Convenience version when using DataKey::Admin and standard error variants
-#[macro_export]
-macro_rules! require_admin_simple {
-    ($env:expr, $caller:expr, $data_key:expr, $error_type:ty) => {
-        $crate::require_admin!(
-            $env,
-            $caller,
-            $data_key,
-            <$error_type>::NotInitialized,
-            <$error_type>::Unauthorized
-        )
-    };
 }

@@ -29,6 +29,7 @@ pub enum DataKey {
     EmergencyCouncil,        // Vec<Address>
     RequiredApprovals,       // u32 (M in M-of-N)
     FastTrackApprovals(u64), // op_id -> Vec<Address> (who has approved)
+    FastTrackEnabled,        // bool — whether fast-track path is active
 }
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -985,20 +986,6 @@ impl RouterTimelock {
         Ok(())
     }
 
-    /// Returns whether the fast-track execution path is currently enabled.
-    ///
-    /// # Arguments
-    /// * `env` - The Soroban environment.
-    ///
-    /// # Returns
-    /// `true` if fast-track is enabled, `false` otherwise.
-    pub fn get_fast_track_enabled(env: Env) -> bool {
-        env.storage()
-            .instance()
-            .get(&DataKey::FastTrackEnabled)
-            .unwrap_or(false)
-    }
-
     // ── Helpers ───────────────────────────────────────────────────────────────
 
     fn require_admin(env: &Env, caller: &Address) -> Result<(), TimelockError> {
@@ -1731,8 +1718,6 @@ mod tests {
     #[test]
     fn test_set_min_delay_applies_to_new_ops_only() {
         let (env, admin, client) = setup(); // min_delay = 3600
-    fn test_set_min_delay_applies_to_new_ops() {
-        let (env, admin, client) = setup();
         let target = Address::generate(&env);
         let desc = String::from_str(&env, "upgrade oracle");
         let deps = Vec::new(&env);

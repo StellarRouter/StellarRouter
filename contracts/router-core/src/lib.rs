@@ -510,7 +510,6 @@ impl RouterCore {
 
         env.events().publish(
             (Symbol::new(&env, "metadata_updated"),),
-            (name.clone(), metadata),
             (name.clone(), metadata.is_some()),
         );
 

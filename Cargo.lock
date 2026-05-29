@@ -919,6 +919,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "router-quote"
+version = "0.1.0"
+dependencies = [
+ "router-common",
+ "soroban-sdk",
+]
+
+[[package]]
 name = "router-registry"
 version = "0.1.0"
 dependencies = [

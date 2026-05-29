@@ -9,6 +9,7 @@ members = [
     "contracts/router-middleware",
     "contracts/router-timelock",
     "contracts/router-multicall",
+    "contracts/router-quote",
 ]
 
 [workspace.dependencies]
