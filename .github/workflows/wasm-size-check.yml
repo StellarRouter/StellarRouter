@@ -1,0 +1,111 @@
+name: WASM Size Regression Detection
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  wasm-size-check:
+    name: Check WASM Size Regression
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-wasm-size-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Build WASM contracts
+        run: cargo build --target wasm32-unknown-unknown --release
+
+      - name: Check WASM sizes
+        run: |
+          CONTRACTS=(
+            "router_core"
+            "router_registry"
+            "router_access"
+            "router_middleware"
+            "router_timelock"
+            "router_multicall"
+            "router_execution"
+            "router_quote"
+          )
+          
+          BASELINE_FILE=".wasm-size-baseline.txt"
+          CURRENT_SIZES=""
+          REGRESSION_DETECTED=0
+          
+          for contract in "${CONTRACTS[@]}"; do
+            WASM_FILE="target/wasm32-unknown-unknown/release/${contract}.wasm"
+            if [ -f "$WASM_FILE" ]; then
+              SIZE=$(stat -f%z "$WASM_FILE" 2>/dev/null || stat -c%s "$WASM_FILE" 2>/dev/null)
+              CURRENT_SIZES+="${contract}:${SIZE}"$'\n'
+              
+              if [ -f "$BASELINE_FILE" ]; then
+                BASELINE_SIZE=$(grep "^${contract}:" "$BASELINE_FILE" | cut -d: -f2)
+                if [ -n "$BASELINE_SIZE" ]; then
+                  INCREASE=$((SIZE - BASELINE_SIZE))
+                  PERCENT=$((INCREASE * 100 / BASELINE_SIZE))
+                  
+                  if [ $PERCENT -gt 10 ]; then
+                    echo "❌ $contract: Size increased by ${PERCENT}% (${BASELINE_SIZE} → ${SIZE} bytes)"
+                    REGRESSION_DETECTED=1
+                  elif [ $PERCENT -gt 0 ]; then
+                    echo "⚠️  $contract: Size increased by ${PERCENT}% (${BASELINE_SIZE} → ${SIZE} bytes)"
+                  else
+                    echo "✅ $contract: Size decreased by $((PERCENT * -1))% (${BASELINE_SIZE} → ${SIZE} bytes)"
+                  fi
+                fi
+              fi
+            fi
+          done
+          
+          if [ $REGRESSION_DETECTED -eq 1 ]; then
+            echo ""
+            echo "WASM size regression detected! Contracts grew by more than 10%."
+            exit 1
+          fi
+
+      - name: Update WASM size baseline
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        run: |
+          CONTRACTS=(
+            "router_core"
+            "router_registry"
+            "router_access"
+            "router_middleware"
+            "router_timelock"
+            "router_multicall"
+            "router_execution"
+            "router_quote"
+          )
+          
+          BASELINE_FILE=".wasm-size-baseline.txt"
+          > "$BASELINE_FILE"
+          
+          for contract in "${CONTRACTS[@]}"; do
+            WASM_FILE="target/wasm32-unknown-unknown/release/${contract}.wasm"
+            if [ -f "$WASM_FILE" ]; then
+              SIZE=$(stat -f%z "$WASM_FILE" 2>/dev/null || stat -c%s "$WASM_FILE" 2>/dev/null)
+              echo "${contract}:${SIZE}" >> "$BASELINE_FILE"
+            fi
+          done
+          
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add "$BASELINE_FILE"
+          git commit -m "chore: update WASM size baseline" || true
+          git push
