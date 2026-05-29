@@ -206,6 +206,96 @@ impl RouterRegistry {
         Ok(())
     }
 
+    /// Register multiple contract entries atomically.
+    ///
+    /// Validates and registers all entries in `entries`. If any entry fails
+    /// validation or registration, the function returns immediately with that
+    /// error and no further entries are registered (fail-fast / roll-back on
+    /// first failure).
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban environment.
+    /// * `caller` - The address initiating the call; must be the admin.
+    /// * `entries` - A list of `(name, address, version)` tuples to register.
+    ///
+    /// # Returns
+    /// `Ok(())` if all entries were registered successfully.
+    ///
+    /// # Errors
+    /// * [`RegistryError::Unauthorized`] — if `caller` is not the admin.
+    /// * [`RegistryError::InvalidVersion`] — if any version is 0 or not monotonically increasing.
+    /// * [`RegistryError::AlreadyRegistered`] — if any `(name, version)` is already registered.
+    /// * [`RegistryError::NotInitialized`] — if the contract has not been initialized.
+    pub fn bulk_register(
+        env: Env,
+        caller: Address,
+        entries: Vec<(String, Address, u32)>,
+    ) -> Result<(), RegistryError> {
+        caller.require_auth();
+        Self::require_admin(&env, &caller)?;
+
+        for (name, address, version) in entries.iter() {
+            if version == 0 {
+                return Err(RegistryError::InvalidVersion);
+            }
+            if env
+                .storage()
+                .instance()
+                .has(&DataKey::Entry(name.clone(), version))
+            {
+                return Err(RegistryError::AlreadyRegistered);
+            }
+            let versions = Self::get_versions_list(&env, &name);
+            for v in versions.iter() {
+                if version <= v {
+                    return Err(RegistryError::InvalidVersion);
+                }
+            }
+
+            let entry = ContractEntry {
+                address: address.clone(),
+                name: name.clone(),
+                version,
+                deprecated: false,
+                deprecation_reason: None,
+                registered_by: caller.clone(),
+            };
+
+            env.storage()
+                .instance()
+                .set(&DataKey::Entry(name.clone(), version), &entry);
+
+            env.storage()
+                .instance()
+                .set(&DataKey::AddressIndex(address.clone()), &(name.clone(), version));
+
+            let mut versions = Self::get_versions_list(&env, &name);
+            versions.push_back(version);
+            env.storage()
+                .instance()
+                .set(&DataKey::Versions(name.clone()), &versions);
+
+            let mut names: Vec<String> = env
+                .storage()
+                .instance()
+                .get(&DataKey::ContractNames)
+                .unwrap_or_else(|| Vec::new(&env));
+            if !names.contains(&name) {
+                names.push_back(name.clone());
+                env.storage()
+                    .instance()
+                    .set(&DataKey::ContractNames, &names);
+            }
+
+            env.events().publish(
+                (Symbol::new(&env, "contract_registered"),),
+                (name.clone(), version, None::<String>),
+            );
+        }
+
+        Ok(())
+    }
+
     /// Look up a contract by name and specific version.
     ///
     /// # Arguments
