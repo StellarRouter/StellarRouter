@@ -54,6 +54,7 @@ pub struct CallDescriptor {
     /// mid-call. Budget overruns at the transaction level are still caught by
     /// the host and will cause the entire transaction to fail.
     pub instruction_budget: Option<u64>,
+    pub args: Vec<Val>,
 }
 
 /// Result of a single call in a batch.
@@ -215,7 +216,7 @@ impl RouterMulticall {
 
         let mut call_index = 0u32;
         for call in calls.iter() {
-            let args: Vec<Val> = Vec::new(&env);
+            let args: Vec<Val> = call.args.clone();
             let result = env.try_invoke_contract::<Val, Val>(&call.target, &call.function, args);
 
             let success = result.is_ok();
@@ -436,6 +437,7 @@ mod tests {
                 function: Symbol::new(&env, "ping"),
                 required: false,
                 instruction_budget: None,
+                args: Vec::new(&env),
             });
         }
         let result = client.try_execute_batch(&caller, &calls, &false, &false);
@@ -505,12 +507,14 @@ mod tests {
             function: Symbol::new(&env, "success"),
             required: true,
             instruction_budget: None,
+            args: Vec::new(&env),
         });
         calls.push_back(CallDescriptor {
             target: mock_id.clone(),
             function: Symbol::new(&env, "success"),
             required: false,
             instruction_budget: None,
+            args: Vec::new(&env),
         });
 
         let summary = client.execute_batch(&caller, &calls, &false, &false);
@@ -534,6 +538,7 @@ mod tests {
             function: Symbol::new(&env, "success"),
             required: true,
             instruction_budget: None,
+            args: Vec::new(&env),
         });
         // Failing optional call
         calls.push_back(CallDescriptor {
@@ -541,6 +546,7 @@ mod tests {
             function: Symbol::new(&env, "fail"),
             required: false,
             instruction_budget: None,
+            args: Vec::new(&env),
         });
         // Successful optional call
         calls.push_back(CallDescriptor {
@@ -548,6 +554,7 @@ mod tests {
             function: Symbol::new(&env, "success"),
             required: false,
             instruction_budget: None,
+            args: Vec::new(&env),
         });
 
         let summary = client.execute_batch(&caller, &calls, &false, &false);
@@ -570,6 +577,7 @@ mod tests {
             function: Symbol::new(&env, "success"),
             required: false,
             instruction_budget: None,
+            args: Vec::new(&env),
         });
         // Failing required call
         calls.push_back(CallDescriptor {
@@ -577,6 +585,7 @@ mod tests {
             function: Symbol::new(&env, "fail"),
             required: true,
             instruction_budget: None,
+            args: Vec::new(&env),
         });
         // This should not even reach
         calls.push_back(CallDescriptor {
@@ -584,6 +593,7 @@ mod tests {
             function: Symbol::new(&env, "success"),
             required: false,
             instruction_budget: None,
+            args: Vec::new(&env),
         });
 
         let result = client.try_execute_batch(&caller, &calls, &false, &false);
@@ -652,6 +662,7 @@ mod tests {
             function: Symbol::new(&env, "fail"),
             required: false,
             instruction_budget: Some(500_000),
+            args: Vec::new(&env),
         });
         // Failing call WITHOUT a budget set — should NOT count
         calls.push_back(CallDescriptor {
@@ -659,6 +670,7 @@ mod tests {
             function: Symbol::new(&env, "fail"),
             required: false,
             instruction_budget: None,
+            args: Vec::new(&env),
         });
         // Successful call with a budget — should NOT count
         calls.push_back(CallDescriptor {
@@ -666,6 +678,7 @@ mod tests {
             function: Symbol::new(&env, "success"),
             required: false,
             instruction_budget: Some(500_000),
+            args: Vec::new(&env),
         });
 
         let summary = client.execute_batch(&caller, &calls, &false, &false);
@@ -761,6 +774,7 @@ mod tests {
                 function: Symbol::new(&env, "success"),
                 required: true,
                 instruction_budget: None,
+                args: Vec::new(&env),
             });
 
             client.execute_batch(&caller, &calls, &false, &false);
