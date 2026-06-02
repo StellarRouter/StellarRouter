@@ -1,4 +1,4 @@
-# stellar-router [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE) [![Language: Rust](https://img.shields.io/badge/language-Rust-orange.svg)](https://www.rust-lang.org/)
+# stellar-router [![CI](https://github.com/Maki-Zeninn/stellar-router/actions/workflows/ci.yml/badge.svg)](https://github.com/Maki-Zeninn/stellar-router/actions/workflows/ci.yml) [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE) [![Language: Rust](https://img.shields.io/badge/language-Rust-orange.svg)](https://www.rust-lang.org/) [![Minimum Rust Version](https://img.shields.io/badge/rust-1.75%2B-blue.svg)](https://www.rust-lang.org/) <!-- [![crates.io](https://img.shields.io/crates/v/stellar-router.svg)](https://crates.io/crates/stellar-router) (not yet published) -->
 
 A modular cross-contract routing infrastructure suite for Stellar/Soroban.
 
@@ -99,16 +99,7 @@ sequenceDiagram
 | `router-middleware` | Rate limiting, route enable/disable, and call event logging | 6 |
 | `router-timelock` | Delayed execution queue for sensitive configuration changes | 7 |
 | `router-multicall` | Batch multiple cross-contract calls in one transaction | 6 |
-| `router-execution` | Execution pipeline with simulation, retries, and fee estimation | 8 |
-| `router-quote` | Read-only quote preview contract for expected output, fees, and route details | 4 |
-
-## Metrics & Monitoring
-
-| Component | Description |
-|---|---|
-| `router-metrics-exporter` | Prometheus/OpenTelemetry metrics exporter (off-chain binary) |
-
-The metrics exporter is an off-chain Rust binary that polls the Soroban RPC endpoint and exposes contract metrics in Prometheus format. See [`metrics/README.md`](metrics/README.md) for details.
+| `router-quote` | Configurable fee-based quote calculation and best-route selection | 13 |
 
 ## Architecture
 
@@ -152,6 +143,21 @@ can call it, not just the admin. This is intentional: `router-multicall` is desi
 as a public batching service where any caller can batch their own cross-contract
 calls to reduce round-trips. The admin role is only used for configuration (e.g.,
 setting `max_batch_size`).
+
+### router-quote
+Quote calculation and route comparison. Provides configurable fee-based quote
+calculations and best-route selection for comparing multiple liquidity routes.
+
+Key features:
+- **Configurable fee_bps per route** — each route can have its own fee in basis
+  points (1 bps = 0.01%). Falls back to a configurable default fee if no
+  route-specific fee is set. Replaces the old hardcoded 1% fee.
+- **`get_quote(request)`** — calculates a single quote with the route's configured
+  `fee_bps`, returning `amount_out`, `fee_amount`, and `fee_bps` used.
+- **`get_quotes(requests)`** — calculates quotes for multiple routes at once.
+- **`get_best_quote(requests)`** — calls `get_quotes()` internally and returns the
+  single `QuoteResponse` with the highest `amount_out`. Useful for automatic
+  route comparison and selection.
 
 ## Getting Started
 

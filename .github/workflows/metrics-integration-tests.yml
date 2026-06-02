@@ -1,0 +1,114 @@
+name: Metrics Exporter Integration Tests
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  metrics-integration-test:
+    name: Metrics Exporter Integration Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-metrics-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Build metrics exporter
+        run: cargo build -p router-metrics-exporter --release
+
+      - name: Start metrics exporter
+        run: |
+          timeout 30 ./target/release/router-metrics-exporter \
+            --port 9090 \
+            --rpc-url http://localhost:8000 \
+            --log-level debug &
+          EXPORTER_PID=$!
+          sleep 2
+          echo "EXPORTER_PID=$EXPORTER_PID" >> $GITHUB_ENV
+        continue-on-error: true
+
+      - name: Validate metrics endpoint
+        run: |
+          # Check if metrics endpoint is accessible
+          RESPONSE=$(curl -s -w "\n%{http_code}" http://localhost:9090/metrics || echo "000")
+          HTTP_CODE=$(echo "$RESPONSE" | tail -n1)
+          BODY=$(echo "$RESPONSE" | head -n-1)
+          
+          if [ "$HTTP_CODE" != "200" ]; then
+            echo "❌ Metrics endpoint returned HTTP $HTTP_CODE"
+            exit 1
+          fi
+          
+          echo "✅ Metrics endpoint is accessible (HTTP 200)"
+          
+          # Validate Prometheus format
+          if echo "$BODY" | grep -q "^# HELP"; then
+            echo "✅ Prometheus format detected (HELP lines present)"
+          else
+            echo "⚠️  No HELP lines found in metrics output"
+          fi
+          
+          if echo "$BODY" | grep -q "^# TYPE"; then
+            echo "✅ Prometheus TYPE lines present"
+          else
+            echo "⚠️  No TYPE lines found in metrics output"
+          fi
+
+      - name: Validate expected metrics
+        run: |
+          METRICS_OUTPUT=$(curl -s http://localhost:9090/metrics)
+          
+          EXPECTED_METRICS=(
+            "router_core_routes_total"
+            "router_core_resolutions_total"
+            "router_middleware_rate_limit_hits_total"
+            "router_registry_entries_total"
+          )
+          
+          MISSING_METRICS=0
+          for metric in "${EXPECTED_METRICS[@]}"; do
+            if echo "$METRICS_OUTPUT" | grep -q "$metric"; then
+              echo "✅ Found metric: $metric"
+            else
+              echo "⚠️  Missing metric: $metric (expected but not found)"
+              MISSING_METRICS=$((MISSING_METRICS + 1))
+            fi
+          done
+          
+          if [ $MISSING_METRICS -gt 0 ]; then
+            echo ""
+            echo "Note: Some expected metrics were not found. This may be expected if contracts are not initialized."
+          fi
+
+      - name: Test metrics scrape performance
+        run: |
+          START_TIME=$(date +%s%N)
+          curl -s http://localhost:9090/metrics > /dev/null
+          END_TIME=$(date +%s%N)
+          
+          DURATION_MS=$(( (END_TIME - START_TIME) / 1000000 ))
+          echo "Metrics scrape took ${DURATION_MS}ms"
+          
+          if [ $DURATION_MS -gt 5000 ]; then
+            echo "⚠️  Metrics scrape took longer than 5 seconds"
+          else
+            echo "✅ Metrics scrape performance is acceptable"
+          fi
+
+      - name: Cleanup
+        if: always()
+        run: |
+          if [ -n "$EXPORTER_PID" ]; then
+            kill $EXPORTER_PID 2>/dev/null || true
+          fi

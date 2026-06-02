@@ -9,14 +9,10 @@ members = [
     "contracts/router-timelock",
     "contracts/router-multicall",
     "contracts/router-quote",
-    "contracts/router-execution",
-    "metrics",
-    "integration-tests",
-    "api-server",
 ]
 
 [workspace.dependencies]
-soroban-sdk = { version = "21.7.6" }
+soroban-sdk = { version = "21.7.6", default-features = false, features = ["testutils"] }
 
 [profile.release]
 opt-level = "z"

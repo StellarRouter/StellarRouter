@@ -63,7 +63,7 @@ async fn main() -> Result<()> {
         .map_err(|e| anyhow::anyhow!("invalid listen address: {}", e.message))?;
     validate_scrape_interval(args.scrape_interval_secs)
         .map_err(|e| anyhow::anyhow!("invalid scrape interval: {}", e.message))?;
-    for id in [&args.core_contract_id, &args.middleware_contract_id, &args.registry_contract_id] {
+    for id in [&args.core_contract_id, &args.middleware_contract_id, &args.registry_contract_id, &args.quote_contract_id, &args.execution_contract_id] {
         if !id.is_empty() {
             validate_contract_id(id)
                 .map_err(|e| anyhow::anyhow!("invalid contract ID: {}", e.message))?;

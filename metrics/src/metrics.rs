@@ -46,6 +46,23 @@ pub struct RouterMetrics {
     /// Total number of contract names registered in the registry.
     pub registry_total_names: GaugeVec,
 
+    // ── router-quote ──────────────────────────────────────────────────────────
+    /// Running total of `quote_generated` events observed.
+    pub quote_total_generated: GaugeVec,
+
+    /// Running total of `fee_estimated` events observed.
+    pub quote_total_fee_estimated: GaugeVec,
+
+    // ── router-execution ──────────────────────────────────────────────────────
+    /// Cumulative number of executions recorded in on-chain storage.
+    pub execution_total_executions: GaugeVec,
+
+    /// Cumulative number of execution errors recorded in on-chain storage.
+    pub execution_total_errors: GaugeVec,
+
+    /// Configured maximum retries read from on-chain storage.
+    pub execution_max_retries: GaugeVec,
+
     // ── exporter health ───────────────────────────────────────────────────────
     /// Time (seconds) spent scraping a single contract during the last cycle.
     pub scrape_duration_seconds: HistogramVec,
@@ -109,6 +126,41 @@ impl RouterMetrics {
             registry
         )?;
 
+        let quote_total_generated = register_gauge_vec_with_registry!(
+            "router_quote_total_generated",
+            "Running total of quote_generated events observed from router-quote",
+            &["contract"],
+            registry
+        )?;
+
+        let quote_total_fee_estimated = register_gauge_vec_with_registry!(
+            "router_quote_total_fee_estimated",
+            "Running total of fee_estimated events observed from router-quote",
+            &["contract"],
+            registry
+        )?;
+
+        let execution_total_executions = register_gauge_vec_with_registry!(
+            "router_execution_total_executions",
+            "Cumulative number of executions recorded in router-execution on-chain storage",
+            &["contract"],
+            registry
+        )?;
+
+        let execution_total_errors = register_gauge_vec_with_registry!(
+            "router_execution_total_errors",
+            "Cumulative number of execution errors recorded in router-execution on-chain storage",
+            &["contract"],
+            registry
+        )?;
+
+        let execution_max_retries = register_gauge_vec_with_registry!(
+            "router_execution_max_retries",
+            "Configured maximum retries read from router-execution on-chain storage",
+            &["contract"],
+            registry
+        )?;
+
         let scrape_duration_seconds = register_histogram_vec_with_registry!(
             "router_scrape_duration_seconds",
             "Time in seconds spent scraping a single router contract",
@@ -138,6 +190,11 @@ impl RouterMetrics {
             middleware_circuit_open,
             middleware_failure_count,
             registry_total_names,
+            quote_total_generated,
+            quote_total_fee_estimated,
+            execution_total_executions,
+            execution_total_errors,
+            execution_max_retries,
             scrape_duration_seconds,
             scrape_errors_total,
             up,

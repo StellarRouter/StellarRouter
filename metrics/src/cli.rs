@@ -50,6 +50,18 @@ pub struct Args {
     #[arg(long, env = "ROUTER_REGISTRY_CONTRACT_ID", default_value = "")]
     pub registry_contract_id: String,
 
+    /// Contract ID of the deployed `router-quote` contract.
+    ///
+    /// Leave empty to skip scraping this contract.
+    #[arg(long, env = "ROUTER_QUOTE_CONTRACT_ID", default_value = "")]
+    pub quote_contract_id: String,
+
+    /// Contract ID of the deployed `router-execution` contract.
+    ///
+    /// Leave empty to skip scraping this contract.
+    #[arg(long, env = "ROUTER_EXECUTION_CONTRACT_ID", default_value = "")]
+    pub execution_contract_id: String,
+
     /// How often (in seconds) to poll the Soroban RPC for fresh data.
     #[arg(long, env = "ROUTER_SCRAPE_INTERVAL_SECS", default_value_t = 15)]
     pub scrape_interval_secs: u64,

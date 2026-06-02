@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [lib]
-crate-type = ["cdylib", "rlib"]
+crate-type = ["cdylib"]
 
 [dependencies]
 soroban-sdk = { workspace = true }
@@ -12,11 +12,16 @@ router-common = { path = "../router-common" }
 
 [dev-dependencies]
 soroban-sdk = { workspace = true, features = ["testutils"] }
-router-common = { path = "../router-common" }
+
+[features]
+testutils = ["soroban-sdk/testutils"]
 
 [profile.release]
 opt-level = "z"
-lto = true
-codegen-units = 1
+overflow-checks = true
+debug = 0
+strip = "symbols"
+debug-assertions = false
 panic = "abort"
-strip = true
+codegen-units = 1
+lto = true

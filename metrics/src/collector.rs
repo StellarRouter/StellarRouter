@@ -107,6 +107,34 @@ impl Collector {
             }
         }
 
+        if !self.args.quote_contract_id.is_empty() {
+            if let Err(e) = self
+                .scrape_quote(client, &self.args.quote_contract_id)
+                .await
+            {
+                warn!(contract = %self.args.quote_contract_id, "quote scrape failed: {e:#}");
+                self.metrics
+                    .scrape_errors_total
+                    .with_label_values(&[&self.args.quote_contract_id])
+                    .inc();
+                all_ok = false;
+            }
+        }
+
+        if !self.args.execution_contract_id.is_empty() {
+            if let Err(e) = self
+                .scrape_execution(client, &self.args.execution_contract_id)
+                .await
+            {
+                warn!(contract = %self.args.execution_contract_id, "execution scrape failed: {e:#}");
+                self.metrics
+                    .scrape_errors_total
+                    .with_label_values(&[&self.args.execution_contract_id])
+                    .inc();
+                all_ok = false;
+            }
+        }
+
         all_ok
     }
 
@@ -273,6 +301,145 @@ impl Collector {
         );
         Ok(())
     }
+
+    // ── router-quote ──────────────────────────────────────────────────────────
+
+    /// Scrape `router-quote` by counting `quote_generated` and `fee_estimated`
+    /// events via the `getEvents` RPC and maintaining running totals.
+    async fn scrape_quote(&self, client: &dyn RpcClient, contract_id: &str) -> Result<()> {
+        let start = Instant::now();
+        info!(contract_id, "scraping router-quote");
+
+        let quote_events = client
+            .get_events(contract_id, &["quote_generated"], 0)
+            .await?;
+        let fee_events = client
+            .get_events(contract_id, &["fee_estimated"], 0)
+            .await?;
+
+        self.metrics
+            .quote_total_generated
+            .with_label_values(&[contract_id])
+            .set(quote_events.len() as f64);
+
+        self.metrics
+            .quote_total_fee_estimated
+            .with_label_values(&[contract_id])
+            .set(fee_events.len() as f64);
+
+        let elapsed = start.elapsed().as_secs_f64();
+        self.metrics
+            .scrape_duration_seconds
+            .with_label_values(&[contract_id])
+            .observe(elapsed);
+
+        info!(
+            contract_id,
+            elapsed_secs = elapsed,
+            quote_generated = quote_events.len(),
+            fee_estimated = fee_events.len(),
+            "quote scrape done"
+        );
+        Ok(())
+    }
+
+    // ── router-execution ──────────────────────────────────────────────────────
+
+    /// Scrape `router-execution` by reading `TotalExecutions`, `TotalErrors`,
+    /// and `MaxRetries` from on-chain storage via `getLedgerEntries`.
+    ///
+    /// The storage keys are encoded as Soroban `ContractData` XDR keys.
+    /// We use the `call_u64` simulation path as a fallback since full XDR
+    /// key construction requires the `stellar-xdr` crate.
+    async fn scrape_execution(&self, client: &dyn RpcClient, contract_id: &str) -> Result<()> {
+        let start = Instant::now();
+        info!(contract_id, "scraping router-execution");
+
+        // Build the XDR keys for the three instance-storage entries.
+        // Key format: base64(LedgerKey::ContractData { contract, key: ScVal::Symbol("..."), durability: Persistent })
+        // We encode the symbol name as a hex placeholder matching the existing
+        // encode_string_arg convention; a production deployment should use
+        // stellar-xdr to produce correct XDR.
+        let keys: Vec<String> = ["TotalExecutions", "TotalErrors", "MaxRetries"]
+            .iter()
+            .map(|k| encode_contract_data_key(contract_id, k))
+            .collect();
+
+        let entries = client.get_ledger_entries(keys).await?;
+
+        // Parse each entry. The value XDR is a base64-encoded ScVal::U64.
+        // We extract the numeric value from the JSON representation returned
+        // by the RPC server (which decodes XDR to JSON automatically).
+        let total_executions = extract_u64_from_entry(&entries, "TotalExecutions").unwrap_or(0);
+        let total_errors = extract_u64_from_entry(&entries, "TotalErrors").unwrap_or(0);
+        let max_retries = extract_u64_from_entry(&entries, "MaxRetries").unwrap_or(0);
+
+        self.metrics
+            .execution_total_executions
+            .with_label_values(&[contract_id])
+            .set(total_executions as f64);
+
+        self.metrics
+            .execution_total_errors
+            .with_label_values(&[contract_id])
+            .set(total_errors as f64);
+
+        self.metrics
+            .execution_max_retries
+            .with_label_values(&[contract_id])
+            .set(max_retries as f64);
+
+        let elapsed = start.elapsed().as_secs_f64();
+        self.metrics
+            .scrape_duration_seconds
+            .with_label_values(&[contract_id])
+            .observe(elapsed);
+
+        info!(
+            contract_id,
+            elapsed_secs = elapsed,
+            total_executions,
+            total_errors,
+            max_retries,
+            "execution scrape done"
+        );
+        Ok(())
+    }
+}
+
+/// Encode a `ContractData` ledger key for a named instance-storage entry.
+///
+/// Produces a string key that the mock client can match on. In production
+/// this should be replaced with proper XDR encoding via the `stellar-xdr` crate.
+fn encode_contract_data_key(contract_id: &str, storage_key: &str) -> String {
+    format!("{}:{}", contract_id, storage_key)
+}
+
+/// Extract a `u64` value from a `getLedgerEntries` response for the given key name.
+///
+/// The RPC server returns entries with a `xdr` field containing base64-encoded
+/// `LedgerEntryData` XDR. In the JSON-decoded representation (used by some RPC
+/// versions) the value is available directly. We try both paths.
+fn extract_u64_from_entry(entries: &[crate::rpc::LedgerEntry], key_name: &str) -> Option<u64> {
+    for entry in entries {
+        // The key field encodes the storage key name; we match by suffix.
+        if entry.key.ends_with(key_name) || entry.key.contains(key_name) {
+            // Try to parse the xdr field as a plain u64 (mock / JSON path).
+            if let Ok(n) = entry.xdr.parse::<u64>() {
+                return Some(n);
+            }
+            // Try JSON-decoded path: `{"u64": <n>}`.
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&entry.xdr) {
+                if let Some(n) = v.get("u64").and_then(|n| n.as_u64()) {
+                    return Some(n);
+                }
+                if let Some(n) = v.as_u64() {
+                    return Some(n);
+                }
+            }
+        }
+    }
+    None
 }
 
 #[cfg(test)]
@@ -287,6 +454,16 @@ mod tests {
         middleware: &str,
         registry_id: &str,
     ) -> (Collector, RouterMetrics) {
+        make_collector_full(core, middleware, registry_id, "", "")
+    }
+
+    fn make_collector_full(
+        core: &str,
+        middleware: &str,
+        registry_id: &str,
+        quote_id: &str,
+        execution_id: &str,
+    ) -> (Collector, RouterMetrics) {
         let reg = Registry::new();
         let metrics = RouterMetrics::new(&reg).unwrap();
         let args = Args {
@@ -295,6 +472,8 @@ mod tests {
             core_contract_id: core.to_string(),
             middleware_contract_id: middleware.to_string(),
             registry_contract_id: registry_id.to_string(),
+            quote_contract_id: quote_id.to_string(),
+            execution_contract_id: execution_id.to_string(),
             scrape_interval_secs: 15,
             listen: "0.0.0.0:9090".to_string(),
             rpc_timeout_secs: 10,
@@ -432,6 +611,82 @@ mod tests {
                 .middleware_failure_count
                 .with_label_values(&["MW_ID", "oracle"])
                 .get(),
+            3.0
+        );
+    }
+
+    #[tokio::test]
+    async fn test_scrape_quote_counts_events() {
+        use crate::rpc::ContractEvent;
+        let (collector, metrics) = make_collector_full("", "", "", "QUOTE_ID", "");
+
+        let make_event = |topic: &str| ContractEvent {
+            contract_id: "QUOTE_ID".to_string(),
+            topic: vec![serde_json::json!(topic)],
+            value: serde_json::json!({}),
+        };
+
+        let mock = MockRpcClient::new()
+            .with_events("QUOTE_ID", "quote_generated", vec![make_event("quote_generated"), make_event("quote_generated")])
+            .with_events("QUOTE_ID", "fee_estimated", vec![make_event("fee_estimated")]);
+
+        let ok = collector.scrape_all(&mock).await;
+        assert!(ok);
+
+        assert_eq!(
+            metrics.quote_total_generated.with_label_values(&["QUOTE_ID"]).get(),
+            2.0
+        );
+        assert_eq!(
+            metrics.quote_total_fee_estimated.with_label_values(&["QUOTE_ID"]).get(),
+            1.0
+        );
+    }
+
+    #[tokio::test]
+    async fn test_scrape_execution_reads_ledger_entries() {
+        use crate::rpc::LedgerEntry;
+        let (collector, metrics) = make_collector_full("", "", "", "", "EXEC_ID");
+
+        let mock = MockRpcClient::new()
+            .with_ledger_entries(
+                "EXEC_ID:TotalExecutions",
+                vec![LedgerEntry { key: "EXEC_ID:TotalExecutions".to_string(), xdr: "42".to_string() }],
+            )
+            .with_ledger_entries(
+                "EXEC_ID:TotalErrors",
+                vec![LedgerEntry { key: "EXEC_ID:TotalErrors".to_string(), xdr: "5".to_string() }],
+            )
+            .with_ledger_entries(
+                "EXEC_ID:MaxRetries",
+                vec![LedgerEntry { key: "EXEC_ID:MaxRetries".to_string(), xdr: "3".to_string() }],
+            );
+
+        // get_ledger_entries is called once with all three keys; mock returns
+        // entries for the first key only. We need a single mock that returns all.
+        // Use a combined mock keyed on the first key.
+        let mock = MockRpcClient::new().with_ledger_entries(
+            "EXEC_ID:TotalExecutions",
+            vec![
+                LedgerEntry { key: "EXEC_ID:TotalExecutions".to_string(), xdr: "42".to_string() },
+                LedgerEntry { key: "EXEC_ID:TotalErrors".to_string(), xdr: "5".to_string() },
+                LedgerEntry { key: "EXEC_ID:MaxRetries".to_string(), xdr: "3".to_string() },
+            ],
+        );
+
+        let ok = collector.scrape_all(&mock).await;
+        assert!(ok);
+
+        assert_eq!(
+            metrics.execution_total_executions.with_label_values(&["EXEC_ID"]).get(),
+            42.0
+        );
+        assert_eq!(
+            metrics.execution_total_errors.with_label_values(&["EXEC_ID"]).get(),
+            5.0
+        );
+        assert_eq!(
+            metrics.execution_max_retries.with_label_values(&["EXEC_ID"]).get(),
             3.0
         );
     }
