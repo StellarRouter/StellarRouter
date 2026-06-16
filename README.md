@@ -1,3 +1,5 @@
+![StellarRouter](./stellarrouter-banner.png)
+
 # StellarRouter [![CI](https://github.com/Maki-Zeninn/stellar-router/actions/workflows/ci.yml/badge.svg)](https://github.com/Maki-Zeninn/stellar-router/actions/workflows/ci.yml) [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE) [![Language: Rust](https://img.shields.io/badge/language-Rust-orange.svg)](https://www.rust-lang.org/) [![Minimum Rust Version](https://img.shields.io/badge/rust-1.75%2B-blue.svg)](https://www.rust-lang.org/) <!-- [![crates.io](https://img.shields.io/crates/v/stellar-router.svg)](https://crates.io/crates/stellar-router) (not yet published) -->
 
 A modular cross-contract routing infrastructure suite for Stellar/Soroban.
