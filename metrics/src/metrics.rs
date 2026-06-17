@@ -46,6 +46,9 @@ pub struct RouterMetrics {
     /// Total number of contract names registered in the registry.
     pub registry_total_names: GaugeVec,
 
+    /// Total number of versions registered under each contract name.
+    pub registry_version_count: GaugeVec,
+
     // ── router-quote ──────────────────────────────────────────────────────────
     /// Running total of `quote_generated` events observed.
     pub quote_total_generated: GaugeVec,
@@ -126,6 +129,13 @@ impl RouterMetrics {
             registry
         )?;
 
+        let registry_version_count = register_gauge_vec_with_registry!(
+            "router_registry_version_count",
+            "Total number of versions registered under a contract name in the router-registry",
+            &["contract", "name"],
+            registry
+        )?;
+
         let quote_total_generated = register_gauge_vec_with_registry!(
             "router_quote_total_generated",
             "Running total of quote_generated events observed from router-quote",
@@ -190,6 +200,7 @@ impl RouterMetrics {
             middleware_circuit_open,
             middleware_failure_count,
             registry_total_names,
+            registry_version_count,
             quote_total_generated,
             quote_total_fee_estimated,
             execution_total_executions,

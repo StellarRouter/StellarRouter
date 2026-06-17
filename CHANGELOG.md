@@ -7,12 +7,19 @@ The format is based on Keep a Changelog and this project adheres to Semantic Ver
 ## [Unreleased]
 
 ### Added
+- `router-registry`: `versions(name) -> Vec<u32>` — enumerate all registered version numbers for a name, sorted ascending. Returns an empty vec for unknown names. Closes #19.
+- `router-registry`: `deprecate_all_versions(caller, name, reason)` — batch-deprecate every version under a name in one call.
+- `metrics/collector`: `scrape_registry` now calls `versions(name)` for each registered name and exposes `router_registry_version_count{contract, name}` gauge.
+- `metrics/metrics`: `registry_version_count` Prometheus gauge with `contract` and `name` labels.
+- `docs/api-reference.md`: added `versions(name)` return-empty behaviour note and missing `deprecate_all_versions` entry to the router-registry function table.
+- `router-registry`: fixed broken `get_entry_by_address` implementation (was reading `ContractNames` into a `(String, u32)` tuple instead of using `AddressIndex`).
+- `router-registry`: fixed all pre-existing compile errors: duplicate `get_all_names`, missing `require_admin` helper, `address` move-after-use in `register`, and missing `Ok` wrapper in `deprecate_many`.
+- `router-registry`: fixed `get_latest` to return `AllVersionsDeprecated` (not `NotFound`) when a name exists but all versions are deprecated.
+
+### Changed
 - `router-access`: blacklist entries can now include an optional `reason` and an `expires_at` timestamp. Expired blacklist entries are treated as not blacklisted.
 - `router-registry`: `ContractEntry` includes an optional `deprecation_reason` and the `deprecate()` API accepts an optional reason which is emitted in the `contract_deprecated` event.
 - `metrics/alerts.yml`: example Prometheus alerting rules for circuit breaker opens, high failure/error rates, and high request volume.
-
-### Changed
-- Documentation: added a top-level `CHANGELOG.md` following Keep a Changelog format.
 
 ## [0.3.0] - 2024-11-15
 

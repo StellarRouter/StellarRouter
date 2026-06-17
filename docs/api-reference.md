@@ -261,7 +261,14 @@ Batch deprecation. Returns one result per entry; partial failures are allowed.
 ---
 
 ### `versions(name) → Vec<u32>`
-Returns all registered version numbers for `name` in ascending order.
+Returns all version numbers registered under `name` in ascending order. Returns an empty vec if `name` has no registered entries.
+
+---
+
+### `deprecate_all_versions(caller, name, reason: Option<String>) → Result<(), RegistryError>`
+Deprecates every version registered under `name` in one call. Already-deprecated versions are silently skipped.
+
+**Errors:** `Unauthorized`, `NotInitialized`
 
 ---
 

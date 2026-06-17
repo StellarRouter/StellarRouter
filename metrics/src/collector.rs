@@ -279,13 +279,27 @@ impl Collector {
         let start = Instant::now();
         info!(contract_id, "scraping router-registry");
 
-        // get_all_names returns Vec<String> of registered contract names
         let names = client.call_string_vec(contract_id, "get_all_names").await?;
 
         self.metrics
             .registry_total_names
             .with_label_values(&[contract_id])
             .set(names.len() as f64);
+
+        // Call versions(name) for each registered name to track per-name version count.
+        for name in &names {
+            match client.call_u32_vec(contract_id, "versions", name).await {
+                Ok(versions) => {
+                    self.metrics
+                        .registry_version_count
+                        .with_label_values(&[contract_id, name])
+                        .set(versions.len() as f64);
+                }
+                Err(e) => {
+                    warn!(contract_id, name, "failed to get versions: {e:#}");
+                }
+            }
+        }
 
         let elapsed = start.elapsed().as_secs_f64();
         self.metrics
@@ -522,20 +536,59 @@ mod tests {
     async fn test_scrape_registry_updates_metrics() {
         let (collector, metrics) = make_collector("", "", "REG_ID");
 
-        let mock = MockRpcClient::new().with_string_vec(
-            "REG_ID",
-            "get_all_names",
-            vec!["oracle".to_string(), "vault".to_string()],
-        );
+        let mock = MockRpcClient::new()
+            .with_string_vec(
+                "REG_ID",
+                "get_all_names",
+                vec!["oracle".to_string(), "vault".to_string()],
+            )
+            .with_u32_vec("REG_ID", "versions", "oracle", vec![1, 2, 3])
+            .with_u32_vec("REG_ID", "versions", "vault", vec![1]);
 
         let ok = collector.scrape_all(&mock).await;
         assert!(ok);
 
-        let val = metrics
-            .registry_total_names
-            .with_label_values(&["REG_ID"])
-            .get();
-        assert_eq!(val, 2.0);
+        assert_eq!(
+            metrics
+                .registry_total_names
+                .with_label_values(&["REG_ID"])
+                .get(),
+            2.0
+        );
+        assert_eq!(
+            metrics
+                .registry_version_count
+                .with_label_values(&["REG_ID", "oracle"])
+                .get(),
+            3.0
+        );
+        assert_eq!(
+            metrics
+                .registry_version_count
+                .with_label_values(&["REG_ID", "vault"])
+                .get(),
+            1.0
+        );
+    }
+
+    #[tokio::test]
+    async fn test_scrape_registry_empty_versions_for_name() {
+        let (collector, metrics) = make_collector("", "", "REG_ID");
+
+        let mock = MockRpcClient::new()
+            .with_string_vec("REG_ID", "get_all_names", vec!["ghost".to_string()]);
+        // No with_u32_vec configured → mock returns empty vec (default)
+
+        let ok = collector.scrape_all(&mock).await;
+        assert!(ok);
+
+        assert_eq!(
+            metrics
+                .registry_version_count
+                .with_label_values(&["REG_ID", "ghost"])
+                .get(),
+            0.0
+        );
     }
 
     #[tokio::test]
@@ -690,67 +743,6 @@ mod tests {
             3.0
         );
     }
-}
-
-/// Encode a plain string as a base64 XDR `ScVal::String` argument.
-///
-/// This is a placeholder — a real implementation would use the `stellar-xdr`
-/// crate to produce the correct XDR encoding.
-fn encode_string_arg(s: &str) -> String {
-    // Base64-encode the raw UTF-8 bytes as a minimal stand-in.
-    // Replace with proper ScVal XDR encoding in production.
-    use std::fmt::Write;
-    let mut out = String::new();
-    for b in s.as_bytes() {
-        write!(out, "{b:02x}").ok();
-    }
-    out
-}
-
-/// Extract the `paused` field from a `RouteEntry` JSON value returned by
-/// `simulateTransaction`.
-fn extract_route_paused(val: &serde_json::Value) -> Option<bool> {
-    // The Soroban RPC returns struct fields as a JSON map.
-    // RouteEntry { address, name, paused, updated_by, metadata }
-    val.get("results")
-        .and_then(|r| r.get(0))
-        .and_then(|r| r.get("retval"))
-        .and_then(|v| v.get("paused"))
-        .and_then(|p| p.as_bool())
-        .or_else(|| val.get("paused").and_then(|p| p.as_bool()))
-}
-
-/// Extract `(is_open, failure_count)` from a `CircuitBreakerState` JSON value.
-fn extract_circuit_breaker_state(val: &serde_json::Value) -> Option<(bool, u32)> {
-    let retval = val
-        .get("results")
-        .and_then(|r| r.get(0))
-        .and_then(|r| r.get("retval"))
-        .unwrap_or(val);
-
-    // Handle Option<CircuitBreakerState> — None means no state recorded yet
-    if retval.is_null() || retval.get("none").is_some() {
-        return Some((false, 0));
-    }
-
-    let state = retval.get("some").unwrap_or(retval);
-    let is_open = state
-        .get("is_open")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
-    let failure_count = state
-        .get("failure_count")
-        .and_then(|v| v.as_u64())
-        .unwrap_or(0) as u32;
-
-    Some((is_open, failure_count))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use serde_json::json;
-
     #[test]
     fn test_extract_route_paused_true() {
         let val = json!({
@@ -804,4 +796,59 @@ mod tests {
         });
         assert_eq!(extract_circuit_breaker_state(&val), Some((false, 2)));
     }
+
 }
+
+
+/// Encode a plain string as a base64 XDR `ScVal::String` argument.
+///
+/// This is a placeholder — a real implementation would use the `stellar-xdr`
+/// crate to produce the correct XDR encoding.
+pub(crate) fn encode_string_arg(s: &str) -> String {
+    use std::fmt::Write;
+    let mut out = String::new();
+    for b in s.as_bytes() {
+        write!(out, "{b:02x}").ok();
+    }
+    out
+}
+
+/// Extract the `paused` field from a `RouteEntry` JSON value returned by
+/// `simulateTransaction`.
+fn extract_route_paused(val: &serde_json::Value) -> Option<bool> {
+    // The Soroban RPC returns struct fields as a JSON map.
+    // RouteEntry { address, name, paused, updated_by, metadata }
+    val.get("results")
+        .and_then(|r| r.get(0))
+        .and_then(|r| r.get("retval"))
+        .and_then(|v| v.get("paused"))
+        .and_then(|p| p.as_bool())
+        .or_else(|| val.get("paused").and_then(|p| p.as_bool()))
+}
+
+/// Extract `(is_open, failure_count)` from a `CircuitBreakerState` JSON value.
+fn extract_circuit_breaker_state(val: &serde_json::Value) -> Option<(bool, u32)> {
+    let retval = val
+        .get("results")
+        .and_then(|r| r.get(0))
+        .and_then(|r| r.get("retval"))
+        .unwrap_or(val);
+
+    // Handle Option<CircuitBreakerState> — None means no state recorded yet
+    if retval.is_null() || retval.get("none").is_some() {
+        return Some((false, 0));
+    }
+
+    let state = retval.get("some").unwrap_or(retval);
+    let is_open = state
+        .get("is_open")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let failure_count = state
+        .get("failure_count")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0) as u32;
+
+    Some((is_open, failure_count))
+}
+
