@@ -1,3 +1,4 @@
+mod auth;
 mod handlers;
 mod rpc;
 mod state;
@@ -8,12 +9,12 @@ mod websocket;
 mod tests;
 
 use anyhow::{Context, Result};
-use axum::{extract::DefaultBodyLimit, routing::{get, post}, Router};
+use axum::{extract::DefaultBodyLimit, middleware::from_fn_with_state, routing::{get, post}, Router};
 use clap::Parser;
 use std::net::SocketAddr;
 use tracing::info;
 
-use crate::state::AppState;
+use crate::{auth::AuthConfig, state::AppState};
 
 #[derive(Parser, Debug)]
 #[command(name = "router-api-server")]
@@ -51,18 +52,26 @@ async fn main() -> Result<()> {
     info!("Listen address: {}", args.listen);
     info!("RPC URL: {}", args.rpc_url);
 
+    let auth_config = AuthConfig::from_env();
+    info!("Router auth enabled: {}", auth_config.enabled);
+
     let state = AppState::new(
         args.rpc_url,
         args.execution_contract_id,
         args.router_core_contract_id,
+        auth_config.clone(),
     );
 
-    let app = Router::new()
-        .route("/health", get(handlers::health))
+    let protected_routes = Router::new()
         .route("/simulate", post(handlers::simulate))
         .route("/routes", get(handlers::list_routes))
         .route("/routes/:name", get(handlers::get_route))
         .route("/ws", get(websocket::ws_handler))
+        .route_layer(from_fn_with_state(auth_config, auth::auth_middleware));
+
+    let app = Router::new()
+        .route("/health", get(handlers::health))
+        .nest("/", protected_routes)
         .layer(DefaultBodyLimit::max(1024 * 1024))
         .with_state(state);
 
