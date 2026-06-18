@@ -10,7 +10,9 @@ use crate::error::ValidationError;
 
 /// Validate a Stellar contract ID.
 ///
-/// A valid contract ID is exactly 56 alphanumeric ASCII characters.
+/// A valid contract ID is exactly 56 alphanumeric ASCII characters starting
+/// with `'C'` (the Stellar contract address prefix). Account addresses
+/// (prefix `'G'`) are rejected.
 pub fn validate_contract_id(id: &str) -> Result<(), ValidationError> {
     if id.is_empty() {
         return Err(ValidationError::new("contract_id must not be empty"));
@@ -24,6 +26,9 @@ pub fn validate_contract_id(id: &str) -> Result<(), ValidationError> {
         return Err(ValidationError::new(
             "contract_id must contain only alphanumeric characters",
         ));
+    }
+    if !id.starts_with('C') {
+        return Err(ValidationError::new("contract_id must start with 'C'"));
     }
     Ok(())
 }
@@ -90,8 +95,14 @@ mod tests {
 
     #[test]
     fn valid_contract_id() {
-        let id = "A".repeat(56);
+        let id = format!("C{}", "A".repeat(55));
         assert!(validate_contract_id(&id).is_ok());
+    }
+
+    #[test]
+    fn contract_id_with_g_prefix_rejected() {
+        let id = "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4";
+        assert!(validate_contract_id(id).is_err());
     }
 
     #[test]
