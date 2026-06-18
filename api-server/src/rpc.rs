@@ -1,9 +1,16 @@
 /// Soroban RPC client for simulation, fee estimation, and contract reads.
+///
+/// Every `simulateTransaction` call now sends a properly-encoded
+/// `TransactionEnvelope` XDR (v1, single `InvokeHostFunctionOp`). The
+/// contract ID strkey is decoded to its 32-byte hash before encoding.
+/// Response ScVal XDR is decoded with the typed parsers in `crate::xdr`.
 use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 
-use crate::types::{RouteEntryResponse, RouteMetadataResponse};
+use crate::{
+    types::RouteEntryResponse,
+    xdr::{self, ScArg},
+};
 
 #[derive(Debug, Clone)]
 pub struct SorobanRpcClient {
@@ -51,6 +58,7 @@ struct SimulateTransactionResultWithReturnValue {
 
 #[derive(Deserialize, Debug)]
 struct InvokeResult {
+    /// Base64-encoded XDR of the `ScVal` return value.
     pub xdr: String,
 }
 
@@ -104,14 +112,22 @@ impl SorobanRpcClient {
         }
     }
 
+    /// Fetch all registered route names from `router-core::get_all_routes()`.
+    ///
+    /// Sends a valid `simulateTransaction` XDR and decodes the `ScVal::Vec`
+    /// return value. Returns an empty list on RPC error rather than failing
+    /// the endpoint, consistent with the heuristic fallback in `simulate`.
     pub async fn get_all_routes(&self, contract_id: &str) -> Result<Vec<String>> {
-        let placeholder_xdr = format!("AAAAAgAAAAEAAAAA{}get_all_routesAAAAAAAAAAAA=", contract_id);
+        let hash = xdr::decode_contract_id(contract_id)
+            .map_err(|e| anyhow!("invalid ROUTER_CORE_CONTRACT_ID: {}", e))?;
+
+        let tx_xdr = xdr::build_invoke_xdr(&hash, "get_all_routes", &[]);
 
         let req = JsonRpcRequest {
             jsonrpc: "2.0",
             id: 1,
             method: "simulateTransaction",
-            params: serde_json::json!({ "transaction": placeholder_xdr }),
+            params: serde_json::json!({ "transaction": tx_xdr }),
         };
 
         let resp: JsonRpcResponse<SimulateTransactionResultWithReturnValue> = self
@@ -139,38 +155,50 @@ impl SorobanRpcClient {
             .results
             .into_iter()
             .next()
-            .and_then(|r| Self::decode_string_vec_xdr(&r.xdr))
+            .map(|r| xdr::parse_string_vec(&r.xdr))
+            .transpose()?
             .unwrap_or_default();
 
         Ok(routes)
     }
 
+    /// Fetch a single route entry from `router-core::get_route(name)`.
+    ///
+    /// Sends a valid `simulateTransaction` XDR with the route name encoded as
+    /// an `ScVal::String` argument. The `ScVal::Map` return value is decoded
+    /// into a `RouteEntryResponse`. Returns `Ok(None)` when the contract
+    /// returns `ScVal::Void` (route not found).
     pub async fn get_route(&self, name: &str) -> Result<Option<RouteEntryResponse>> {
         let contract_id = self
             .router_core_contract_id
             .as_deref()
             .ok_or_else(|| anyhow!("ROUTER_CORE_CONTRACT_ID not configured"))?;
 
-        let placeholder_xdr = format!("get_route:{}:{}", contract_id, name);
+        let hash = xdr::decode_contract_id(contract_id)
+            .map_err(|e| anyhow!("invalid ROUTER_CORE_CONTRACT_ID: {}", e))?;
+
+        let tx_xdr = xdr::build_invoke_xdr(&hash, "get_route", &[ScArg::String(name)]);
 
         let req = JsonRpcRequest {
             jsonrpc: "2.0",
             id: 1,
             method: "simulateTransaction",
             params: serde_json::json!({
-                "transaction": placeholder_xdr,
-                "resourceConfig": { "instructionLeeway": 3000000 }
+                "transaction": tx_xdr,
+                "resourceConfig": { "instructionLeeway": 3_000_000 }
             }),
         };
 
-        let resp: JsonRpcResponse<Value> = self
+        let resp: JsonRpcResponse<SimulateTransactionResultWithReturnValue> = self
             .http
             .post(&self.rpc_url)
             .json(&req)
             .send()
-            .await?
+            .await
+            .map_err(|e| anyhow!("RPC request failed: {}", e))?
             .json()
-            .await?;
+            .await
+            .map_err(|e| anyhow!("Failed to parse RPC response: {}", e))?;
 
         if let Some(err) = resp.error {
             return Err(anyhow!("RPC error: {}", err.message));
@@ -181,112 +209,51 @@ impl SorobanRpcClient {
             None => return Ok(None),
         };
 
-        Self::parse_route_entry_from_rpc(&result)
-    }
-
-    fn parse_route_entry_from_rpc(result: &Value) -> Result<Option<RouteEntryResponse>> {
-        if result.get("error").is_some() {
-            return Ok(None);
+        if let Some(err) = result.error {
+            return Err(anyhow!("contract error: {}", err));
         }
 
-        let results = match result.get("results").and_then(|r| r.as_array()) {
-            Some(r) if !r.is_empty() => r,
-            _ => return Ok(None),
-        };
-
-        let entry_json = results[0].get("xdr").cloned().unwrap_or(Value::Null);
-        if entry_json.is_null() {
-            return Ok(None);
-        }
-
-        let map = match entry_json.get("map").and_then(|m| m.as_array()) {
-            Some(m) => m.clone(),
+        let xdr_b64 = match result.results.into_iter().next() {
+            Some(r) => r.xdr,
             None => return Ok(None),
         };
 
-        let mut address = String::new();
-        let mut route_name = String::new();
-        let mut paused = false;
-        let mut updated_by = String::new();
-        let mut metadata: Option<RouteMetadataResponse> = None;
-
-        for item in &map {
-            let key = item
-                .get("key")
-                .and_then(|k| k.get("sym"))
-                .and_then(|s| s.as_str())
-                .unwrap_or("");
-            let val = &item["val"];
-            match key {
-                "address" => {
-                    address = val.get("address").and_then(|a| a.as_str()).unwrap_or("").to_string();
-                }
-                "name" => {
-                    route_name = val.get("str").and_then(|s| s.as_str()).unwrap_or("").to_string();
-                }
-                "paused" => {
-                    paused = val.get("b").and_then(|b| b.as_bool()).unwrap_or(false);
-                }
-                "updated_by" => {
-                    updated_by = val.get("address").and_then(|a| a.as_str()).unwrap_or("").to_string();
-                }
-                "metadata" => {
-                    if let Some(meta_map) = val.get("map").and_then(|m| m.as_array()) {
-                        let mut description = String::new();
-                        let mut tags = Vec::new();
-                        let mut owner = String::new();
-                        for meta_item in meta_map {
-                            let mk = meta_item
-                                .get("key")
-                                .and_then(|k| k.get("sym"))
-                                .and_then(|s| s.as_str())
-                                .unwrap_or("");
-                            let mv = &meta_item["val"];
-                            match mk {
-                                "description" => {
-                                    description = mv.get("str").and_then(|s| s.as_str()).unwrap_or("").to_string();
-                                }
-                                "owner" => {
-                                    owner = mv.get("address").and_then(|a| a.as_str()).unwrap_or("").to_string();
-                                }
-                                "tags" => {
-                                    if let Some(tag_vec) = mv.get("vec").and_then(|v| v.as_array()) {
-                                        tags = tag_vec
-                                            .iter()
-                                            .filter_map(|t| t.get("str").and_then(|s| s.as_str()).map(|s| s.to_string()))
-                                            .collect();
-                                    }
-                                }
-                                _ => {}
-                            }
-                        }
-                        metadata = Some(RouteMetadataResponse { description, tags, owner });
-                    }
-                }
-                _ => {}
-            }
-        }
-
-        if address.is_empty() {
-            return Ok(None);
-        }
+        let entry = match xdr::parse_route_entry(&xdr_b64)? {
+            Some(e) => e,
+            None => return Ok(None),
+        };
 
         Ok(Some(RouteEntryResponse {
-            address,
-            name: route_name,
-            paused,
-            updated_by,
-            metadata,
+            address: entry.address,
+            name: entry.name,
+            paused: entry.paused,
+            updated_by: entry.updated_by,
+            // Metadata is stored separately in router-core (DataKey::Metadata)
+            // and would require a second getLedgerEntries call to retrieve.
+            metadata: None,
         }))
     }
 
-    async fn call_simulate_rpc(&self, target: &str, function: &str) -> Result<SimulateTransactionResult> {
-        let placeholder_xdr = format!("AAAAAgAAAAEAAAAA{}{}AAAAAAAAAAA=", target, function);
+    /// Call `simulateTransaction` for fee estimation.
+    ///
+    /// Encodes a valid `InvokeHostFunctionOp` XDR so the Soroban RPC can
+    /// return real resource-fee data. Falls back to `heuristic_estimate`
+    /// in `simulate()` when this call fails.
+    async fn call_simulate_rpc(
+        &self,
+        target: &str,
+        function: &str,
+    ) -> Result<SimulateTransactionResult> {
+        let hash = xdr::decode_contract_id(target)
+            .map_err(|e| anyhow!("invalid contract ID '{}': {}", target, e))?;
+
+        let tx_xdr = xdr::build_invoke_xdr(&hash, function, &[]);
+
         let req = JsonRpcRequest {
             jsonrpc: "2.0",
             id: 1,
             method: "simulateTransaction",
-            params: serde_json::json!({ "transaction": placeholder_xdr }),
+            params: serde_json::json!({ "transaction": tx_xdr }),
         };
         let resp: JsonRpcResponse<SimulateTransactionResult> = self
             .http
@@ -323,58 +290,4 @@ impl SorobanRpcClient {
             would_succeed: true,
         }
     }
-}
-
-fn base64_decode(input: &str) -> Option<Vec<u8>> {
-    const TABLE: [u8; 128] = {
-        let mut t = [255u8; 128];
-        let chars = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-        let mut i = 0usize;
-        while i < 64 {
-            t[chars[i] as usize] = i as u8;
-            i += 1;
-        }
-        t
-    };
-
-    let input = input.trim_end_matches('=');
-    let mut out = Vec::with_capacity(input.len() * 3 / 4);
-    let bytes = input.as_bytes();
-    let mut i = 0;
-    while i + 3 < bytes.len() {
-        let b0 = *TABLE.get(bytes[i] as usize)?;
-        let b1 = *TABLE.get(bytes[i + 1] as usize)?;
-        let b2 = *TABLE.get(bytes[i + 2] as usize)?;
-        let b3 = *TABLE.get(bytes[i + 3] as usize)?;
-        if b0 == 255 || b1 == 255 || b2 == 255 || b3 == 255 {
-            return None;
-        }
-        out.push((b0 << 2) | (b1 >> 4));
-        out.push((b1 << 4) | (b2 >> 2));
-        out.push((b2 << 6) | b3);
-        i += 4;
-    }
-    match bytes.len() - i {
-        2 => {
-            let b0 = *TABLE.get(bytes[i] as usize)?;
-            let b1 = *TABLE.get(bytes[i + 1] as usize)?;
-            if b0 == 255 || b1 == 255 {
-                return None;
-            }
-            out.push((b0 << 2) | (b1 >> 4));
-        }
-        3 => {
-            let b0 = *TABLE.get(bytes[i] as usize)?;
-            let b1 = *TABLE.get(bytes[i + 1] as usize)?;
-            let b2 = *TABLE.get(bytes[i + 2] as usize)?;
-            if b0 == 255 || b1 == 255 || b2 == 255 {
-                return None;
-            }
-            out.push((b0 << 2) | (b1 >> 4));
-            out.push((b1 << 4) | (b2 >> 2));
-        }
-        0 => {}
-        _ => return None,
-    }
-    Some(out)
 }

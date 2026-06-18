@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
 members = [
+    "api-server",
     "contracts/router-common",
     "contracts/router-core",
     "contracts/router-registry",

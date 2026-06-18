@@ -6,6 +6,7 @@ mod rpc;
 mod state;
 mod types;
 mod websocket;
+mod xdr;
 
 
 #[cfg(test)]
