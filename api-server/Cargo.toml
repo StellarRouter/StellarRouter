@@ -23,12 +23,15 @@ futures-util = { version = "0.3" }
 clap = { version = "4.5.37", features = ["derive", "env"] }
 async-trait = { version = "0.1.88" }
 
+# Shared off-chain utilities
+router-off-chain-common = { path = "../router-off-chain-common" }
+
 # OpenAPI/Swagger
 utoipa = { version = "4.2.3", features = ["axum_extras"] }
 utoipa-swagger-ui = { version = "7.1.0", features = ["axum"] }
 
 [dev-dependencies]
 axum-test = "15.0"
-tower = { version = "0.4" }
+tower = { version = "0.4", features = ["util"] }
 tokio = { version = "1.44.2", features = ["full"] }
 futures-util = { version = "0.3" }

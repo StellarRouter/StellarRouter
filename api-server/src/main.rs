@@ -16,7 +16,7 @@ use axum::{
     extract::DefaultBodyLimit,
     middleware::from_fn_with_state,
     routing::{get, post},
-    Router,
+    Json, Router,
 };
 use utoipa::OpenApi;
 use utoipa_swagger_ui::SwaggerUi;
@@ -99,14 +99,9 @@ async fn main() -> Result<()> {
     let app = Router::new()
         .route(
             "/api-docs/openapi.json",
-            get(|| async move { utoipa::openapi::OpenApi::to_json(&openapi::ApiDoc::openapi()) }),
+            get(|| async { Json(openapi::ApiDoc::openapi()) }),
         )
-        .merge(
-            Router::new().nest(
-                "/swagger-ui",
-                SwaggerUi::new("/swagger-ui").url("/api-docs/openapi.json", openapi::ApiDoc::openapi()),
-            ),
-        )
+        .merge(SwaggerUi::new("/swagger-ui").url("/api-docs/openapi.json", openapi::ApiDoc::openapi()))
         .route("/health", get(handlers::health))
         .nest("/", protected_routes)
         .layer(DefaultBodyLimit::max(1024 * 1024))

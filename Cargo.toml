@@ -10,6 +10,8 @@ members = [
     "contracts/router-multicall",
     "contracts/router-quote",
     "metrics",
+    "api-server",
+    "router-off-chain-common",
 ]
 
 [workspace.dependencies]

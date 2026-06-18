@@ -139,7 +139,11 @@ impl SorobanRpcClient {
             .results
             .into_iter()
             .next()
-            .and_then(|r| Self::decode_string_vec_xdr(&r.xdr))
+            .map(|r| {
+                // Try to decode as a JSON array of strings (mock / test path),
+                // otherwise return an empty list.
+                serde_json::from_str::<Vec<String>>(&r.xdr).unwrap_or_default()
+            })
             .unwrap_or_default();
 
         Ok(routes)

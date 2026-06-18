@@ -1,0 +1,38 @@
+[package]
+name = "router-off-chain-common"
+version = "0.1.0"
+edition = "2021"
+description = "Shared off-chain utilities for the stellar-router suite (auth, rate-limiting, replay protection, validation, logging)"
+
+[dependencies]
+# HTTP server / middleware
+axum = { version = "0.7.9", features = ["tokio"] }
+tokio = { version = "1.44.2", features = ["full"] }
+
+# Concurrent data structures
+dashmap = { version = "6.1.0" }
+
+# Serialization
+serde = { version = "1.0.219", features = ["derive"] }
+serde_json = { version = "1.0.140" }
+
+# Logging / tracing
+tracing = { version = "0.1.41" }
+tracing-subscriber = { version = "0.3.19", features = ["env-filter", "json"] }
+uuid = { version = "1.11.0", features = ["v4"] }
+
+# Error handling
+anyhow = { version = "1.0.98" }
+
+# HTTP client (for RPC types)
+reqwest = { version = "0.12.15", features = ["json", "rustls-tls"], default-features = false }
+
+# Async trait support
+async-trait = { version = "0.1.88" }
+
+[features]
+# Enables MockRpcClient and other test helpers
+test-utils = []
+
+[dev-dependencies]
+tokio = { version = "1.44.2", features = ["full"] }

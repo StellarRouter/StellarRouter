@@ -7,8 +7,6 @@ use crate::{
     types::{
         ErrorResponse,
         FeeEstimate,
-        RouteBreakdown,
-        RouteDetails,
         SimulateRequest,
         SimulateResponse,
         SimulationDetail,
@@ -97,7 +95,7 @@ pub async fn simulate(
     get,
     path = "/routes/{name}",
     params(
-        (name = "name", description = "Route name", location = "path", required = true, example = "example_route")
+        ("name" = String, Path, description = "Route name")
     ),
     responses(
         (status = 200, description = "Route entry", body = RouteEntryResponse),
