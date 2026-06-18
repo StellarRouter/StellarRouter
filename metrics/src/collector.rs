@@ -6,22 +6,36 @@
 //!
 //! ## Scraping strategy
 //!
-//! Soroban contracts store state in on-chain ledger entries.  The cleanest
-//! way to read that state from off-chain is to call the contract's view
-//! functions via `simulateTransaction`.  This exporter calls:
+//! - `router-core`:       `simulateTransaction` — `total_routed()`, `is_paused()`,
+//!                        `get_all_routes()` + `get_route(name)` per route.
+//! - `router-middleware`: `simulateTransaction` — `total_calls()`,
+//!                        `get_configured_routes()` + `circuit_breaker_state(route)`.
+//! - `router-registry`:  `simulateTransaction` — `get_all_names()` (total count).
+//! - `router-quote`:     `getEvents` — counts `quote_generated` and `fee_estimated`
+//!                        events emitted by the contract.
+//! - `router-execution`: `getEvents` — counts `execution_result` and `execution_error`
+//!                        events; reads `MaxRetries` config via `getLedgerEntries`.
 //!
-//! - `router-core`:       `total_routed()`, `is_paused()`, `get_all_routes()`
-//!                        + `get_route(name)` for each route
-//! - `router-middleware`: `total_calls()`, `get_configured_routes()`
-//!                        + `circuit_breaker_state(route)` for each route
-//! - `router-registry`:   `get_all_names()` (total count)
+//! ## Ledger cursor (quote + execution)
 //!
-//! Each contract scrape is timed and any error increments the
-//! `router_scrape_errors_total` counter for that contract label.
+//! `scrape_quote` and `scrape_execution` maintain a per-contract *last-processed
+//! ledger* cursor stored in memory.  On the first scrape (cursor = 0) the full
+//! event history visible in the RPC server's retention window is counted and the
+//! gauges are **set** to that baseline.  On subsequent scrapes only new events
+//! (ledger > cursor) are fetched and the gauges are **incremented** by the
+//! new-event count, avoiding redundant re-processing.
+//!
+//! **Restart limitation:** the in-memory cursor resets to 0 on process restart,
+//! so the exporter re-establishes the baseline from the RPC window on the next
+//! scrape cycle.  Prometheus will show a transient dip-then-jump if the restart
+//! occurs while events are within the retention window.
 
+use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::Instant;
 
 use anyhow::Result;
+use tokio::sync::Mutex;
 use tracing::{error, info, warn};
 
 use crate::cli::Args;
@@ -33,11 +47,18 @@ use crate::rpc::{RpcClient, SorobanRpcClient};
 pub struct Collector {
     args: Args,
     metrics: RouterMetrics,
+    /// Last-processed ledger cursor per contract, keyed as `"<scope>:<contract_id>"`.
+    /// Held in-memory; resets to 0 on restart (see module-level docs).
+    last_ledger: Arc<Mutex<HashMap<String, u32>>>,
 }
 
 impl Collector {
     pub fn new(args: Args, metrics: RouterMetrics) -> Self {
-        Self { args, metrics }
+        Self {
+            args,
+            metrics,
+            last_ledger: Arc::new(Mutex::new(HashMap::new())),
+        }
     }
 
     /// Run forever, scraping on the configured interval.
@@ -319,27 +340,57 @@ impl Collector {
     // ── router-quote ──────────────────────────────────────────────────────────
 
     /// Scrape `router-quote` by counting `quote_generated` and `fee_estimated`
-    /// events via the `getEvents` RPC and maintaining running totals.
+    /// events via `getEvents`, using an in-memory ledger cursor to avoid
+    /// reprocessing events on every cycle.
+    ///
+    /// First scrape (cursor = 0): fetches all events in the RPC retention window
+    /// and **sets** the gauges to the observed totals.  Subsequent scrapes fetch
+    /// only events newer than the cursor and **increment** the gauges.
     async fn scrape_quote(&self, client: &dyn RpcClient, contract_id: &str) -> Result<()> {
         let start = Instant::now();
         info!(contract_id, "scraping router-quote");
 
+        let start_ledger = {
+            let map = self.last_ledger.lock().await;
+            map.get(&format!("quote:{contract_id}")).copied().unwrap_or(0)
+        };
+
         let quote_events = client
-            .get_events(contract_id, &["quote_generated"], 0)
+            .get_events(contract_id, &["quote_generated"], start_ledger)
             .await?;
         let fee_events = client
-            .get_events(contract_id, &["fee_estimated"], 0)
+            .get_events(contract_id, &["fee_estimated"], start_ledger)
             .await?;
 
-        self.metrics
-            .quote_total_generated
-            .with_label_values(&[contract_id])
-            .set(quote_events.len() as f64);
+        // Advance cursor to the highest ledger seen across both event sets.
+        let max_ledger = quote_events
+            .iter()
+            .chain(fee_events.iter())
+            .map(|e| e.ledger)
+            .max()
+            .unwrap_or(start_ledger);
 
-        self.metrics
-            .quote_total_fee_estimated
-            .with_label_values(&[contract_id])
-            .set(fee_events.len() as f64);
+        let quote_count = quote_events.len() as f64;
+        let fee_count = fee_events.len() as f64;
+        let g_quote = self.metrics.quote_total_generated.with_label_values(&[contract_id]);
+        let g_fee = self.metrics.quote_total_fee_estimated.with_label_values(&[contract_id]);
+
+        if start_ledger == 0 {
+            // Baseline: set absolute counts from the full retention window.
+            g_quote.set(quote_count);
+            g_fee.set(fee_count);
+        } else {
+            // Incremental: add only the newly-observed events.
+            g_quote.inc_by(quote_count);
+            g_fee.inc_by(fee_count);
+        }
+
+        if max_ledger > start_ledger {
+            self.last_ledger
+                .lock()
+                .await
+                .insert(format!("quote:{contract_id}"), max_ledger);
+        }
 
         let elapsed = start.elapsed().as_secs_f64();
         self.metrics
@@ -352,6 +403,8 @@ impl Collector {
             elapsed_secs = elapsed,
             quote_generated = quote_events.len(),
             fee_estimated = fee_events.len(),
+            start_ledger,
+            max_ledger,
             "quote scrape done"
         );
         Ok(())
@@ -359,49 +412,76 @@ impl Collector {
 
     // ── router-execution ──────────────────────────────────────────────────────
 
-    /// Scrape `router-execution` by reading `TotalExecutions`, `TotalErrors`,
-    /// and `MaxRetries` from on-chain storage via `getLedgerEntries`.
+    /// Scrape `router-execution` via `getEvents` for execution counters and
+    /// `getLedgerEntries` for the `MaxRetries` configuration value.
     ///
-    /// The storage keys are encoded as Soroban `ContractData` XDR keys.
-    /// We use the `call_u64` simulation path as a fallback since full XDR
-    /// key construction requires the `stellar-xdr` crate.
+    /// The contract emits:
+    /// - `execution_result` — one event per completed execution (success or
+    ///   final-attempt failure after retries are exhausted).
+    /// - `execution_error`  — one event per failed execution (after all retries).
+    ///
+    /// `MaxRetries` is a configuration value written to instance storage on
+    /// initialization and updated via `set_max_retries`; it is not event-based,
+    /// so it is read directly via `getLedgerEntries`.
+    ///
+    /// Like `scrape_quote`, an in-memory ledger cursor prevents re-processing
+    /// the same events on every cycle (see module-level docs for restart semantics).
     async fn scrape_execution(&self, client: &dyn RpcClient, contract_id: &str) -> Result<()> {
         let start = Instant::now();
         info!(contract_id, "scraping router-execution");
 
-        // Build the XDR keys for the three instance-storage entries.
-        // Key format: base64(LedgerKey::ContractData { contract, key: ScVal::Symbol("..."), durability: Persistent })
-        // We encode the symbol name as a hex placeholder matching the existing
-        // encode_string_arg convention; a production deployment should use
-        // stellar-xdr to produce correct XDR.
-        let keys: Vec<String> = ["TotalExecutions", "TotalErrors", "MaxRetries"]
+        let start_ledger = {
+            let map = self.last_ledger.lock().await;
+            map.get(&format!("execution:{contract_id}")).copied().unwrap_or(0)
+        };
+
+        // Fetch execution result and error events since the last cursor.
+        let result_events = client
+            .get_events(contract_id, &["execution_result"], start_ledger)
+            .await?;
+        let error_events = client
+            .get_events(contract_id, &["execution_error"], start_ledger)
+            .await?;
+
+        // MaxRetries is a config value in instance storage, not event-based.
+        let max_retries_key = encode_contract_data_key(contract_id, "MaxRetries");
+        let max_retries_entries = client
+            .get_ledger_entries(vec![max_retries_key])
+            .await
+            .unwrap_or_default();
+        let max_retries = extract_u64_from_entry(&max_retries_entries, "MaxRetries").unwrap_or(0);
+
+        let max_ledger = result_events
             .iter()
-            .map(|k| encode_contract_data_key(contract_id, k))
-            .collect();
+            .chain(error_events.iter())
+            .map(|e| e.ledger)
+            .max()
+            .unwrap_or(start_ledger);
 
-        let entries = client.get_ledger_entries(keys).await?;
+        let exec_count = result_events.len() as f64;
+        let err_count = error_events.len() as f64;
+        let g_exec = self.metrics.execution_total_executions.with_label_values(&[contract_id]);
+        let g_err = self.metrics.execution_total_errors.with_label_values(&[contract_id]);
 
-        // Parse each entry. The value XDR is a base64-encoded ScVal::U64.
-        // We extract the numeric value from the JSON representation returned
-        // by the RPC server (which decodes XDR to JSON automatically).
-        let total_executions = extract_u64_from_entry(&entries, "TotalExecutions").unwrap_or(0);
-        let total_errors = extract_u64_from_entry(&entries, "TotalErrors").unwrap_or(0);
-        let max_retries = extract_u64_from_entry(&entries, "MaxRetries").unwrap_or(0);
-
-        self.metrics
-            .execution_total_executions
-            .with_label_values(&[contract_id])
-            .set(total_executions as f64);
-
-        self.metrics
-            .execution_total_errors
-            .with_label_values(&[contract_id])
-            .set(total_errors as f64);
+        if start_ledger == 0 {
+            g_exec.set(exec_count);
+            g_err.set(err_count);
+        } else {
+            g_exec.inc_by(exec_count);
+            g_err.inc_by(err_count);
+        }
 
         self.metrics
             .execution_max_retries
             .with_label_values(&[contract_id])
             .set(max_retries as f64);
+
+        if max_ledger > start_ledger {
+            self.last_ledger
+                .lock()
+                .await
+                .insert(format!("execution:{contract_id}"), max_ledger);
+        }
 
         let elapsed = start.elapsed().as_secs_f64();
         self.metrics
@@ -412,9 +492,11 @@ impl Collector {
         info!(
             contract_id,
             elapsed_secs = elapsed,
-            total_executions,
-            total_errors,
+            total_executions = result_events.len(),
+            total_errors = error_events.len(),
             max_retries,
+            start_ledger,
+            max_ledger,
             "execution scrape done"
         );
         Ok(())
@@ -669,20 +751,27 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_scrape_quote_counts_events() {
+    async fn test_scrape_quote_baseline_sets_gauges() {
         use crate::rpc::ContractEvent;
         let (collector, metrics) = make_collector_full("", "", "", "QUOTE_ID", "");
 
-        let make_event = |topic: &str| ContractEvent {
+        let make_event = |topic: &str, ledger: u32| ContractEvent {
             contract_id: "QUOTE_ID".to_string(),
+            ledger,
             topic: vec![serde_json::json!(topic)],
             value: serde_json::json!({}),
         };
 
         let mock = MockRpcClient::new()
-            .with_events("QUOTE_ID", "quote_generated", vec![make_event("quote_generated"), make_event("quote_generated")])
-            .with_events("QUOTE_ID", "fee_estimated", vec![make_event("fee_estimated")]);
+            .with_events("QUOTE_ID", "quote_generated", vec![
+                make_event("quote_generated", 100),
+                make_event("quote_generated", 101),
+            ])
+            .with_events("QUOTE_ID", "fee_estimated", vec![
+                make_event("fee_estimated", 102),
+            ]);
 
+        // First scrape (cursor=0) → SET to baseline.
         let ok = collector.scrape_all(&mock).await;
         assert!(ok);
 
@@ -697,50 +786,134 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_scrape_execution_reads_ledger_entries() {
-        use crate::rpc::LedgerEntry;
+    async fn test_scrape_quote_increments_on_second_scrape() {
+        use crate::rpc::ContractEvent;
+        let (collector, metrics) = make_collector_full("", "", "", "QUOTE_ID", "");
+
+        let make_event = |topic: &str, ledger: u32| ContractEvent {
+            contract_id: "QUOTE_ID".to_string(),
+            ledger,
+            topic: vec![serde_json::json!(topic)],
+            value: serde_json::json!({}),
+        };
+
+        // First scrape: 2 quote events at ledger 100.
+        let mock1 = MockRpcClient::new()
+            .with_events("QUOTE_ID", "quote_generated", vec![
+                make_event("quote_generated", 100),
+                make_event("quote_generated", 100),
+            ])
+            .with_events("QUOTE_ID", "fee_estimated", vec![]);
+        collector.scrape_all(&mock1).await;
+
+        // Second scrape: 1 new quote event at ledger 101 (cursor now at 100).
+        let mock2 = MockRpcClient::new()
+            .with_events("QUOTE_ID", "quote_generated", vec![
+                make_event("quote_generated", 101),
+            ])
+            .with_events("QUOTE_ID", "fee_estimated", vec![]);
+        let ok = collector.scrape_all(&mock2).await;
+        assert!(ok);
+
+        // Gauge should be 2 (baseline) + 1 (new) = 3.
+        assert_eq!(
+            metrics.quote_total_generated.with_label_values(&["QUOTE_ID"]).get(),
+            3.0
+        );
+    }
+
+    #[tokio::test]
+    async fn test_scrape_execution_uses_events() {
+        use crate::rpc::{ContractEvent, LedgerEntry};
         let (collector, metrics) = make_collector_full("", "", "", "", "EXEC_ID");
 
+        let make_event = |topic: &str, ledger: u32| ContractEvent {
+            contract_id: "EXEC_ID".to_string(),
+            ledger,
+            topic: vec![serde_json::json!(topic)],
+            value: serde_json::json!({}),
+        };
+
         let mock = MockRpcClient::new()
-            .with_ledger_entries(
-                "EXEC_ID:TotalExecutions",
-                vec![LedgerEntry { key: "EXEC_ID:TotalExecutions".to_string(), xdr: "42".to_string() }],
-            )
-            .with_ledger_entries(
-                "EXEC_ID:TotalErrors",
-                vec![LedgerEntry { key: "EXEC_ID:TotalErrors".to_string(), xdr: "5".to_string() }],
-            )
+            .with_events("EXEC_ID", "execution_result", vec![
+                make_event("execution_result", 200),
+                make_event("execution_result", 201),
+                make_event("execution_result", 202),
+            ])
+            .with_events("EXEC_ID", "execution_error", vec![
+                make_event("execution_error", 203),
+            ])
             .with_ledger_entries(
                 "EXEC_ID:MaxRetries",
-                vec![LedgerEntry { key: "EXEC_ID:MaxRetries".to_string(), xdr: "3".to_string() }],
+                vec![LedgerEntry {
+                    key: "EXEC_ID:MaxRetries".to_string(),
+                    xdr: "3".to_string(),
+                }],
             );
-
-        // get_ledger_entries is called once with all three keys; mock returns
-        // entries for the first key only. We need a single mock that returns all.
-        // Use a combined mock keyed on the first key.
-        let mock = MockRpcClient::new().with_ledger_entries(
-            "EXEC_ID:TotalExecutions",
-            vec![
-                LedgerEntry { key: "EXEC_ID:TotalExecutions".to_string(), xdr: "42".to_string() },
-                LedgerEntry { key: "EXEC_ID:TotalErrors".to_string(), xdr: "5".to_string() },
-                LedgerEntry { key: "EXEC_ID:MaxRetries".to_string(), xdr: "3".to_string() },
-            ],
-        );
 
         let ok = collector.scrape_all(&mock).await;
         assert!(ok);
 
         assert_eq!(
             metrics.execution_total_executions.with_label_values(&["EXEC_ID"]).get(),
-            42.0
+            3.0
         );
         assert_eq!(
             metrics.execution_total_errors.with_label_values(&["EXEC_ID"]).get(),
-            5.0
+            1.0
         );
         assert_eq!(
             metrics.execution_max_retries.with_label_values(&["EXEC_ID"]).get(),
             3.0
+        );
+    }
+
+    #[tokio::test]
+    async fn test_scrape_execution_increments_on_second_scrape() {
+        use crate::rpc::{ContractEvent, LedgerEntry};
+        let (collector, metrics) = make_collector_full("", "", "", "", "EXEC_ID");
+
+        let make_event = |topic: &str, ledger: u32| ContractEvent {
+            contract_id: "EXEC_ID".to_string(),
+            ledger,
+            topic: vec![serde_json::json!(topic)],
+            value: serde_json::json!({}),
+        };
+
+        let make_max_retries = || MockRpcClient::new()
+            .with_ledger_entries(
+                "EXEC_ID:MaxRetries",
+                vec![LedgerEntry {
+                    key: "EXEC_ID:MaxRetries".to_string(),
+                    xdr: "2".to_string(),
+                }],
+            );
+
+        // First scrape: 5 results, 1 error at ledger 300.
+        let mock1 = make_max_retries()
+            .with_events("EXEC_ID", "execution_result", (0..5).map(|_| make_event("execution_result", 300)).collect())
+            .with_events("EXEC_ID", "execution_error", vec![make_event("execution_error", 300)]);
+        collector.scrape_all(&mock1).await;
+
+        // Second scrape: 2 new results at ledger 301.
+        let mock2 = make_max_retries()
+            .with_events("EXEC_ID", "execution_result", vec![
+                make_event("execution_result", 301),
+                make_event("execution_result", 301),
+            ])
+            .with_events("EXEC_ID", "execution_error", vec![]);
+        let ok = collector.scrape_all(&mock2).await;
+        assert!(ok);
+
+        // 5 (baseline) + 2 (new) = 7
+        assert_eq!(
+            metrics.execution_total_executions.with_label_values(&["EXEC_ID"]).get(),
+            7.0
+        );
+        // 1 (baseline) + 0 (new) = 1
+        assert_eq!(
+            metrics.execution_total_errors.with_label_values(&["EXEC_ID"]).get(),
+            1.0
         );
     }
     #[test]

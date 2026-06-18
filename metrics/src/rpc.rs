@@ -58,6 +58,10 @@ pub struct ContractEvent {
     /// The contract that emitted the event.
     #[serde(rename = "contractId")]
     pub contract_id: String,
+    /// Ledger sequence number in which this event was emitted.
+    /// Defaults to 0 when absent (e.g. in test fixtures).
+    #[serde(default)]
+    pub ledger: u32,
     /// Event topic symbols (decoded from XDR).
     pub topic: Vec<serde_json::Value>,
     /// Event value (decoded from XDR).
