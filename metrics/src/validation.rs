@@ -50,6 +50,9 @@ pub fn validate_contract_id(id: &str) -> Result<(), ValidationError> {
             "contract_id must contain only alphanumeric characters",
         ));
     }
+    if !id.starts_with('C') {
+        return Err(ValidationError::new("contract_id must start with 'C'"));
+    }
     Ok(())
 }
 
@@ -102,7 +105,7 @@ mod tests {
 
     #[test]
     fn valid_contract_id() {
-        let id = "A".repeat(56);
+        let id = format!("C{}", "A".repeat(55));
         assert!(validate_contract_id(&id).is_ok());
     }
 
@@ -120,6 +123,12 @@ mod tests {
     fn contract_id_with_special_chars_rejected() {
         let id = format!("{}!", "A".repeat(55));
         assert!(validate_contract_id(&id).is_err());
+    }
+
+    #[test]
+    fn contract_id_with_g_prefix_rejected() {
+        let id = "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4";
+        assert!(validate_contract_id(id).is_err());
     }
 
     #[test]

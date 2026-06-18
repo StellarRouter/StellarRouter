@@ -9,7 +9,7 @@
 //! - `ROUTER_AUTH_ENABLED` — Set to "true" to enable authentication (default: false)
 
 use axum::{
-    extract::Request,
+    extract::{Request, State},
     http::{HeaderMap, StatusCode},
     middleware::Next,
     response::{IntoResponse, Response},
@@ -48,7 +48,7 @@ impl AuthConfig {
 
 /// Authentication middleware that validates API keys.
 pub async fn auth_middleware(
-    config: AuthConfig,
+    State(config): State<AuthConfig>,
     mut req: Request,
     next: Next,
 ) -> Result<Response, AuthError> {
@@ -63,7 +63,7 @@ pub async fn auth_middleware(
     match api_key {
         Some(key) => {
             if let Some(expected_key) = &config.api_key {
-                if key == expected_key {
+                if key == *expected_key {
                     Ok(next.run(req).await)
                 } else {
                     Err(AuthError::InvalidKey)

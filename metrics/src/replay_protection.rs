@@ -8,7 +8,7 @@
 //! - `ROUTER_NONCE_TTL_SECS` — Time-to-live for nonces in seconds (default: 3600)
 
 use axum::{
-    extract::Request,
+    extract::{Request, State},
     http::{HeaderMap, StatusCode},
     middleware::Next,
     response::{IntoResponse, Response},
@@ -157,7 +157,7 @@ impl IntoResponse for ReplayError {
 
 /// Replay attack protection middleware.
 pub async fn replay_protection_middleware(
-    cache: NonceCache,
+    State(cache): State<NonceCache>,
     req: Request,
     next: Next,
 ) -> Result<Response, ReplayError> {
