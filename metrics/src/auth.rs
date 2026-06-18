@@ -46,15 +46,19 @@ impl AuthConfig {
     }
 }
 
+use axum::{
+    extract::State,
+};
+
 /// Authentication middleware that validates API keys.
 pub async fn auth_middleware(
-    config: AuthConfig,
-    mut req: Request,
+    State(config): State<AuthConfig>,
+    req: Request,
     next: Next,
-) -> Result<Response, AuthError> {
+) -> Response {
     // Skip authentication if disabled
     if !config.enabled {
-        return Ok(next.run(req).await);
+        return next.run(req).await;
     }
 
     let headers = req.headers();
@@ -63,16 +67,16 @@ pub async fn auth_middleware(
     match api_key {
         Some(key) => {
             if let Some(expected_key) = &config.api_key {
-                if key == expected_key {
-                    Ok(next.run(req).await)
+                if key == *expected_key {
+                    next.run(req).await
                 } else {
-                    Err(AuthError::InvalidKey)
+                    AuthError::InvalidKey.into_response()
                 }
             } else {
-                Err(AuthError::Unauthorized)
+                AuthError::Unauthorized.into_response()
             }
         }
-        None => Err(AuthError::MissingKey),
+        None => AuthError::MissingKey.into_response(),
     }
 }
 

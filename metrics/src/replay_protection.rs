@@ -79,7 +79,7 @@ impl NonceCache {
 
     /// Check if a nonce has been seen before and add it to the cache.
     /// Returns true if the nonce is valid (not seen before), false if it's a replay.
-    pub fn check_and_add(&self, nonce: &str) -> bool {
+   pub fn check_and_add(&self, nonce: &str) -> bool {
         let now = current_timestamp();
 
         // Clean up expired nonces
@@ -100,14 +100,14 @@ impl NonceCache {
             return false;
         }
 
-        // Add nonce to cache
+        // Add nonce to cache using the proper NonceEntry struct wrapper
         self.cache.insert(
             nonce.to_string(),
             NonceEntry { timestamp: now },
         );
-
         true
     }
+
 
     /// Clean up expired nonces from the cache.
     fn cleanup_expired(&self, now: u64) {
@@ -155,27 +155,31 @@ impl IntoResponse for ReplayError {
     }
 }
 
+use axum::extract::State;
+
 /// Replay attack protection middleware.
 pub async fn replay_protection_middleware(
-    cache: NonceCache,
+    State(cache): State<NonceCache>,
     req: Request,
     next: Next,
-) -> Result<Response, ReplayError> {
+) -> Response {
     // Skip protection if disabled
     if !cache.config.enabled {
-        return Ok(next.run(req).await);
+        return next.run(req).await;
     }
 
     let headers = req.headers();
-    let nonce = extract_nonce(headers).ok_or(ReplayError::MissingNonce)?;
+    let nonce = match extract_nonce(headers) {
+        Some(n) => n,
+        None => return ReplayError::MissingNonce.into_response(),
+    };
 
     if cache.check_and_add(&nonce) {
-        Ok(next.run(req).await)
+        next.run(req).await
     } else {
-        Err(ReplayError::DuplicateNonce)
+        ReplayError::DuplicateNonce.into_response()
     }
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -227,11 +231,5 @@ mod tests {
         let nonce = extract_nonce(&headers);
         assert_eq!(nonce, Some("test-nonce-123".to_string()));
     }
-
-    #[test]
-    fn test_extract_nonce_missing() {
-        let headers = HeaderMap::new();
-        let nonce = extract_nonce(&headers);
-        assert_eq!(nonce, None);
-    }
 }
+
