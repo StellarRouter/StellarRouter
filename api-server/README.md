@@ -97,7 +97,11 @@ Real-time transaction status updates via WebSocket.
 export LISTEN_ADDR="127.0.0.1:8080"
 export SOROBAN_RPC_URL="https://soroban-testnet.stellar.org"
 export ROUTER_EXECUTION_CONTRACT_ID="CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4"
+export ROUTER_API_MAX_REQUESTS="60"
+export ROUTER_API_RATE_WINDOW_SECS="60"
 ```
+
+`ROUTER_API_MAX_REQUESTS` and `ROUTER_API_RATE_WINDOW_SECS` control the token-bucket limiter for protected API routes. Requests are limited by `X-API-Key` when present, otherwise by remote IP address.
 
 ### Start Server
 
@@ -121,6 +125,8 @@ docker run -p 8080:8080 \
 |----------|--------|-------------|
 | `/health` | GET | Health check |
 | `/simulate` | POST | Simulate transaction |
+| `/routes` | GET | List registered route names |
+| `/routes/:name` | GET | Fetch route details |
 | `/ws` | GET | WebSocket connection for status tracking |
 
 ## Reconnection Handling

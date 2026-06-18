@@ -1,10 +1,19 @@
-use axum::{body::Body, http::{Request, StatusCode}, routing::{get, post}, Router};
+use axum::{
+    body::Body,
+    extract::ConnectInfo,
+    http::{Request, StatusCode},
+    middleware::from_fn_with_state,
+    routing::{get, post},
+    Router,
+};
 use serde_json::{json, Value};
+use std::net::{Ipv4Addr, SocketAddr};
 use tower::ServiceExt;
 
 use crate::{
-    handlers,
     auth::AuthConfig,
+    handlers,
+    rate_limit::{rate_limit_middleware, RateLimitConfig, RateLimiter},
     state::AppState,
     types::{
         RouteDetails,
@@ -33,6 +42,36 @@ fn test_app() -> Router {
         .route("/simulate", post(handlers::simulate))
         .route("/routes/:name", get(handlers::get_route))
         .with_state(state)
+}
+
+fn rate_limited_health_app(max_requests: u32) -> Router {
+    let limiter = RateLimiter::new(RateLimitConfig {
+        max_requests,
+        window: std::time::Duration::from_secs(60),
+    });
+
+    Router::new()
+        .route("/health", get(handlers::health))
+        .route_layer(from_fn_with_state(limiter, rate_limit_middleware))
+}
+
+fn request_with_addr(path: &str, addr: SocketAddr) -> Request<Body> {
+    let mut request = Request::builder()
+        .uri(path)
+        .body(Body::empty())
+        .unwrap();
+    request.extensions_mut().insert(ConnectInfo(addr));
+    request
+}
+
+fn request_with_addr_and_api_key(path: &str, addr: SocketAddr, api_key: &str) -> Request<Body> {
+    let mut request = Request::builder()
+        .uri(path)
+        .header("x-api-key", api_key)
+        .body(Body::empty())
+        .unwrap();
+    request.extensions_mut().insert(ConnectInfo(addr));
+    request
 }
 
 async fn spawn_ws_server() -> (std::net::SocketAddr, AppState) {
@@ -220,6 +259,65 @@ async fn test_health_returns_ok_body() {
     let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
     let json: Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(json["status"], "ok");
+}
+
+#[tokio::test]
+async fn test_rate_limiter_rejects_requests_over_limit_for_same_ip() {
+    let app = rate_limited_health_app(2);
+    let addr = SocketAddr::from((Ipv4Addr::LOCALHOST, 5000));
+
+    let first = app
+        .clone()
+        .oneshot(request_with_addr("/health", addr))
+        .await
+        .unwrap();
+    assert_eq!(first.status(), StatusCode::OK);
+
+    let second = app
+        .clone()
+        .oneshot(request_with_addr("/health", addr))
+        .await
+        .unwrap();
+    assert_eq!(second.status(), StatusCode::OK);
+
+    let third = app
+        .oneshot(request_with_addr("/health", addr))
+        .await
+        .unwrap();
+    assert_eq!(third.status(), StatusCode::TOO_MANY_REQUESTS);
+    assert!(third.headers().contains_key("retry-after"));
+
+    let body = axum::body::to_bytes(third.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let json: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["error"], "rate_limit_exceeded");
+}
+
+#[tokio::test]
+async fn test_rate_limiter_uses_api_key_before_remote_ip() {
+    let app = rate_limited_health_app(1);
+    let addr = SocketAddr::from((Ipv4Addr::LOCALHOST, 5001));
+
+    let api_key_a = app
+        .clone()
+        .oneshot(request_with_addr_and_api_key("/health", addr, "key-a"))
+        .await
+        .unwrap();
+    assert_eq!(api_key_a.status(), StatusCode::OK);
+
+    let api_key_b = app
+        .clone()
+        .oneshot(request_with_addr_and_api_key("/health", addr, "key-b"))
+        .await
+        .unwrap();
+    assert_eq!(api_key_b.status(), StatusCode::OK);
+
+    let repeated_api_key_a = app
+        .oneshot(request_with_addr_and_api_key("/health", addr, "key-a"))
+        .await
+        .unwrap();
+    assert_eq!(repeated_api_key_a.status(), StatusCode::TOO_MANY_REQUESTS);
 }
 
 #[tokio::test]
