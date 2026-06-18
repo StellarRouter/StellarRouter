@@ -8,6 +8,7 @@ use axum::{
 use futures_util::{SinkExt, StreamExt};
 use futures_util::stream::FuturesUnordered;
 use serde_json::json;
+use tokio::sync::broadcast::error::RecvError;
 use tracing::{error, info, warn};
 
 use crate::{
@@ -83,34 +84,54 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                     _ => {}
                 }
             }
-            result = async {
-                for (tx_id, rx) in &mut rx_handles {
-                    if let Ok(event) = rx.try_recv() {
-                        return Some((tx_id.clone(), event));
-                    }
-                }
-                if let Some((tx_id, rx)) = rx_handles.first_mut() {
-                    match rx.recv().await {
-                        Ok(event) => Some((tx_id.clone(), event)),
-                        Err(_) => None,
-                    }
-                } else {
-                    std::future::pending().await
+            received = async {
+                // Race every subscription receiver concurrently. Using
+                // FuturesUnordered ensures an update on *any* subscribed tx_id is
+                // delivered as soon as it arrives, rather than only when the first
+                // receiver in the list happens to receive one.
+                let mut receivers: FuturesUnordered<_> = rx_handles
+                    .iter_mut()
+                    .map(|(tx_id, rx)| {
+                        let tx_id = tx_id.clone();
+                        async move { (tx_id, rx.recv().await) }
+                    })
+                    .collect();
+
+                match receivers.next().await {
+                    Some(result) => result,
+                    // No active subscriptions: park this branch so the loop is
+                    // driven solely by the inbound-message branch.
+                    None => std::future::pending().await,
                 }
             } => {
-                if let Some((_tx_id, event)) = result {
-                    let response = json!({
-                        "msg_type": "status_update",
-                        "data": {
-                            "tx_id": event.tx_id,
-                            "status": event.status,
-                            "timestamp": event.timestamp,
-                            "message": event.message,
-                        },
-                    });
+                let (sub_tx_id, recv_result) = received;
+                match recv_result {
+                    Ok(event) => {
+                        let response = json!({
+                            "msg_type": "status_update",
+                            "data": {
+                                "tx_id": event.tx_id,
+                                "status": event.status,
+                                "timestamp": event.timestamp,
+                                "message": event.message,
+                            },
+                        });
 
-                    if let Err(e) = sender.send(Message::Text(response.to_string())).await {
-                        error!("Failed to send status update: {}", e);
+                        if let Err(e) = sender.send(Message::Text(response.to_string())).await {
+                            error!("Failed to send status update: {}", e);
+                            break;
+                        }
+                    }
+                    Err(RecvError::Lagged(skipped)) => {
+                        // The receiver fell behind the broadcast buffer; it
+                        // resumes from the oldest retained event on the next poll.
+                        warn!(
+                            "WebSocket subscriber for tx_id {} lagged; {} event(s) dropped",
+                            sub_tx_id, skipped
+                        );
+                    }
+                    Err(RecvError::Closed) => {
+                        info!("Broadcast channel closed; closing WebSocket handler");
                         break;
                     }
                 }
