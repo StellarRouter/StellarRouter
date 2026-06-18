@@ -77,6 +77,13 @@ different things depending on which contract returned it.
 | `AlreadyExecuted` | 6 | `execute` or `cancel` targets an operation that has already executed. | Treat it as complete and avoid replaying the operation. |
 | `Cancelled` | 7 | `execute` or `cancel` targets an operation that has been cancelled. | Queue a new operation if the action is still needed. |
 | `DelayTooShort` | 8 | `queue` uses a delay lower than the configured minimum delay. | Use at least `min_delay()` seconds. |
+| `Expired` | 9 | `execute` is called after `eta + grace_period_seconds`. | The operation window has closed; queue a new operation. |
+| `InvalidDelay` | 10 | `initialize` or `set_min_delay` is called with `delay == 0`. | Provide a positive delay in seconds. |
+| `InvalidConfig` | 11 | `set_emergency_council` is called with `required == 0` or `required > council.len()`. | Ensure `0 < required <= council.len()`; set M > N/2 for strict majority. |
+| `NotCouncilMember` | 12 | `fast_track_approve` or `remove_council_member` targets an address not in the council. | Verify council membership with `is_council_member` before calling. |
+| `FastTrackDisabled` | 13 | `fast_track_approve` is called while fast-track is disabled. | Enable fast-track via `set_fast_track_enabled(true)` before approving. |
+| `AlreadyApproved` | 14 | A council member calls `fast_track_approve` for an op they already approved. | Each member may approve once per operation. |
+| `AlreadyMember` | 15 | `add_council_member` targets an address already in the council. | The address is already a council member; no action needed. |
 
 ### router-multicall `MulticallError`
 
@@ -501,57 +508,62 @@ Returns the middleware config for `route`.
 ## router-timelock
 
 **Contract:** `RouterTimelock`  
-**Purpose:** Delayed execution queue — all sensitive changes must wait a configurable delay.
+**Purpose:** Delayed execution queue — all sensitive changes must wait a configurable delay. An emergency council can bypass the delay via M-of-N fast-track approval.
 
 ### `initialize(admin, min_delay: u64) → Result<(), TimelockError>`
-`min_delay` must be > 0 (seconds).
+`min_delay` must be > 0 (seconds). Fast-track is disabled by default.
 
 **Errors:** `AlreadyInitialized`, `InvalidDelay`
 
 ---
 
-### `queue(proposer, description, target, delay: u64, depends_on: Vec<u64>) → Result<u64, TimelockError>`
-Queues a new operation. Returns the operation ID. `delay` must be >= `min_delay`. `depends_on` lists operation IDs that must execute first.
+### `queue(proposer, description, target, delay: u64, grace_period_seconds: u64, deps: Vec<Bytes>) → Result<Bytes, TimelockError>`
+Queues a new operation. Returns the op_id (SHA-256 of description + target + eta). `delay` must be >= `min_delay`. `grace_period_seconds` is the window after ETA during which the operation may be executed — after `eta + grace_period_seconds` the operation expires.
 
-**Errors:** `Unauthorized`, `InvalidDelay`, `NotInitialized`
+**Errors:** `Unauthorized`, `DelayTooShort`, `NotInitialized`
 
 ```bash
 stellar contract invoke --id <TIMELOCK_ID> --network testnet --source admin \
   -- queue \
   --proposer <ADMIN> --description "upgrade oracle to v2" \
-  --target <CONTRACT_ID> --delay 86400 --depends_on "[]"
+  --target <CONTRACT_ID> --delay 86400 --grace_period_seconds 86400 --deps "[]"
 ```
 
 ---
 
-### `execute(caller, op_id: u64) → Result<(), TimelockError>`
-Executes a queued operation after its ETA. All dependencies must be executed first.
+### `execute(caller, op_id: Bytes) → Result<(), TimelockError>`
+Executes a queued operation after its ETA and before its grace period expires.
 
-**Errors:** `Unauthorized`, `NotFound`, `AlreadyExecuted`, `AlreadyCancelled`, `TooEarly`, `DependencyNotMet`
-
----
-
-### `cancel(caller, op_id: u64) → Result<(), TimelockError>`
-Cancels a queued operation. Clears its dependency list.
-
-**Errors:** `Unauthorized`, `NotFound`, `AlreadyExecuted`, `AlreadyCancelled`
+**Errors:** `Unauthorized`, `NotFound`, `AlreadyExecuted`, `Cancelled`, `NotReady`, `Expired`
 
 ---
 
-### `cancel_all(admin) → Result<u32, TimelockError>`
-Cancels all pending (not executed, not cancelled) operations. Returns the count cancelled.
+### `cancel(caller, op_id: Bytes) → Result<(), TimelockError>`
+Cancels a queued operation before execution.
 
-**Errors:** `Unauthorized`, `NotInitialized`
+**Errors:** `Unauthorized`, `NotFound`, `AlreadyExecuted`, `Cancelled`
 
 ---
 
-### `get_op(op_id: u64) → Option<TimelockOp>`
+### `update_description(caller, op_id: Bytes, new_description: String) → Result<(), TimelockError>`
+Updates the description of a pending (not yet executed or cancelled) operation.
+
+**Errors:** `Unauthorized`, `NotFound`, `AlreadyExecuted`, `Cancelled`
+
+---
+
+### `get_op(op_id: Bytes) → Option<Op>`
 Returns the operation, or `None` if not found.
 
 ---
 
-### `min_delay() → Result<u64, TimelockError>`
-**Errors:** `NotInitialized`
+### `get_operation_status(op_id: Bytes) → Option<OperationStatus>`
+Returns the human-readable status (`Queued`, `Ready`, `Executed`, `Cancelled`, `Expired`), or `None` if not found.
+
+---
+
+### `min_delay() → u64`
+Returns the configured minimum delay in seconds.
 
 ---
 
@@ -569,6 +581,88 @@ Updates the minimum delay. Does not affect already-queued operations.
 
 ### `transfer_admin(current, new_admin) → Result<(), TimelockError>`
 **Errors:** `Unauthorized`, `NotInitialized`
+
+---
+
+### `get_pending_op_count() → u64`
+Returns the number of operations that are queued but not yet executed or cancelled.
+
+---
+
+## router-timelock — Emergency Council & Fast-Track
+
+The emergency council is a set of trusted addresses that can fast-track a queued
+operation without waiting for the normal ETA. Fast-track is **disabled by default**
+and should only be enabled during active emergencies.
+
+**Security invariant:** Set M (required approvals) to at least ⌈N/2⌉ + 1 (strict majority).
+Council membership can only be changed via standard (non-fast-track) admin calls.
+
+### `set_emergency_council(caller, council: Vec<Address>, required: u32) → Result<(), TimelockError>`
+Batch-replaces the council list and sets the required-approval threshold M. `required` must satisfy `0 < required <= council.len()`.
+
+**Errors:** `Unauthorized`, `InvalidConfig`, `NotInitialized`
+
+```bash
+stellar contract invoke --id <TIMELOCK_ID> --network testnet --source admin \
+  -- set_emergency_council \
+  --caller <ADMIN> --council '["<ADDR1>","<ADDR2>","<ADDR3>"]' --required 2
+```
+
+---
+
+### `add_council_member(caller, member: Address) → Result<(), TimelockError>`
+Adds a single address to the emergency council. Only the admin may call this.
+Council updates are standard (non-fast-track) calls and therefore subject to `min_delay` when queued.
+
+**Errors:** `Unauthorized`, `AlreadyMember`, `NotInitialized`
+
+---
+
+### `remove_council_member(caller, member: Address) → Result<(), TimelockError>`
+Removes a single address from the emergency council. Only the admin may call this.
+
+**Errors:** `Unauthorized`, `NotCouncilMember`, `NotInitialized`
+
+---
+
+### `fast_track_approve(member, op_id: Bytes) → Result<(), TimelockError>`
+A council member approves a queued operation for fast-track execution. Each member may approve once. When the approval count reaches `required_approvals` (M-of-N), the operation executes immediately — bypassing the normal ETA — and a `critical_fast_tracked` event is emitted.
+
+**Errors:** `FastTrackDisabled`, `NotCouncilMember`, `NotFound`, `AlreadyExecuted`, `Cancelled`, `AlreadyApproved`
+
+---
+
+### `set_fast_track_enabled(caller, enabled: bool) → Result<(), TimelockError>`
+Enables or disables the fast-track execution path. Fast-track is **disabled by default**.
+Disable again after an emergency is resolved.
+
+**Errors:** `Unauthorized`, `NotInitialized`
+
+---
+
+### `get_fast_track_enabled() → bool`
+Returns whether fast-track is currently enabled.
+
+---
+
+### `get_council() → Vec<Address>`
+Returns the current emergency council member list.
+
+---
+
+### `get_required_approvals() → u32`
+Returns M — the number of approvals required for fast-track execution.
+
+---
+
+### `is_council_member(addr: Address) → bool`
+Returns `true` if `addr` is in the emergency council.
+
+---
+
+### `get_fast_track_approvals(op_id: Bytes) → Vec<Address>`
+Returns the list of council members who have approved the given operation.
 
 ---
 
@@ -782,12 +876,19 @@ Each contract defines its own `#[contracterror]` enum. Use the tables below as t
 |---|---:|---|---|
 | `AlreadyInitialized` | `1` | `initialize` called after admin already set | Treat as already initialized |
 | `NotInitialized` | `2` | Admin checks/storage reads run before initialization | Initialize first, then retry |
-| `Unauthorized` | `3` | Non-admin tries queue/cancel/execute | Use timelock admin signer |
-| `NotFound` | `4` | Operation ID not present in storage | Verify op ID from queue event/output before acting |
+| `Unauthorized` | `3` | Non-admin tries queue/cancel/execute/council-update | Use timelock admin signer |
+| `NotFound` | `4` | Operation ID not present in storage | Verify op ID from `op_queued` event before acting |
 | `NotReady` | `5` | `execute` called before operation ETA | Wait until ETA then retry |
-| `AlreadyExecuted` | `6` | Execute/cancel attempted on operation already executed | Treat as terminal completed state |
-| `Cancelled` | `7` | Execute/cancel attempted on already-cancelled operation | Treat as terminal cancelled state |
+| `AlreadyExecuted` | `6` | Execute/cancel/fast-track-approve on an already-executed op | Treat as terminal completed state |
+| `Cancelled` | `7` | Execute/cancel/fast-track-approve on a cancelled operation | Treat as terminal cancelled state |
 | `DelayTooShort` | `8` | Queue delay is below configured `min_delay` | Submit with `delay >= min_delay` |
+| `Expired` | `9` | `execute` called after `eta + grace_period_seconds` | Operation window closed; queue a new operation |
+| `InvalidDelay` | `10` | `initialize` or `set_min_delay` called with `delay == 0` | Provide a positive non-zero delay |
+| `InvalidConfig` | `11` | `set_emergency_council` called with `required == 0` or `required > council.len()` | Ensure `0 < required <= council.len()` |
+| `NotCouncilMember` | `12` | `fast_track_approve` or `remove_council_member` caller/target not in council | Verify membership with `is_council_member` first |
+| `FastTrackDisabled` | `13` | `fast_track_approve` while fast-track is disabled | Enable with `set_fast_track_enabled(true)` first |
+| `AlreadyApproved` | `14` | Council member calls `fast_track_approve` again on the same op | Each member approves at most once per operation |
+| `AlreadyMember` | `15` | `add_council_member` targets an address already in the council | Address is already a member; no action needed |
 
 ### router-multicall (`MulticallError`)
 
