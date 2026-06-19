@@ -96,7 +96,7 @@ Role-based access control with three tiers:
 Addresses can be blacklisted to prevent them from being granted any role.
 
 **Key functions:**
-- `grant_role(caller, role, address)` / `revoke_role(caller, role, address)`
+- `grant_role(caller, role, address, expires_at)` / `revoke_role(caller, role, address)`
 - `has_role(role, address) → bool`
 - `blacklist(caller, address)` / `unblacklist(caller, address)`
 

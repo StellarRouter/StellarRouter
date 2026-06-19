@@ -194,13 +194,13 @@ stellar contract invoke --id <ACCESS_ID> -- \
 
 # 3. Grant 'admin' to a user
 stellar contract invoke --id <ACCESS_ID> -- \
-  grant_role --admin <SUPER_ADMIN> --account <USER_ADDRESS> --role "admin"
+  grant_role --caller <SUPER_ADMIN> --role "admin" --account <USER_ADDRESS>
 ```
 
 ### Inheritance Resolution
 
 Inheritance is resolved at check-time by walking up the ancestor chain:
-- `has_role(user, "viewer")` checks if the user has `viewer`, `editor`, or `admin` directly.
+- `has_role("viewer", user)` checks if the user has `viewer`, `editor`, or `admin` directly.
 - The check stops at a maximum depth of 16 to prevent gas exhaustion from deep hierarchies.
 - **Transitivity**: If A is parent of B, and B is parent of C, then A is implicitly a parent of C.
 
