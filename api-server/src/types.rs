@@ -60,6 +60,7 @@ pub struct SimulationDetail {
     pub would_succeed: bool,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RouteBreakdown {
     pub route_name: String,
@@ -116,6 +117,7 @@ pub struct SubscribeMessage {
     pub tx_id: String,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WsMessage {
     pub msg_type: String,

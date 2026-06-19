@@ -41,15 +41,18 @@ struct JsonRpcError {
 #[derive(Deserialize, Debug)]
 pub struct SimulateTransactionResult {
     #[serde(rename = "minResourceFee", default)]
+    #[allow(dead_code)]
     pub min_resource_fee: String,
     pub error: Option<String>,
     #[serde(default)]
+    #[allow(dead_code)]
     pub events: Vec<serde_json::Value>,
 }
 
 #[derive(Deserialize, Debug)]
 struct SimulateTransactionResultWithReturnValue {
     #[serde(rename = "minResourceFee", default)]
+    #[allow(dead_code)]
     pub min_resource_fee: String,
     pub error: Option<String>,
     #[serde(default)]

@@ -6,12 +6,11 @@
 //! requires `wasm32` toolchain features and complicates native builds).
 
 use anyhow::{anyhow, Context, Result};
-use async_trait::async_trait;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::time::Duration;
-use tracing::{debug, warn};
+use tracing::debug;
 
 // ── JSON-RPC request / response types ────────────────────────────────────────
 
@@ -57,12 +56,13 @@ struct GetLedgerEntriesResult {
 pub struct ContractEvent {
     /// The contract that emitted the event.
     #[serde(rename = "contractId")]
+    #[allow(dead_code)]
     pub contract_id: String,
     /// Ledger sequence number in which this event was emitted.
-    /// Defaults to 0 when absent (e.g. in test fixtures).
     #[serde(default)]
     pub ledger: u32,
     /// Event topic symbols (decoded from XDR).
+    #[allow(dead_code)]
     pub topic: Vec<serde_json::Value>,
     /// Event value (decoded from XDR).
     pub value: serde_json::Value,
@@ -242,6 +242,7 @@ impl SorobanRpcClient {
     }
 
     /// Convenience: call a view function and extract a `bool` from the result.
+    #[allow(dead_code)]
     pub async fn call_bool(&self, contract_id: &str, function_name: &str) -> Result<bool> {
         debug!(contract_id, function_name, "calling view function → bool");
         let result = self
@@ -356,6 +357,7 @@ fn extract_u64_from_sim_result(result: &Value) -> Result<u64> {
 }
 
 /// Extract a `bool` from a `simulateTransaction` result JSON value.
+#[allow(dead_code)]
 fn extract_bool_from_sim_result(result: &Value) -> Result<bool> {
     if let Some(v) = result
         .get("results")
@@ -457,6 +459,7 @@ fn hex_encode_arg(s: &str) -> String {
 ///
 /// Full XDR construction is left as an integration point; the collector uses
 /// the simulation path as a fallback.
+#[allow(dead_code)]
 pub fn instance_storage_key_xdr(_contract_id: &str) -> Result<String> {
     Err(anyhow!(
         "Direct XDR key construction not implemented. \
@@ -471,6 +474,7 @@ pub fn instance_storage_key_xdr(_contract_id: &str) -> Result<String> {
 /// Implement this trait with [`MockRpcClient`] in tests to avoid live network
 /// access, or use the real [`SorobanRpcClient`] in production.
 #[async_trait::async_trait]
+#[allow(dead_code)]
 pub trait RpcClient: Send + Sync {
     async fn call_u64(&self, contract_id: &str, function_name: &str) -> Result<u64>;
     async fn call_bool(&self, contract_id: &str, function_name: &str) -> Result<bool>;
@@ -551,7 +555,7 @@ impl RpcClient for SorobanRpcClient {
 ///     .with_u64("CONTRACT", "total_routed", 42)
 ///     .with_string_vec("CONTRACT", "get_all_routes", vec![]);
 /// ```
-#[cfg(any(test, feature = "test-utils"))]
+#[cfg(test)]
 pub struct MockRpcClient {
     u64_responses: std::collections::HashMap<(String, String), u64>,
     bool_responses: std::collections::HashMap<(String, String), bool>,
@@ -562,7 +566,7 @@ pub struct MockRpcClient {
     ledger_entries_responses: std::collections::HashMap<String, Vec<LedgerEntry>>,
 }
 
-#[cfg(any(test, feature = "test-utils"))]
+#[cfg(test)]
 impl MockRpcClient {
     pub fn new() -> Self {
         Self {
@@ -623,7 +627,7 @@ impl MockRpcClient {
     }
 }
 
-#[cfg(any(test, feature = "test-utils"))]
+#[cfg(test)]
 #[async_trait::async_trait]
 impl RpcClient for MockRpcClient {
     async fn call_u64(&self, contract_id: &str, function_name: &str) -> Result<u64> {

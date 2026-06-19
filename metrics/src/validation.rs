@@ -3,5 +3,5 @@
 //! See [`router_off_chain_common::validation`] for full documentation.
 
 pub use router_off_chain_common::validation::{
-    validate_contract_id, validate_listen_addr, validate_route_name, validate_scrape_interval,
+    validate_contract_id, validate_listen_addr, validate_scrape_interval,
 };
