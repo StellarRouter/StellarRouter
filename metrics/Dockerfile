@@ -7,6 +7,7 @@ WORKDIR /build
 COPY Cargo.toml Cargo.lock ./
 COPY contracts ./contracts
 COPY metrics ./metrics
+COPY api-server ./api-server
 
 # Build the metrics exporter
 RUN cargo build --release -p router-metrics-exporter
