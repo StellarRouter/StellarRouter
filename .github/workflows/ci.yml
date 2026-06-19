@@ -39,9 +39,6 @@ jobs:
       - name: Run tests
         run: cargo test --workspace --verbose
 
-      - name: Test router-common
-        run: cargo test -p router-common --verbose
-
       - name: Test router-metrics-exporter
         run: cargo test -p router-metrics-exporter --verbose
 
@@ -80,7 +77,6 @@ jobs:
     name: Integration Tests (Testnet)
     runs-on: ubuntu-latest
     needs: build
-    # Only run on main branch or when manually triggered
     if: github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
     steps:
       - uses: actions/checkout@v4
@@ -112,7 +108,7 @@ jobs:
         run: cargo test --test integration_tests -- --ignored --test-threads=1 --nocapture
         env:
           STELLAR_RPC_URL: https://soroban-testnet.stellar.org
-        continue-on-error: true  # Don't fail CI if testnet is unavailable
+        continue-on-error: true
 
       - name: Upload integration test results
         if: always()
@@ -127,6 +123,7 @@ jobs:
   coverage:
     name: Code Coverage
     runs-on: ubuntu-latest
+    needs: test
     steps:
       - uses: actions/checkout@v4
 
@@ -148,7 +145,13 @@ jobs:
         run: cargo install cargo-tarpaulin
 
       - name: Run cargo-tarpaulin
-        run: cargo tarpaulin --all-features --workspace --timeout 300 --out xml --output-dir ./coverage
+        run: >
+          cargo tarpaulin
+          --workspace
+          --exclude-files "contracts/*"
+          --timeout 300
+          --out xml
+          --output-dir ./coverage
 
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v4
@@ -160,14 +163,13 @@ jobs:
       - name: Check coverage threshold
         run: |
           COVERAGE=$(grep -oP 'line-rate="\K[0-9.]+' ./coverage/cobertura.xml | head -1)
-          COVERAGE_PERCENT=$(echo "$COVERAGE * 100" | bc)
-          echo "Current coverage: ${COVERAGE_PERCENT}%"
-          
-          if (( $(echo "$COVERAGE < 0.70" | bc -l) )); then
-            echo "❌ Coverage ${COVERAGE_PERCENT}% is below the 70% threshold"
+          COVERAGE_INT=$(echo "$COVERAGE" | awk '{printf "%d", $1 * 100}')
+          echo "Current coverage: ${COVERAGE_INT}%"
+          if [ "$COVERAGE_INT" -lt 70 ]; then
+            echo "❌ Coverage ${COVERAGE_INT}% is below the 70% threshold"
             exit 1
           else
-            echo "✅ Coverage ${COVERAGE_PERCENT}% meets the 70% threshold"
+            echo "✅ Coverage ${COVERAGE_INT}% meets the 70% threshold"
           fi
 
       - name: Upload coverage report

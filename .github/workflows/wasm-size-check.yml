@@ -43,36 +43,41 @@ jobs:
             "router_execution"
             "router_quote"
           )
-          
+
           BASELINE_FILE=".wasm-size-baseline.txt"
-          CURRENT_SIZES=""
           REGRESSION_DETECTED=0
-          
+
           for contract in "${CONTRACTS[@]}"; do
             WASM_FILE="target/wasm32-unknown-unknown/release/${contract}.wasm"
             if [ -f "$WASM_FILE" ]; then
-              SIZE=$(stat -f%z "$WASM_FILE" 2>/dev/null || stat -c%s "$WASM_FILE" 2>/dev/null)
-              CURRENT_SIZES+="${contract}:${SIZE}"$'\n'
-              
+              SIZE=$(stat -c%s "$WASM_FILE")
+              echo "${contract}: ${SIZE} bytes"
+
               if [ -f "$BASELINE_FILE" ]; then
-                BASELINE_SIZE=$(grep "^${contract}:" "$BASELINE_FILE" | cut -d: -f2)
+                BASELINE_SIZE=$(grep "^${contract}:" "$BASELINE_FILE" | cut -d: -f2 | tr -d ' ')
                 if [ -n "$BASELINE_SIZE" ]; then
                   INCREASE=$((SIZE - BASELINE_SIZE))
                   PERCENT=$((INCREASE * 100 / BASELINE_SIZE))
-                  
+
                   if [ $PERCENT -gt 10 ]; then
                     echo "❌ $contract: Size increased by ${PERCENT}% (${BASELINE_SIZE} → ${SIZE} bytes)"
                     REGRESSION_DETECTED=1
                   elif [ $PERCENT -gt 0 ]; then
                     echo "⚠️  $contract: Size increased by ${PERCENT}% (${BASELINE_SIZE} → ${SIZE} bytes)"
                   else
-                    echo "✅ $contract: Size decreased by $((PERCENT * -1))% (${BASELINE_SIZE} → ${SIZE} bytes)"
+                    echo "✅ $contract: No regression (${BASELINE_SIZE} → ${SIZE} bytes)"
                   fi
+                else
+                  echo "ℹ️  $contract: No baseline entry, skipping comparison"
                 fi
+              else
+                echo "ℹ️  No baseline file found, skipping comparison"
               fi
+            else
+              echo "⚠️  $contract: WASM file not found at $WASM_FILE"
             fi
           done
-          
+
           if [ $REGRESSION_DETECTED -eq 1 ]; then
             echo ""
             echo "WASM size regression detected! Contracts grew by more than 10%."
@@ -92,18 +97,18 @@ jobs:
             "router_execution"
             "router_quote"
           )
-          
+
           BASELINE_FILE=".wasm-size-baseline.txt"
           > "$BASELINE_FILE"
-          
+
           for contract in "${CONTRACTS[@]}"; do
             WASM_FILE="target/wasm32-unknown-unknown/release/${contract}.wasm"
             if [ -f "$WASM_FILE" ]; then
-              SIZE=$(stat -f%z "$WASM_FILE" 2>/dev/null || stat -c%s "$WASM_FILE" 2>/dev/null)
+              SIZE=$(stat -c%s "$WASM_FILE")
               echo "${contract}:${SIZE}" >> "$BASELINE_FILE"
             fi
           done
-          
+
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add "$BASELINE_FILE"
