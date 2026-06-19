@@ -10,7 +10,7 @@
 //! - `ROUTER_AUTH_ENABLED` — Set to "true" to enable authentication (default: false)
 
 use axum::{
-    extract::Request,
+    extract::{Request, State},
     http::{HeaderMap, StatusCode},
     middleware::Next,
     response::{IntoResponse, Response},
@@ -46,10 +46,6 @@ impl AuthConfig {
         }
     }
 }
-
-use axum::{
-    extract::State,
-};
 
 /// Authentication middleware that validates API keys.
 pub async fn auth_middleware(
@@ -160,4 +156,7 @@ mod tests {
         headers.insert("authorization", "Bearer bearer-key".parse().unwrap());
         headers.insert("x-api-key", "api-key".parse().unwrap());
 
-pub use router_off_chain_common::auth::{auth_middleware, AuthConfig};
+        let key = extract_api_key(&headers);
+        assert_eq!(key, Some("bearer-key".to_string()));
+    }
+}

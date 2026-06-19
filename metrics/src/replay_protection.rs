@@ -2,8 +2,11 @@
 //!
 //! See [`router_off_chain_common::replay_protection`] for full documentation.
 
-pub use router_off_chain_common::replay_protection::{
-    replay_protection_middleware, NonceCache, ReplayProtectionConfig,
+use axum::{
+    extract::{Request, State},
+    http::{HeaderMap, StatusCode},
+    middleware::Next,
+    response::{IntoResponse, Response},
 };
 use dashmap::DashMap;
 use std::env;
@@ -71,7 +74,7 @@ impl NonceCache {
 
     /// Check if a nonce has been seen before and add it to the cache.
     /// Returns true if the nonce is valid (not seen before), false if it's a replay.
-   pub fn check_and_add(&self, nonce: &str) -> bool {
+    pub fn check_and_add(&self, nonce: &str) -> bool {
         let now = current_timestamp();
 
         // Clean up expired nonces
@@ -92,14 +95,9 @@ impl NonceCache {
             return false;
         }
 
-        // Add nonce to cache using the proper NonceEntry struct wrapper
-        self.cache.insert(
-            nonce.to_string(),
-            NonceEntry { timestamp: now },
-        );
+        self.cache.insert(nonce.to_string(), NonceEntry { timestamp: now });
         true
     }
-
 
     /// Clean up expired nonces from the cache.
     fn cleanup_expired(&self, now: u64) {
@@ -147,8 +145,6 @@ impl IntoResponse for ReplayError {
     }
 }
 
-use axum::extract::State;
-
 /// Replay attack protection middleware.
 pub async fn replay_protection_middleware(
     State(cache): State<NonceCache>,
@@ -172,6 +168,7 @@ pub async fn replay_protection_middleware(
         ReplayError::DuplicateNonce.into_response()
     }
 }
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -212,7 +209,7 @@ mod tests {
 
         assert!(cache.check_and_add("nonce-1"));
         assert!(cache.check_and_add("nonce-2"));
-        assert!(!cache.check_and_add("nonce-3")); // Cache full
+        assert!(!cache.check_and_add("nonce-3"));
     }
 
     #[test]
@@ -224,4 +221,3 @@ mod tests {
         assert_eq!(nonce, Some("test-nonce-123".to_string()));
     }
 }
-
