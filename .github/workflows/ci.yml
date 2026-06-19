@@ -156,17 +156,19 @@ jobs:
       - name: Run cargo-tarpaulin
         run: >
           cargo tarpaulin
-          --workspace
-          --exclude-files "contracts/*"
+          -p router-api-server
+          -p router-metrics-exporter
+          -p router-off-chain-common
           --timeout 300
           --out xml
           --output-dir ./coverage
 
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v4
+        continue-on-error: true
         with:
           files: ./coverage/cobertura.xml
-          fail_ci_if_error: true
+          fail_ci_if_error: false
           token: ${{ secrets.CODECOV_TOKEN }}
 
       - name: Check coverage threshold

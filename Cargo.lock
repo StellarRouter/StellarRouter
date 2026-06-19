@@ -2086,6 +2086,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "router-execution"
+version = "0.1.0"
+dependencies = [
+ "router-common",
+ "soroban-sdk",
+]
+
+[[package]]
 name = "router-metrics-exporter"
 version = "0.1.0"
 dependencies = [

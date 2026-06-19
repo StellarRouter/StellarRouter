@@ -8,6 +8,7 @@ COPY Cargo.toml Cargo.lock ./
 COPY contracts ./contracts
 COPY metrics ./metrics
 COPY api-server ./api-server
+COPY router-off-chain-common ./router-off-chain-common
 
 # Build the metrics exporter
 RUN cargo build --release -p router-metrics-exporter
