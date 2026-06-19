@@ -281,7 +281,9 @@ impl Collector {
         // 3. Per-route call/failure counts from post_call events
         let start_ledger = {
             let map = self.last_ledger.lock().await;
-            map.get(&format!("middleware:{contract_id}")).copied().unwrap_or(0)
+            map.get(&format!("middleware:{contract_id}"))
+                .copied()
+                .unwrap_or(0)
         };
 
         let post_call_events = client
@@ -395,7 +397,9 @@ impl Collector {
 
         let start_ledger = {
             let map = self.last_ledger.lock().await;
-            map.get(&format!("quote:{contract_id}")).copied().unwrap_or(0)
+            map.get(&format!("quote:{contract_id}"))
+                .copied()
+                .unwrap_or(0)
         };
 
         let quote_events = client
@@ -415,8 +419,14 @@ impl Collector {
 
         let quote_count = quote_events.len() as f64;
         let fee_count = fee_events.len() as f64;
-        let g_quote = self.metrics.quote_total_generated.with_label_values(&[contract_id]);
-        let g_fee = self.metrics.quote_total_fee_estimated.with_label_values(&[contract_id]);
+        let g_quote = self
+            .metrics
+            .quote_total_generated
+            .with_label_values(&[contract_id]);
+        let g_fee = self
+            .metrics
+            .quote_total_fee_estimated
+            .with_label_values(&[contract_id]);
 
         // Counters can only be incremented, never set.
         // On first scrape (cursor=0), we increment by all events in the retention window.
@@ -471,7 +481,9 @@ impl Collector {
 
         let start_ledger = {
             let map = self.last_ledger.lock().await;
-            map.get(&format!("execution:{contract_id}")).copied().unwrap_or(0)
+            map.get(&format!("execution:{contract_id}"))
+                .copied()
+                .unwrap_or(0)
         };
 
         // Fetch execution result and error events since the last cursor.
@@ -499,8 +511,14 @@ impl Collector {
 
         let exec_count = result_events.len() as f64;
         let err_count = error_events.len() as f64;
-        let g_exec = self.metrics.execution_total_executions.with_label_values(&[contract_id]);
-        let g_err = self.metrics.execution_total_errors.with_label_values(&[contract_id]);
+        let g_exec = self
+            .metrics
+            .execution_total_executions
+            .with_label_values(&[contract_id]);
+        let g_err = self
+            .metrics
+            .execution_total_errors
+            .with_label_values(&[contract_id]);
 
         // Counters can only be incremented, never set.
         // On first scrape (cursor=0), we increment by all events in the retention window.
@@ -694,8 +712,11 @@ mod tests {
     async fn test_scrape_registry_empty_versions_for_name() {
         let (collector, metrics) = make_collector("", "", "REG_ID");
 
-        let mock = MockRpcClient::new()
-            .with_string_vec("REG_ID", "get_all_names", vec!["ghost".to_string()]);
+        let mock = MockRpcClient::new().with_string_vec(
+            "REG_ID",
+            "get_all_names",
+            vec!["ghost".to_string()],
+        );
         // No with_u32_vec configured → mock returns empty vec (default)
 
         let ok = collector.scrape_all(&mock).await;
@@ -733,22 +754,14 @@ mod tests {
 
         let mock = MockRpcClient::new()
             .with_u64("CORE_ID", "total_routed", 100)
-            .with_string_vec(
-                "CORE_ID",
-                "get_all_routes",
-                vec!["oracle".to_string()],
-            )
+            .with_string_vec("CORE_ID", "get_all_routes", vec!["oracle".to_string()])
             .with_simulate(
                 "CORE_ID",
                 "get_route",
                 json!({ "results": [{ "retval": { "paused": false } }] }),
             )
             .with_u64("MW_ID", "total_calls", 50)
-            .with_string_vec(
-                "MW_ID",
-                "get_configured_routes",
-                vec!["oracle".to_string()],
-            )
+            .with_string_vec("MW_ID", "get_configured_routes", vec!["oracle".to_string()])
             .with_simulate(
                 "MW_ID",
                 "circuit_breaker_state",
@@ -800,24 +813,36 @@ mod tests {
         };
 
         let mock = MockRpcClient::new()
-            .with_events("QUOTE_ID", "quote_generated", vec![
-                make_event("quote_generated", 100),
-                make_event("quote_generated", 101),
-            ])
-            .with_events("QUOTE_ID", "fee_estimated", vec![
-                make_event("fee_estimated", 102),
-            ]);
+            .with_events(
+                "QUOTE_ID",
+                "quote_generated",
+                vec![
+                    make_event("quote_generated", 100),
+                    make_event("quote_generated", 101),
+                ],
+            )
+            .with_events(
+                "QUOTE_ID",
+                "fee_estimated",
+                vec![make_event("fee_estimated", 102)],
+            );
 
         // First scrape (cursor=0) → SET to baseline.
         let ok = collector.scrape_all(&mock).await;
         assert!(ok);
 
         assert_eq!(
-            metrics.quote_total_generated.with_label_values(&["QUOTE_ID"]).get(),
+            metrics
+                .quote_total_generated
+                .with_label_values(&["QUOTE_ID"])
+                .get(),
             2.0
         );
         assert_eq!(
-            metrics.quote_total_fee_estimated.with_label_values(&["QUOTE_ID"]).get(),
+            metrics
+                .quote_total_fee_estimated
+                .with_label_values(&["QUOTE_ID"])
+                .get(),
             1.0
         );
     }
@@ -836,25 +861,34 @@ mod tests {
 
         // First scrape: 2 quote events at ledger 100.
         let mock1 = MockRpcClient::new()
-            .with_events("QUOTE_ID", "quote_generated", vec![
-                make_event("quote_generated", 100),
-                make_event("quote_generated", 100),
-            ])
+            .with_events(
+                "QUOTE_ID",
+                "quote_generated",
+                vec![
+                    make_event("quote_generated", 100),
+                    make_event("quote_generated", 100),
+                ],
+            )
             .with_events("QUOTE_ID", "fee_estimated", vec![]);
         collector.scrape_all(&mock1).await;
 
         // Second scrape: 1 new quote event at ledger 101 (cursor now at 100).
         let mock2 = MockRpcClient::new()
-            .with_events("QUOTE_ID", "quote_generated", vec![
-                make_event("quote_generated", 101),
-            ])
+            .with_events(
+                "QUOTE_ID",
+                "quote_generated",
+                vec![make_event("quote_generated", 101)],
+            )
             .with_events("QUOTE_ID", "fee_estimated", vec![]);
         let ok = collector.scrape_all(&mock2).await;
         assert!(ok);
 
         // Gauge should be 2 (baseline) + 1 (new) = 3.
         assert_eq!(
-            metrics.quote_total_generated.with_label_values(&["QUOTE_ID"]).get(),
+            metrics
+                .quote_total_generated
+                .with_label_values(&["QUOTE_ID"])
+                .get(),
             3.0
         );
     }
@@ -872,14 +906,20 @@ mod tests {
         };
 
         let mock = MockRpcClient::new()
-            .with_events("EXEC_ID", "execution_result", vec![
-                make_event("execution_result", 200),
-                make_event("execution_result", 201),
-                make_event("execution_result", 202),
-            ])
-            .with_events("EXEC_ID", "execution_error", vec![
-                make_event("execution_error", 203),
-            ])
+            .with_events(
+                "EXEC_ID",
+                "execution_result",
+                vec![
+                    make_event("execution_result", 200),
+                    make_event("execution_result", 201),
+                    make_event("execution_result", 202),
+                ],
+            )
+            .with_events(
+                "EXEC_ID",
+                "execution_error",
+                vec![make_event("execution_error", 203)],
+            )
             .with_ledger_entries(
                 "EXEC_ID:MaxRetries",
                 vec![LedgerEntry {
@@ -892,15 +932,24 @@ mod tests {
         assert!(ok);
 
         assert_eq!(
-            metrics.execution_total_executions.with_label_values(&["EXEC_ID"]).get(),
+            metrics
+                .execution_total_executions
+                .with_label_values(&["EXEC_ID"])
+                .get(),
             3.0
         );
         assert_eq!(
-            metrics.execution_total_errors.with_label_values(&["EXEC_ID"]).get(),
+            metrics
+                .execution_total_errors
+                .with_label_values(&["EXEC_ID"])
+                .get(),
             1.0
         );
         assert_eq!(
-            metrics.execution_max_retries.with_label_values(&["EXEC_ID"]).get(),
+            metrics
+                .execution_max_retries
+                .with_label_values(&["EXEC_ID"])
+                .get(),
             3.0
         );
     }
@@ -917,39 +966,60 @@ mod tests {
             value: serde_json::json!({}),
         };
 
-        let make_max_retries = || MockRpcClient::new()
-            .with_ledger_entries(
+        let make_max_retries = || {
+            MockRpcClient::new().with_ledger_entries(
                 "EXEC_ID:MaxRetries",
                 vec![LedgerEntry {
                     key: "EXEC_ID:MaxRetries".to_string(),
                     xdr: "2".to_string(),
                 }],
-            );
+            )
+        };
 
         // First scrape: 5 results, 1 error at ledger 300.
         let mock1 = make_max_retries()
-            .with_events("EXEC_ID", "execution_result", (0..5).map(|_| make_event("execution_result", 300)).collect())
-            .with_events("EXEC_ID", "execution_error", vec![make_event("execution_error", 300)]);
+            .with_events(
+                "EXEC_ID",
+                "execution_result",
+                (0..5)
+                    .map(|_| make_event("execution_result", 300))
+                    .collect(),
+            )
+            .with_events(
+                "EXEC_ID",
+                "execution_error",
+                vec![make_event("execution_error", 300)],
+            );
         collector.scrape_all(&mock1).await;
 
         // Second scrape: 2 new results at ledger 301.
         let mock2 = make_max_retries()
-            .with_events("EXEC_ID", "execution_result", vec![
-                make_event("execution_result", 301),
-                make_event("execution_result", 301),
-            ])
+            .with_events(
+                "EXEC_ID",
+                "execution_result",
+                vec![
+                    make_event("execution_result", 301),
+                    make_event("execution_result", 301),
+                ],
+            )
             .with_events("EXEC_ID", "execution_error", vec![]);
         let ok = collector.scrape_all(&mock2).await;
         assert!(ok);
 
         // 5 (baseline) + 2 (new) = 7
         assert_eq!(
-            metrics.execution_total_executions.with_label_values(&["EXEC_ID"]).get(),
+            metrics
+                .execution_total_executions
+                .with_label_values(&["EXEC_ID"])
+                .get(),
             7.0
         );
         // 1 (baseline) + 0 (new) = 1
         assert_eq!(
-            metrics.execution_total_errors.with_label_values(&["EXEC_ID"]).get(),
+            metrics
+                .execution_total_errors
+                .with_label_values(&["EXEC_ID"])
+                .get(),
             1.0
         );
     }
@@ -1016,7 +1086,10 @@ mod tests {
             topic: vec![serde_json::json!("post_call")],
             value: json!({ "route": "oracle", "success": true }),
         };
-        assert_eq!(extract_post_call_data(&event), Some(("oracle".to_string(), true)));
+        assert_eq!(
+            extract_post_call_data(&event),
+            Some(("oracle".to_string(), true))
+        );
     }
 
     #[test]
@@ -1028,7 +1101,10 @@ mod tests {
             topic: vec![serde_json::json!("post_call")],
             value: json!({ "route": "vault", "success": false }),
         };
-        assert_eq!(extract_post_call_data(&event), Some(("vault".to_string(), false)));
+        assert_eq!(
+            extract_post_call_data(&event),
+            Some(("vault".to_string(), false))
+        );
     }
 
     #[test]
@@ -1042,7 +1118,10 @@ mod tests {
                 "value": ["caller_address", "oracle", true]
             }),
         };
-        assert_eq!(extract_post_call_data(&event), Some(("oracle".to_string(), true)));
+        assert_eq!(
+            extract_post_call_data(&event),
+            Some(("oracle".to_string(), true))
+        );
     }
 
     #[test]
@@ -1072,11 +1151,15 @@ mod tests {
         let mock = MockRpcClient::new()
             .with_u64("MW_ID", "total_calls", 10)
             .with_string_vec("MW_ID", "get_configured_routes", vec!["oracle".to_string()])
-            .with_events("MW_ID", "post_call", vec![
-                make_event("oracle", true, 100),
-                make_event("oracle", true, 101),
-                make_event("oracle", false, 102),
-            ]);
+            .with_events(
+                "MW_ID",
+                "post_call",
+                vec![
+                    make_event("oracle", true, 100),
+                    make_event("oracle", true, 101),
+                    make_event("oracle", false, 102),
+                ],
+            );
 
         let ok = collector.scrape_all(&mock).await;
         assert!(ok);
@@ -1114,19 +1197,21 @@ mod tests {
         let mock1 = MockRpcClient::new()
             .with_u64("MW_ID", "total_calls", 5)
             .with_string_vec("MW_ID", "get_configured_routes", vec!["oracle".to_string()])
-            .with_events("MW_ID", "post_call", vec![
-                make_event("oracle", true, 100),
-                make_event("oracle", false, 101),
-            ]);
+            .with_events(
+                "MW_ID",
+                "post_call",
+                vec![
+                    make_event("oracle", true, 100),
+                    make_event("oracle", false, 101),
+                ],
+            );
         collector.scrape_all(&mock1).await;
 
         // Second scrape: 1 new event
         let mock2 = MockRpcClient::new()
             .with_u64("MW_ID", "total_calls", 6)
             .with_string_vec("MW_ID", "get_configured_routes", vec!["oracle".to_string()])
-            .with_events("MW_ID", "post_call", vec![
-                make_event("oracle", true, 102),
-            ]);
+            .with_events("MW_ID", "post_call", vec![make_event("oracle", true, 102)]);
         let ok = collector.scrape_all(&mock2).await;
         assert!(ok);
 
@@ -1146,9 +1231,7 @@ mod tests {
             1.0
         );
     }
-
 }
-
 
 /// Encode a plain string as a base64 XDR `ScVal::String` argument.
 ///
@@ -1208,7 +1291,7 @@ fn extract_circuit_breaker_state(val: &serde_json::Value) -> Option<(bool, u32)>
 fn extract_post_call_data(event: &crate::rpc::ContractEvent) -> Option<(String, bool)> {
     // The event value contains the post_call data as a JSON object
     let value = &event.value;
-    
+
     // Try to extract route and success from the value
     // The value may be directly the struct or wrapped in an array/object
     let route = value
@@ -1217,27 +1300,25 @@ fn extract_post_call_data(event: &crate::rpc::ContractEvent) -> Option<(String, 
         .map(|s| s.to_string())
         .or_else(|| {
             // Try nested path: value.value[1] for route (index 1 in array)
-            value.get("value")
+            value
+                .get("value")
                 .and_then(|v| v.as_array())
                 .and_then(|arr| arr.get(1))
                 .and_then(|v| v.as_str())
                 .map(|s| s.to_string())
         });
-    
-    let success = value
-        .get("success")
-        .and_then(|v| v.as_bool())
-        .or_else(|| {
-            // Try nested path: value.value[2] for success (index 2 in array)
-            value.get("value")
-                .and_then(|v| v.as_array())
-                .and_then(|arr| arr.get(2))
-                .and_then(|v| v.as_bool())
-        });
-    
+
+    let success = value.get("success").and_then(|v| v.as_bool()).or_else(|| {
+        // Try nested path: value.value[2] for success (index 2 in array)
+        value
+            .get("value")
+            .and_then(|v| v.as_array())
+            .and_then(|arr| arr.get(2))
+            .and_then(|v| v.as_bool())
+    });
+
     match (route, success) {
         (Some(r), Some(s)) => Some((r, s)),
         _ => None,
     }
 }
-

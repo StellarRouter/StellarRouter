@@ -8,10 +8,6 @@ use utoipa::OpenApi;
         crate::handlers::get_route,
         crate::handlers::list_routes,
     ),
-    info(
-        title = "Router API Server",
-        version = "0.1.0",
-    )
+    info(title = "Router API Server", version = "0.1.0",)
 )]
 pub struct ApiDoc;
-

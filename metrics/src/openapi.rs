@@ -7,9 +7,6 @@ use utoipa::OpenApi;
         crate::server::health_handler,
         crate::server::ready_handler,
     ),
-    info(
-        title = "Router Metrics Exporter API",
-        version = "0.1.0",
-    )
+    info(title = "Router Metrics Exporter API", version = "0.1.0",)
 )]
 pub struct ApiDoc;

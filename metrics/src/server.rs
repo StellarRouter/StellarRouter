@@ -46,10 +46,9 @@ pub async fn serve(listen: String, registry: Registry, limiter: RateLimiter) -> 
     let replay_config = ReplayProtectionConfig::from_env();
     let nonce_cache = NonceCache::new(replay_config);
 
-    let app = Router::new()
+    // Routes that require auth + rate limiting
+    let protected = Router::new()
         .route("/metrics", get(metrics_handler))
-        .route("/health", get(health_handler))
-        .route("/ready", get(ready_handler))
         .route("/api-docs/openapi.json", get(openapi_handler))
         .layer(middleware::from_fn_with_state(
             limiter,
@@ -62,7 +61,16 @@ pub async fn serve(listen: String, registry: Registry, limiter: RateLimiter) -> 
         .layer(middleware::from_fn_with_state(
             auth_config,
             crate::auth::auth_middleware,
-        ))
+        ));
+
+    // Health/ready probes must be reachable without credentials
+    let public = Router::new()
+        .route("/health", get(health_handler))
+        .route("/ready", get(ready_handler));
+
+    let app = Router::new()
+        .merge(protected)
+        .merge(public)
         .layer(middleware::from_fn(request_id_middleware))
         .with_state(state);
 

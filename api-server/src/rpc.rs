@@ -278,7 +278,11 @@ impl SorobanRpcClient {
         let base_fee: i64 = 100;
         let resource_fee: i64 = {
             let scaled = amount / 1_000;
-            if scaled < 100 { 100 } else { scaled }
+            if scaled < 100 {
+                100
+            } else {
+                scaled
+            }
         };
         let (surge_multiplier, high_load) = if network_load_bps >= 8_000 {
             (200u32, true)

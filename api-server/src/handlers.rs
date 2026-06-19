@@ -1,16 +1,15 @@
-use axum::{extract::{Path, State}, http::StatusCode, response::IntoResponse, Json};
+use axum::{
+    extract::{Path, State},
+    http::StatusCode,
+    response::IntoResponse,
+    Json,
+};
 use serde_json::json;
 use tracing::{error, info};
 
 use crate::{
     state::AppState,
-    types::{
-        ErrorResponse,
-        FeeEstimate,
-        SimulateRequest,
-        SimulateResponse,
-        SimulationDetail,
-    },
+    types::{ErrorResponse, FeeEstimate, SimulateRequest, SimulateResponse, SimulationDetail},
 };
 
 #[utoipa::path(
@@ -44,11 +43,12 @@ pub async fn simulate(
     State(state): State<AppState>,
     Json(req): Json<SimulateRequest>,
 ) -> Result<Json<SimulateResponse>, (StatusCode, Json<ErrorResponse>)> {
-
     if req.target.is_empty() || req.function.is_empty() {
         return Err((
             StatusCode::BAD_REQUEST,
-            Json(ErrorResponse { error: "target and function are required".to_string() }),
+            Json(ErrorResponse {
+                error: "target and function are required".to_string(),
+            }),
         ));
     }
 
@@ -56,7 +56,8 @@ pub async fn simulate(
         return Err((
             StatusCode::BAD_REQUEST,
             Json(ErrorResponse {
-                error: "target must be a 56-character Stellar contract ID starting with C".to_string(),
+                error: "target must be a 56-character Stellar contract ID starting with C"
+                    .to_string(),
             }),
         ));
     }
@@ -67,7 +68,14 @@ pub async fn simulate(
         .rpc
         .simulate(&req.target, &req.function, req.amount, req.network_load_bps)
         .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse { error: e.to_string() })))?;
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: e.to_string(),
+                }),
+            )
+        })?;
 
     Ok(Json(SimulateResponse {
         success: breakdown.would_succeed,
@@ -117,11 +125,15 @@ pub async fn get_route(
         Ok(Some(entry)) => Ok((StatusCode::OK, Json(entry))),
         Ok(None) => Err((
             StatusCode::NOT_FOUND,
-            Json(ErrorResponse { error: format!("route '{}' not found", name) }),
+            Json(ErrorResponse {
+                error: format!("route '{}' not found", name),
+            }),
         )),
         Err(e) => Err((
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ErrorResponse { error: e.to_string() }),
+            Json(ErrorResponse {
+                error: e.to_string(),
+            }),
         )),
     }
 }

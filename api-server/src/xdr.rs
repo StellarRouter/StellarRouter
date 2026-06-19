@@ -15,7 +15,7 @@ use anyhow::{anyhow, Result};
 const BASE32_ALPHA: &[u8; 32] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
 // Stellar strkey version bytes are the key type shifted left by 3 bits.
 const VERSION_CONTRACT: u8 = 2 << 3; // 0x10 → first char 'C'
-const VERSION_ACCOUNT: u8 = 6 << 3;  // 0x30 → first char 'G'
+const VERSION_ACCOUNT: u8 = 6 << 3; // 0x30 → first char 'G'
 
 /// CRC-16/XModem used by Stellar strkey checksums.
 fn crc16(data: &[u8]) -> u16 {
@@ -23,7 +23,11 @@ fn crc16(data: &[u8]) -> u16 {
     for &b in data {
         crc ^= (b as u16) << 8;
         for _ in 0..8 {
-            crc = if crc & 0x8000 != 0 { (crc << 1) ^ 0x1021 } else { crc << 1 };
+            crc = if crc & 0x8000 != 0 {
+                (crc << 1) ^ 0x1021
+            } else {
+                crc << 1
+            };
         }
     }
     crc
@@ -54,7 +58,10 @@ fn strkey_decode(s: &str) -> Result<(u8, [u8; 32])> {
         }
     }
     if decoded.len() != 35 {
-        return Err(anyhow!("strkey decoded to {} bytes, expected 35", decoded.len()));
+        return Err(anyhow!(
+            "strkey decoded to {} bytes, expected 35",
+            decoded.len()
+        ));
     }
     let version = decoded[0];
     let payload: [u8; 32] = decoded[1..33].try_into().unwrap();
@@ -116,8 +123,7 @@ pub fn encode_account_strkey(key: &[u8; 32]) -> String {
 
 // ── Base64 ───────────────────────────────────────────────────────────────────
 
-const B64: &[u8; 64] =
-    b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+const B64: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
 pub fn base64_encode(input: &[u8]) -> String {
     let mut out = String::with_capacity((input.len() + 2) / 3 * 4);
@@ -128,8 +134,16 @@ pub fn base64_encode(input: &[u8]) -> String {
         let n = (b0 << 16) | (b1 << 8) | b2;
         out.push(B64[(n >> 18 & 0x3F) as usize] as char);
         out.push(B64[(n >> 12 & 0x3F) as usize] as char);
-        out.push(if chunk.len() > 1 { B64[(n >> 6 & 0x3F) as usize] as char } else { '=' });
-        out.push(if chunk.len() > 2 { B64[(n & 0x3F) as usize] as char } else { '=' });
+        out.push(if chunk.len() > 1 {
+            B64[(n >> 6 & 0x3F) as usize] as char
+        } else {
+            '='
+        });
+        out.push(if chunk.len() > 2 {
+            B64[(n & 0x3F) as usize] as char
+        } else {
+            '='
+        });
     }
     out
 }
@@ -144,8 +158,12 @@ pub fn base64_decode(input: &str) -> Result<Vec<u8>> {
     let b = s.as_bytes();
     let mut i = 0;
     while i + 3 < b.len() {
-        let (c0, c1, c2, c3) = (lut[b[i] as usize], lut[b[i+1] as usize],
-                                 lut[b[i+2] as usize], lut[b[i+3] as usize]);
+        let (c0, c1, c2, c3) = (
+            lut[b[i] as usize],
+            lut[b[i + 1] as usize],
+            lut[b[i + 2] as usize],
+            lut[b[i + 3] as usize],
+        );
         if c0 | c1 | c2 | c3 == 0xFF {
             return Err(anyhow!("invalid base64 input"));
         }
@@ -156,13 +174,21 @@ pub fn base64_decode(input: &str) -> Result<Vec<u8>> {
     }
     match b.len() - i {
         2 => {
-            let (c0, c1) = (lut[b[i] as usize], lut[b[i+1] as usize]);
-            if c0 | c1 == 0xFF { return Err(anyhow!("invalid base64 input")); }
+            let (c0, c1) = (lut[b[i] as usize], lut[b[i + 1] as usize]);
+            if c0 | c1 == 0xFF {
+                return Err(anyhow!("invalid base64 input"));
+            }
             out.push((c0 << 2) | (c1 >> 4));
         }
         3 => {
-            let (c0, c1, c2) = (lut[b[i] as usize], lut[b[i+1] as usize], lut[b[i+2] as usize]);
-            if c0 | c1 | c2 == 0xFF { return Err(anyhow!("invalid base64 input")); }
+            let (c0, c1, c2) = (
+                lut[b[i] as usize],
+                lut[b[i + 1] as usize],
+                lut[b[i + 2] as usize],
+            );
+            if c0 | c1 | c2 == 0xFF {
+                return Err(anyhow!("invalid base64 input"));
+            }
             out.push((c0 << 2) | (c1 >> 4));
             out.push((c1 << 4) | (c2 >> 2));
         }
@@ -177,9 +203,15 @@ pub fn base64_decode(input: &str) -> Result<Vec<u8>> {
 struct XdrWriter(Vec<u8>);
 
 impl XdrWriter {
-    fn new() -> Self { Self(Vec::new()) }
-    fn u32(&mut self, v: u32)  { self.0.extend_from_slice(&v.to_be_bytes()); }
-    fn i64(&mut self, v: i64)  { self.0.extend_from_slice(&v.to_be_bytes()); }
+    fn new() -> Self {
+        Self(Vec::new())
+    }
+    fn u32(&mut self, v: u32) {
+        self.0.extend_from_slice(&v.to_be_bytes());
+    }
+    fn i64(&mut self, v: i64) {
+        self.0.extend_from_slice(&v.to_be_bytes());
+    }
 
     /// Write `data` followed by zero-padding to the next 4-byte boundary.
     fn opaque_fixed(&mut self, data: &[u8]) {
@@ -194,7 +226,9 @@ impl XdrWriter {
         self.opaque_fixed(data);
     }
 
-    fn into_bytes(self) -> Vec<u8> { self.0 }
+    fn into_bytes(self) -> Vec<u8> {
+        self.0
+    }
 }
 
 // ── XDR reader ───────────────────────────────────────────────────────────────
@@ -205,13 +239,19 @@ struct XdrReader<'a> {
 }
 
 impl<'a> XdrReader<'a> {
-    fn new(buf: &'a [u8]) -> Self { Self { buf, pos: 0 } }
+    fn new(buf: &'a [u8]) -> Self {
+        Self { buf, pos: 0 }
+    }
 
     fn take(&mut self, n: usize) -> Result<&'a [u8]> {
         let end = self.pos + n;
         if end > self.buf.len() {
-            return Err(anyhow!("XDR underflow at pos {} (need {} bytes, have {})",
-                self.pos, n, self.buf.len() - self.pos));
+            return Err(anyhow!(
+                "XDR underflow at pos {} (need {} bytes, have {})",
+                self.pos,
+                n,
+                self.buf.len() - self.pos
+            ));
         }
         let s = &self.buf[self.pos..end];
         self.pos = end;
@@ -221,7 +261,9 @@ impl<'a> XdrReader<'a> {
     fn u32(&mut self) -> Result<u32> {
         Ok(u32::from_be_bytes(self.take(4)?.try_into().unwrap()))
     }
-    fn bool(&mut self) -> Result<bool> { Ok(self.u32()? != 0) }
+    fn bool(&mut self) -> Result<bool> {
+        Ok(self.u32()? != 0)
+    }
 
     /// Read `n` data bytes plus alignment padding; returns the data slice.
     fn fixed(&mut self, n: usize) -> Result<&'a [u8]> {
@@ -245,15 +287,15 @@ impl<'a> XdrReader<'a> {
 
 // ── ScVal discriminants (Soroban protocol 21) ─────────────────────────────────
 
-const SCV_BOOL:    u32 = 0;
-const SCV_VOID:    u32 = 1;
-const SCV_STRING:  u32 = 14;
-const SCV_SYMBOL:  u32 = 15;
-const SCV_VEC:     u32 = 16;
-const SCV_MAP:     u32 = 17;
+const SCV_BOOL: u32 = 0;
+const SCV_VOID: u32 = 1;
+const SCV_STRING: u32 = 14;
+const SCV_SYMBOL: u32 = 15;
+const SCV_VEC: u32 = 16;
+const SCV_MAP: u32 = 17;
 const SCV_ADDRESS: u32 = 18;
 
-const SC_ADDR_ACCOUNT:  u32 = 0; // AccountID (PublicKey)
+const SC_ADDR_ACCOUNT: u32 = 0; // AccountID (PublicKey)
 const SC_ADDR_CONTRACT: u32 = 1; // Hash(32)
 
 // ── Transaction XDR builder ───────────────────────────────────────────────────
@@ -279,11 +321,11 @@ pub fn build_invoke_xdr(contract_hash: &[u8; 32], function: &str, args: &[ScArg]
 
     // ── Transaction ──────────────────────────────────────────────────────────
     // sourceAccount: MuxedAccount::Ed25519([0u8;32])
-    w.u32(0);                   // KEY_TYPE_ED25519
+    w.u32(0); // KEY_TYPE_ED25519
     w.opaque_fixed(&[0u8; 32]); // uint256 zero key
 
     w.u32(100); // fee (uint32 stroops)
-    w.i64(0);   // seqNum (int64)
+    w.i64(0); // seqNum (int64)
 
     // cond: Preconditions::None
     w.u32(0);
@@ -294,7 +336,7 @@ pub fn build_invoke_xdr(contract_hash: &[u8; 32], function: &str, args: &[ScArg]
     w.u32(1);
 
     // ── Operation ────────────────────────────────────────────────────────────
-    w.u32(0);  // sourceAccount: absent
+    w.u32(0); // sourceAccount: absent
     w.u32(24); // OperationType::INVOKE_HOST_FUNCTION
 
     // ── InvokeHostFunctionOp ─────────────────────────────────────────────────
@@ -357,7 +399,11 @@ pub fn parse_string_vec(xdr_b64: &str) -> Result<Vec<String>> {
     for i in 0..count {
         let t = r.u32()?;
         if t != SCV_STRING {
-            return Err(anyhow!("vec element {} has type {} (expected SCV_STRING=14)", i, t));
+            return Err(anyhow!(
+                "vec element {} has type {} (expected SCV_STRING=14)",
+                i,
+                t
+            ));
         }
         out.push(r.string()?);
     }
@@ -410,12 +456,10 @@ pub fn parse_route_entry(xdr_b64: &str) -> Result<Option<ParsedRouteEntry>> {
         let val_type = r.u32()?;
         match field_name.as_str() {
             "address" => {
-                address = read_sc_address_or_skip(&mut r, val_type)?
-                    .unwrap_or_default();
+                address = read_sc_address_or_skip(&mut r, val_type)?.unwrap_or_default();
             }
             "updated_by" => {
-                updated_by = read_sc_address_or_skip(&mut r, val_type)?
-                    .unwrap_or_default();
+                updated_by = read_sc_address_or_skip(&mut r, val_type)?.unwrap_or_default();
             }
             "name" => {
                 if val_type == SCV_STRING {
@@ -438,7 +482,12 @@ pub fn parse_route_entry(xdr_b64: &str) -> Result<Option<ParsedRouteEntry>> {
     if address.is_empty() {
         return Ok(None);
     }
-    Ok(Some(ParsedRouteEntry { address, name, paused, updated_by }))
+    Ok(Some(ParsedRouteEntry {
+        address,
+        name,
+        paused,
+        updated_by,
+    }))
 }
 
 /// Read an `ScAddress` and return it as a strkey string. If the type is
@@ -470,33 +519,57 @@ fn read_sc_address_or_skip(r: &mut XdrReader, val_type: u32) -> Result<Option<St
 fn skip_scval_body(r: &mut XdrReader, t: u32) -> Result<()> {
     match t {
         SCV_VOID => {}
-        SCV_BOOL => { r.u32()?; }
-        SCV_STRING | SCV_SYMBOL => { r.var()?; }
+        SCV_BOOL => {
+            r.u32()?;
+        }
+        SCV_STRING | SCV_SYMBOL => {
+            r.var()?;
+        }
         SCV_ADDRESS => {
             let addr_type = r.u32()?;
             match addr_type {
-                SC_ADDR_ACCOUNT => { r.u32()?; r.take(32)?; }
-                SC_ADDR_CONTRACT => { r.take(32)?; }
+                SC_ADDR_ACCOUNT => {
+                    r.u32()?;
+                    r.take(32)?;
+                }
+                SC_ADDR_CONTRACT => {
+                    r.take(32)?;
+                }
                 t => return Err(anyhow!("unknown address type {} in skip", t)),
             }
         }
         SCV_VEC => {
             if r.u32()? != 0 {
                 let n = r.u32()? as usize;
-                for _ in 0..n { skip_scval(r)?; }
+                for _ in 0..n {
+                    skip_scval(r)?;
+                }
             }
         }
         SCV_MAP => {
             if r.u32()? != 0 {
                 let n = r.u32()? as usize;
-                for _ in 0..n { skip_scval(r)?; skip_scval(r)?; }
+                for _ in 0..n {
+                    skip_scval(r)?;
+                    skip_scval(r)?;
+                }
             }
         }
-        3 | 4 => { r.u32()?; }          // U32 / I32
-        5 | 6 | 7 | 8 => { r.take(8)?; } // U64 / I64 / Timepoint / Duration
-        9 | 10 => { r.take(16)?; }        // U128 / I128
-        11 | 12 => { r.take(32)?; }       // U256 / I256
-        13 => { r.var()?; }               // Bytes
+        3 | 4 => {
+            r.u32()?;
+        } // U32 / I32
+        5 | 6 | 7 | 8 => {
+            r.take(8)?;
+        } // U64 / I64 / Timepoint / Duration
+        9 | 10 => {
+            r.take(16)?;
+        } // U128 / I128
+        11 | 12 => {
+            r.take(32)?;
+        } // U256 / I256
+        13 => {
+            r.var()?;
+        } // Bytes
         _ => return Err(anyhow!("unknown ScVal type {} in skip", t)),
     }
     Ok(())
@@ -570,8 +643,8 @@ mod tests {
         // Manually construct: SCV_VEC present [SCV_STRING "ab"]
         let mut w = XdrWriter::new();
         w.u32(SCV_VEC);
-        w.u32(1);      // present
-        w.u32(1);      // count
+        w.u32(1); // present
+        w.u32(1); // count
         w.u32(SCV_STRING);
         w.opaque_var(b"ab");
         let enc = base64_encode(&w.into_bytes());
@@ -596,12 +669,16 @@ mod tests {
         w.u32(2); // entry count
 
         // entry 0: "paused" => false
-        w.u32(SCV_SYMBOL); w.opaque_var(b"paused");
-        w.u32(SCV_BOOL);   w.u32(0);
+        w.u32(SCV_SYMBOL);
+        w.opaque_var(b"paused");
+        w.u32(SCV_BOOL);
+        w.u32(0);
 
         // entry 1: "name" => "r1"
-        w.u32(SCV_SYMBOL); w.opaque_var(b"name");
-        w.u32(SCV_STRING); w.opaque_var(b"r1");
+        w.u32(SCV_SYMBOL);
+        w.opaque_var(b"name");
+        w.u32(SCV_STRING);
+        w.opaque_var(b"r1");
 
         let enc = base64_encode(&w.into_bytes());
         // address is empty → returns None (route entry incomplete)
@@ -619,20 +696,30 @@ mod tests {
         w.u32(4); // 4 fields: address, name, paused, updated_by
 
         // "address" => contract address
-        w.u32(SCV_SYMBOL);  w.opaque_var(b"address");
-        w.u32(SCV_ADDRESS); w.u32(SC_ADDR_CONTRACT); w.opaque_fixed(&contract_hash);
+        w.u32(SCV_SYMBOL);
+        w.opaque_var(b"address");
+        w.u32(SCV_ADDRESS);
+        w.u32(SC_ADDR_CONTRACT);
+        w.opaque_fixed(&contract_hash);
 
         // "name" => "vault"
-        w.u32(SCV_SYMBOL); w.opaque_var(b"name");
-        w.u32(SCV_STRING); w.opaque_var(b"vault");
+        w.u32(SCV_SYMBOL);
+        w.opaque_var(b"name");
+        w.u32(SCV_STRING);
+        w.opaque_var(b"vault");
 
         // "paused" => true
-        w.u32(SCV_SYMBOL); w.opaque_var(b"paused");
-        w.u32(SCV_BOOL);   w.u32(1);
+        w.u32(SCV_SYMBOL);
+        w.opaque_var(b"paused");
+        w.u32(SCV_BOOL);
+        w.u32(1);
 
         // "updated_by" => contract address (all zeros)
-        w.u32(SCV_SYMBOL);  w.opaque_var(b"updated_by");
-        w.u32(SCV_ADDRESS); w.u32(SC_ADDR_CONTRACT); w.opaque_fixed(&[0u8; 32]);
+        w.u32(SCV_SYMBOL);
+        w.opaque_var(b"updated_by");
+        w.u32(SCV_ADDRESS);
+        w.u32(SC_ADDR_CONTRACT);
+        w.opaque_fixed(&[0u8; 32]);
 
         let enc = base64_encode(&w.into_bytes());
         let entry = parse_route_entry(&enc).unwrap().expect("should have entry");

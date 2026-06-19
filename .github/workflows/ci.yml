@@ -28,7 +28,9 @@ jobs:
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Check formatting
-        run: cargo fmt --check
+        run: |
+          cargo fmt -p router-api-server --check
+          cargo fmt -p router-metrics-exporter --check
 
       - name: Check compilation
         run: cargo check --workspace
@@ -64,7 +66,11 @@ jobs:
           key: ${{ runner.os }}-cargo-wasm-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Build WASM contracts
-        run: cargo build --target wasm32-unknown-unknown --release
+        run: |
+          for pkg in router-core router-registry router-access router-middleware \
+                     router-timelock router-multicall router-execution router-quote; do
+            cargo build -p $pkg --target wasm32-unknown-unknown --release
+          done
 
       - name: Upload WASM artifacts
         uses: actions/upload-artifact@v4

@@ -1,13 +1,12 @@
 mod auth;
 mod handlers;
-mod rate_limit;
 mod openapi;
+mod rate_limit;
 mod rpc;
 mod state;
 mod types;
 mod websocket;
 mod xdr;
-
 
 #[cfg(test)]
 mod tests;
@@ -34,7 +33,9 @@ use crate::{
 
 #[derive(Parser, Debug)]
 #[command(name = "router-api-server")]
-#[command(about = "API server for stellar-router with transaction simulation and WebSocket tracking")]
+#[command(
+    about = "API server for stellar-router with transaction simulation and WebSocket tracking"
+)]
 struct Args {
     /// Listen address (default: 127.0.0.1:8080)
     #[arg(long, env = "LISTEN_ADDR", default_value = "127.0.0.1:8080")]
@@ -91,10 +92,7 @@ async fn main() -> Result<()> {
         .route("/routes", get(handlers::list_routes))
         .route("/routes/:name", get(handlers::get_route))
         .route("/ws", get(websocket::ws_handler))
-        .route_layer(from_fn_with_state(
-            rate_limiter,
-            rate_limit_middleware,
-        ))
+        .route_layer(from_fn_with_state(rate_limiter, rate_limit_middleware))
         .route_layer(from_fn_with_state(auth_config, auth::auth_middleware));
 
     let app = Router::new()
@@ -102,12 +100,13 @@ async fn main() -> Result<()> {
             "/api-docs/openapi.json",
             get(|| async { Json(openapi::ApiDoc::openapi()) }),
         )
-        .merge(SwaggerUi::new("/swagger-ui").url("/api-docs/openapi.json", openapi::ApiDoc::openapi()))
+        .merge(
+            SwaggerUi::new("/swagger-ui").url("/api-docs/openapi.json", openapi::ApiDoc::openapi()),
+        )
         .route("/health", get(handlers::health))
         .nest("/", protected_routes)
         .layer(DefaultBodyLimit::max(1024 * 1024))
         .with_state(state);
-
 
     let addr: SocketAddr = args
         .listen

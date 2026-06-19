@@ -95,7 +95,8 @@ impl NonceCache {
             return false;
         }
 
-        self.cache.insert(nonce.to_string(), NonceEntry { timestamp: now });
+        self.cache
+            .insert(nonce.to_string(), NonceEntry { timestamp: now });
         true
     }
 

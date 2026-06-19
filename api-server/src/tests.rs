@@ -16,11 +16,7 @@ use crate::{
     rate_limit::{rate_limit_middleware, RateLimitConfig, RateLimiter},
     state::AppState,
     types::{
-        RouteDetails,
-        SimulateRequest,
-        SimulateResponse,
-        TransactionStatus,
-        TransactionStatusEvent,
+        RouteDetails, SimulateRequest, SimulateResponse, TransactionStatus, TransactionStatusEvent,
     },
 };
 
@@ -28,7 +24,10 @@ use crate::{
 const VALID_CONTRACT_ID: &str = "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4";
 
 fn test_app() -> Router {
-    let auth = AuthConfig { enabled: false, api_key: None };
+    let auth = AuthConfig {
+        enabled: false,
+        api_key: None,
+    };
 
     let state = AppState::new(
         // Use a localhost port that immediately refuses connections so RPC
@@ -58,10 +57,7 @@ fn rate_limited_health_app(max_requests: u32) -> Router {
 }
 
 fn request_with_addr(path: &str, addr: SocketAddr) -> Request<Body> {
-    let mut request = Request::builder()
-        .uri(path)
-        .body(Body::empty())
-        .unwrap();
+    let mut request = Request::builder().uri(path).body(Body::empty()).unwrap();
     request.extensions_mut().insert(ConnectInfo(addr));
     request
 }
@@ -80,7 +76,10 @@ async fn spawn_ws_server() -> (std::net::SocketAddr, AppState) {
     use axum::routing::get;
     use tokio::net::TcpListener;
 
-    let auth = AuthConfig { enabled: false, api_key: None };
+    let auth = AuthConfig {
+        enabled: false,
+        api_key: None,
+    };
 
     let state = AppState::new(
         "http://localhost:1".to_string(),
@@ -109,9 +108,9 @@ async fn test_ws_subscribe_broadcast_unsubscribe_and_cleanup() {
     use futures_util::{SinkExt, StreamExt};
     use serde_json::json;
     use std::time::Duration;
+    use tokio::time::timeout;
     use tokio_tungstenite::connect_async;
     use tokio_tungstenite::tungstenite::Message as TungMessage;
-    use tokio::time::timeout;
 
     let (addr, state) = spawn_ws_server().await;
     let url = format!("ws://{}/ws", addr);
@@ -121,14 +120,23 @@ async fn test_ws_subscribe_broadcast_unsubscribe_and_cleanup() {
 
     // Subscribe to tx_id "tx123"
     let subscribe = json!({ "action": "subscribe", "tx_id": "tx123" }).to_string();
-    write.send(TungMessage::Text(subscribe.into())).await.unwrap();
+    write
+        .send(TungMessage::Text(subscribe.into()))
+        .await
+        .unwrap();
 
     // Expect subscribed confirmation
-    let msg = timeout(Duration::from_secs(1), read.next()).await.unwrap().unwrap().unwrap();
+    let msg = timeout(Duration::from_secs(1), read.next())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
     if let TungMessage::Text(txt) = msg {
         let v: serde_json::Value = serde_json::from_str(&txt).unwrap();
         assert_eq!(v["msg_type"], "subscribed");
-    } else { panic!("expected text message"); }
+    } else {
+        panic!("expected text message");
+    }
 
     // Ensure subscriber count incremented
     {
@@ -146,16 +154,25 @@ async fn test_ws_subscribe_broadcast_unsubscribe_and_cleanup() {
 
     state.broadcast_status(event.clone());
 
-    let msg = timeout(Duration::from_secs(1), read.next()).await.unwrap().unwrap().unwrap();
+    let msg = timeout(Duration::from_secs(1), read.next())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
     if let TungMessage::Text(txt) = msg {
         let v: serde_json::Value = serde_json::from_str(&txt).unwrap();
         assert_eq!(v["msg_type"], "status_update");
         assert_eq!(v["data"]["tx_id"], "tx123");
-    } else { panic!("expected text message"); }
+    } else {
+        panic!("expected text message");
+    }
 
     // Unsubscribe
     let unsubscribe = json!({ "action": "unsubscribe", "tx_id": "tx123" }).to_string();
-    write.send(TungMessage::Text(unsubscribe.into())).await.unwrap();
+    write
+        .send(TungMessage::Text(unsubscribe.into()))
+        .await
+        .unwrap();
 
     // After unsubscribe, broadcast another event and expect no message
     state.broadcast_status(event);
@@ -176,9 +193,9 @@ async fn test_ws_multiple_subscriptions_and_duplicate_subscribe_counting() {
     use futures_util::{SinkExt, StreamExt};
     use serde_json::json;
     use std::time::Duration;
+    use tokio::time::timeout;
     use tokio_tungstenite::connect_async;
     use tokio_tungstenite::tungstenite::Message as TungMessage;
-    use tokio::time::timeout;
 
     let (addr, state) = spawn_ws_server().await;
     let url = format!("ws://{}/ws", addr);
@@ -190,9 +207,17 @@ async fn test_ws_multiple_subscriptions_and_duplicate_subscribe_counting() {
     let sub_a = json!({ "action": "subscribe", "tx_id": "txA" }).to_string();
     let sub_b = json!({ "action": "subscribe", "tx_id": "txB" }).to_string();
     write.send(TungMessage::Text(sub_a.into())).await.unwrap();
-    let _ = timeout(Duration::from_secs(1), read.next()).await.unwrap().unwrap().unwrap();
+    let _ = timeout(Duration::from_secs(1), read.next())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
     write.send(TungMessage::Text(sub_b.into())).await.unwrap();
-    let _ = timeout(Duration::from_secs(1), read.next()).await.unwrap().unwrap().unwrap();
+    let _ = timeout(Duration::from_secs(1), read.next())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
 
     // Broadcast events for each and ensure delivery
     let event_a = TransactionStatusEvent {
@@ -209,7 +234,11 @@ async fn test_ws_multiple_subscriptions_and_duplicate_subscribe_counting() {
     };
 
     state.broadcast_status(event_a.clone());
-    let msg = timeout(Duration::from_secs(1), read.next()).await.unwrap().unwrap().unwrap();
+    let msg = timeout(Duration::from_secs(1), read.next())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
     if let TungMessage::Text(txt) = msg {
         let v: serde_json::Value = serde_json::from_str(&txt).unwrap();
         assert_eq!(v["msg_type"], "status_update");
@@ -217,7 +246,11 @@ async fn test_ws_multiple_subscriptions_and_duplicate_subscribe_counting() {
     }
 
     state.broadcast_status(event_b.clone());
-    let msg = timeout(Duration::from_secs(1), read.next()).await.unwrap().unwrap().unwrap();
+    let msg = timeout(Duration::from_secs(1), read.next())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
     if let TungMessage::Text(txt) = msg {
         let v: serde_json::Value = serde_json::from_str(&txt).unwrap();
         assert_eq!(v["msg_type"], "status_update");
@@ -226,10 +259,21 @@ async fn test_ws_multiple_subscriptions_and_duplicate_subscribe_counting() {
 
     // Subscribe to same tx twice
     let sub_dup = json!({ "action": "subscribe", "tx_id": "dup" }).to_string();
-    write.send(TungMessage::Text(sub_dup.clone().into())).await.unwrap();
-    let _ = timeout(Duration::from_secs(1), read.next()).await.unwrap().unwrap().unwrap();
+    write
+        .send(TungMessage::Text(sub_dup.clone().into()))
+        .await
+        .unwrap();
+    let _ = timeout(Duration::from_secs(1), read.next())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
     write.send(TungMessage::Text(sub_dup.into())).await.unwrap();
-    let _ = timeout(Duration::from_secs(1), read.next()).await.unwrap().unwrap().unwrap();
+    let _ = timeout(Duration::from_secs(1), read.next())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
 
     // Count should be 2
     {
@@ -245,7 +289,12 @@ async fn test_ws_multiple_subscriptions_and_duplicate_subscribe_counting() {
 async fn test_health_returns_200() {
     let app = test_app();
     let resp = app
-        .oneshot(Request::builder().uri("/health").body(Body::empty()).unwrap())
+        .oneshot(
+            Request::builder()
+                .uri("/health")
+                .body(Body::empty())
+                .unwrap(),
+        )
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
@@ -255,10 +304,17 @@ async fn test_health_returns_200() {
 async fn test_health_returns_ok_body() {
     let app = test_app();
     let resp = app
-        .oneshot(Request::builder().uri("/health").body(Body::empty()).unwrap())
+        .oneshot(
+            Request::builder()
+                .uri("/health")
+                .body(Body::empty())
+                .unwrap(),
+        )
         .await
         .unwrap();
-    let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+    let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
     let json: Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(json["status"], "ok");
 }
@@ -361,7 +417,9 @@ async fn test_simulate_response_has_fee_fields() {
         )
         .await
         .unwrap();
-    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
     let parsed: SimulateResponse = serde_json::from_slice(&bytes).unwrap();
     assert!(parsed.estimated_fees.base_fee > 0);
     assert!(parsed.estimated_fees.total_fee >= parsed.estimated_fees.base_fee);
@@ -389,7 +447,9 @@ async fn test_simulate_surge_pricing_at_high_load() {
         )
         .await
         .unwrap();
-    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
     let parsed: SimulateResponse = serde_json::from_slice(&bytes).unwrap();
     assert!(parsed.estimated_fees.high_load);
     assert_eq!(parsed.estimated_fees.surge_multiplier, 200);
@@ -455,7 +515,9 @@ async fn test_simulate_invalid_contract_id_returns_400() {
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
-    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
     let json: Value = serde_json::from_slice(&bytes).unwrap();
     assert!(json["error"].as_str().unwrap().contains("56-character"));
 }
@@ -514,7 +576,9 @@ async fn test_get_route_returns_500_when_core_not_configured() {
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
-    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
     let json: Value = serde_json::from_slice(&bytes).unwrap();
     assert!(json["error"].is_string());
 }
@@ -531,7 +595,9 @@ async fn test_get_route_error_response_is_json() {
         )
         .await
         .unwrap();
-    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
     let json: Value = serde_json::from_slice(&bytes).unwrap();
     assert!(json.get("error").is_some());
 }
