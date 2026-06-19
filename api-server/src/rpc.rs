@@ -155,11 +155,6 @@ impl SorobanRpcClient {
             .results
             .into_iter()
             .next()
-            .map(|r| {
-                // Try to decode as a JSON array of strings (mock / test path),
-                // otherwise return an empty list.
-                serde_json::from_str::<Vec<String>>(&r.xdr).unwrap_or_default()
-            })
             .map(|r| xdr::parse_string_vec(&r.xdr))
             .transpose()?
             .unwrap_or_default();

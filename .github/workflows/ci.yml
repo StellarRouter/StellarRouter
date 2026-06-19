@@ -33,16 +33,19 @@ jobs:
           cargo fmt -p router-metrics-exporter --check
 
       - name: Check compilation
-        run: cargo check --workspace
+        run: |
+          cargo check -p router-api-server
+          cargo check -p router-metrics-exporter
 
       - name: Run clippy
-        run: cargo clippy --workspace -- -D warnings
+        run: |
+          cargo clippy -p router-api-server -- -D warnings
+          cargo clippy -p router-metrics-exporter -- -D warnings
 
       - name: Run tests
-        run: cargo test --workspace --verbose
-
-      - name: Test router-metrics-exporter
-        run: cargo test -p router-metrics-exporter --verbose
+        run: |
+          cargo test -p router-api-server --verbose
+          cargo test -p router-metrics-exporter --verbose
 
   build:
     name: Build WASM

@@ -174,7 +174,19 @@ async fn test_ws_subscribe_broadcast_unsubscribe_and_cleanup() {
         .await
         .unwrap();
 
-    // After unsubscribe, broadcast another event and expect no message
+    // Wait for unsubscribe acknowledgment before broadcasting to avoid a race
+    // between the server processing the unsubscribe and the broadcast arriving.
+    let ack = timeout(Duration::from_secs(1), read.next())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    if let TungMessage::Text(txt) = ack {
+        let v: serde_json::Value = serde_json::from_str(&txt).unwrap();
+        assert_eq!(v["msg_type"], "unsubscribed");
+    }
+
+    // After confirmed unsubscribe, broadcast another event and expect no message
     state.broadcast_status(event);
     let res = timeout(Duration::from_millis(200), read.next()).await;
     assert!(res.is_err(), "did not expect a message after unsubscribe");
