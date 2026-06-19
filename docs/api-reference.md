@@ -300,7 +300,7 @@ Deprecates every version registered under `name` in one call. Already-deprecated
 ---
 
 ### `grant_role(caller, role, target, expires_at: Option<u64>) → Result<(), AccessError>`
-Grants `role` to `target`. `expires_at` is an optional absolute ledger timestamp after which the role expires; omit it for a permanent grant. Caller must be super-admin or role admin.
+Grants `role` to `target`. `expires_at` is an optional absolute ledger timestamp after which the role expires. Caller must be super-admin or role admin.
 
 **Errors:** `Unauthorized`, `AlreadyHasRole`, `Blacklisted`
 
@@ -344,12 +344,12 @@ Removes `target` from the blacklist.
 ---
 
 ### `get_role_members(role) → Vec<Address>`
-Returns all addresses currently holding `role`, excluding revoked or expired grants.
+Returns all addresses currently holding `role`.
 
 ---
 
 ### `get_roles_for_address(addr) → Vec<String>`
-Returns all active direct roles held by `addr`.
+Returns all roles held by `addr`.
 
 ---
 
