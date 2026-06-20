@@ -8,6 +8,10 @@ description = "API server for stellar-router with transaction simulation and Web
 name = "router-api-server"
 path = "src/main.rs"
 
+[lib]
+name = "router_api_server"
+path = "src/lib.rs"
+
 [dependencies]
 axum = { version = "0.7.9", features = ["tokio", "ws"] }
 tokio = { version = "1.44.2", features = ["full"] }
