@@ -1306,6 +1306,57 @@ mod tests {
     }
 
     #[test]
+    fn test_post_call_success_resets_failure_count() {
+        let (env, admin, client) = setup();
+        let caller = Address::generate(&env);
+        let route = String::from_str(&env, "oracle/get_price");
+        // threshold 3
+        client.configure_route(&admin, &route, &0, &0, &true, &3, &0, &0);
+
+        // 2 failures
+        client.post_call(&caller, &route, &false);
+        client.post_call(&caller, &route, &false);
+        // success should reset
+        client.post_call(&caller, &route, &true);
+        
+        // 2 more failures should NOT trip it, because it was reset
+        client.post_call(&caller, &route, &false);
+        client.post_call(&caller, &route, &false);
+        
+        // Circuit should still be closed
+        assert!(client.try_pre_call(&caller, &route).is_ok());
+    }
+
+    #[test]
+    fn test_post_call_failure_increments_failure_count() {
+        let (env, admin, client) = setup();
+        let caller = Address::generate(&env);
+        let route = String::from_str(&env, "oracle/get_price");
+        // threshold 2
+        client.configure_route(&admin, &route, &0, &0, &true, &2, &0, &0);
+
+        // 1 failure - shouldn't trip
+        client.post_call(&caller, &route, &false);
+        assert!(client.try_pre_call(&caller, &route).is_ok());
+
+        // 2nd failure - should trip
+        client.post_call(&caller, &route, &false);
+        assert_eq!(client.try_pre_call(&caller, &route), Err(Ok(MiddlewareError::CircuitOpen)));
+    }
+
+    #[test]
+    fn test_post_call_opens_circuit_breaker_at_threshold() {
+        let (env, admin, client) = setup();
+        let caller = Address::generate(&env);
+        let route = String::from_str(&env, "oracle/get_price");
+        // threshold 1
+        client.configure_route(&admin, &route, &0, &0, &true, &1, &0, &0);
+
+        client.post_call(&caller, &route, &false);
+        assert_eq!(client.try_pre_call(&caller, &route), Err(Ok(MiddlewareError::CircuitOpen)));
+    }
+
+    #[test]
     fn test_get_call_log_length_zero_before_calls() {
         let (env, admin, client) = setup();
         let route = String::from_str(&env, "oracle/get_price");
@@ -1386,7 +1437,7 @@ mod tests {
 
     #[test]
     fn test_admin_getter() {
-        let (env, admin, client) = setup();
+        let (_env, admin, client) = setup();
         let retrieved_admin = client.admin();
         assert_eq!(retrieved_admin, admin);
     }
