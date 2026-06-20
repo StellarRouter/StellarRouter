@@ -1,7 +1,9 @@
 [advisories]
 vulnerability = "deny"
-unmaintained = "warn"
-unsound = "warn"
+# cargo-deny ≥0.18: unmaintained/unsound take a scope value, not a lint level.
+# "all" = report unmaintained/unsound crates across workspace and transitive deps.
+unmaintained = "all"
+unsound = "all"
 yanked = "warn"
 ignore = [
     # RUSTSEC-2024-0437: Crash in protobuf 2.x via uncontrolled recursion when
@@ -18,7 +20,9 @@ copyleft = "warn"
 allow = [
     "MIT",
     "Apache-2.0",
-    "Apache-2.0 OR MIT",
+    # Note: "Apache-2.0 OR MIT" compound expression removed — newer cargo-deny
+    # does not accept SPDX OR expressions in the allow list; the individual
+    # identifiers above already cover dual-licensed Apache-2.0/MIT crates.
     "BSD-2-Clause",
     "BSD-3-Clause",
     "ISC",
