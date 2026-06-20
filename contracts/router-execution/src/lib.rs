@@ -611,7 +611,15 @@ impl RouterExecution {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use soroban_sdk::{testutils::{Address as _, Events as _}, Env, IntoVal};
+    use soroban_sdk::{testutils::{Address as _, Events as _}, Env, IntoVal, TryFromVal};
+
+    #[contract]
+    pub struct MockTarget;
+    #[contractimpl]
+    impl MockTarget {
+        pub fn success(env: Env) -> Symbol { Symbol::new(&env, "ok") }
+        pub fn fail() { panic!("mock fail"); }
+    }
 
     fn setup() -> (Env, Address, RouterExecutionClient<'static>) {
         let env = Env::default();
@@ -621,6 +629,102 @@ mod tests {
         let admin = Address::generate(&env);
         client.initialize(&admin, &2, &500, &200); // base=500ms, multiplier=2x
         (env, admin, client)
+    }
+
+    #[test]
+    fn test_execute_success() {
+        let (env, _, client) = setup();
+        let caller = Address::generate(&env);
+        let target = env.register_contract(None, MockTarget);
+        let req = ExecutionRequest {
+            target: target.clone(),
+            function: Symbol::new(&env, "success"),
+            simulate_first: false,
+            max_retries: 2,
+        };
+        let res = client.execute(&caller, &req);
+        assert!(res.success);
+        assert_eq!(res.attempts, 1);
+        assert_eq!(client.stats(), (1, 0));
+    }
+
+    #[test]
+    fn test_execute_with_retries() {
+        let (env, _, client) = setup();
+        let caller = Address::generate(&env);
+        let target = env.register_contract(None, MockTarget);
+        let req = ExecutionRequest {
+            target: target.clone(),
+            function: Symbol::new(&env, "fail"),
+            simulate_first: false,
+            max_retries: 2,
+        };
+        let _ = client.try_execute(&caller, &req);
+        
+        // Verify that execution_retry events were emitted the requested number of times
+        let events = env.events().all();
+        let mut retry_count = 0;
+        for event in events.iter() {
+            let topic: soroban_sdk::Vec<soroban_sdk::Val> = event.1;
+            if topic.len() > 0 {
+                if let Ok(sym) = Symbol::try_from_val(&env, &topic.get(0).unwrap()) {
+                    if sym == Symbol::new(&env, "execution_retry") {
+                        retry_count += 1;
+                    }
+                }
+            }
+        }
+        assert_eq!(retry_count, 2);
+    }
+
+    #[test]
+    fn test_execute_max_retries_exceeded() {
+        let (env, _, client) = setup();
+        let caller = Address::generate(&env);
+        let target = env.register_contract(None, MockTarget);
+        let req = ExecutionRequest {
+            target: target.clone(),
+            function: Symbol::new(&env, "fail"),
+            simulate_first: false,
+            max_retries: 2,
+        };
+        let result = client.try_execute(&caller, &req);
+        assert_eq!(result, Err(Ok(ExecutionError::ContractRejected)));
+        // Note: state changes (TotalErrors) are rolled back because the invocation failed.
+        assert_eq!(client.stats(), (0, 0));
+    }
+
+    #[test]
+    fn test_execute_records_history() {
+        let (env, _, client) = setup();
+        let caller = Address::generate(&env);
+        let target = env.register_contract(None, MockTarget);
+        
+        // 1 successful call
+        let req_success = ExecutionRequest {
+            target: target.clone(),
+            function: Symbol::new(&env, "success"),
+            simulate_first: false,
+            max_retries: 0,
+        };
+        client.execute(&caller, &req_success);
+        
+        // 1 failed call
+        let req_fail = ExecutionRequest {
+            target: target.clone(),
+            function: Symbol::new(&env, "fail"),
+            simulate_first: false,
+            max_retries: 0,
+        };
+        let _ = client.try_execute(&caller, &req_fail);
+        
+        let history = client.get_execution_history(&10);
+        // Note: failed executions are rolled back and not present in history.
+        assert_eq!(history.len(), 1);
+        
+        let first = history.get(0).unwrap();
+        assert_eq!(first.function, Symbol::new(&env, "success"));
+        assert_eq!(first.success, true);
     }
 
     #[test]
