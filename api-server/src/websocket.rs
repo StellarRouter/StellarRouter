@@ -7,13 +7,19 @@ use axum::{
 };
 use futures_util::{SinkExt, StreamExt};
 use serde_json::json;
-use tokio::sync::broadcast::{error::RecvError, Receiver};
+use tokio::sync::{
+    broadcast::{error::RecvError, Receiver},
+    mpsc::Sender,
+};
 use tracing::{error, info, warn};
 
 use crate::{
     state::AppState,
     types::{SubscribeMessage, TransactionStatusEvent},
 };
+
+const DEFAULT_WS_FAN_IN_CAPACITY: usize = 1000;
+const WS_FAN_IN_CAPACITY_ENV: &str = "WS_FAN_IN_CHANNEL_CAPACITY";
 
 /// WebSocket upgrade handler
 pub async fn ws_handler(State(state): State<AppState>, ws: WebSocketUpgrade) -> impl IntoResponse {
@@ -26,7 +32,14 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
     info!("WebSocket client connected");
 
     // Fan-in channel: one relay task per subscription forwards events here.
-    let (fan_in_tx, mut fan_in_rx) = tokio::sync::mpsc::channel::<TransactionStatusEvent>(1000);
+    let fan_in_capacity = websocket_fan_in_capacity();
+    let (fan_in_tx, mut fan_in_rx) =
+        tokio::sync::mpsc::channel::<TransactionStatusEvent>(fan_in_capacity);
+    info!(
+        capacity = fan_in_capacity,
+        env = WS_FAN_IN_CAPACITY_ENV,
+        "WebSocket fan-in channel initialized"
+    );
 
     // Cancellation tokens so we can stop relay tasks on unsubscribe.
     let mut subscriptions: Vec<(String, tokio_util::sync::CancellationToken)> = Vec::new();
@@ -61,6 +74,7 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                                                     _ = cancel.cancelled() => break,
                                                     result = rx.recv() => match result {
                                                         Ok(event) if event.tx_id == tx_id_filter => {
+                                                            warn_if_fan_in_near_capacity(&fan_in, &tx_id_filter);
                                                             if fan_in.send(event).await.is_err() {
                                                                 break;
                                                             }
@@ -167,4 +181,68 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
     }
 
     info!("WebSocket handler exiting");
+}
+
+fn websocket_fan_in_capacity() -> usize {
+    parse_websocket_fan_in_capacity(std::env::var(WS_FAN_IN_CAPACITY_ENV).ok().as_deref())
+}
+
+fn parse_websocket_fan_in_capacity(value: Option<&str>) -> usize {
+    value
+        .and_then(|raw| raw.trim().parse::<usize>().ok())
+        .filter(|capacity| *capacity > 0)
+        .unwrap_or(DEFAULT_WS_FAN_IN_CAPACITY)
+}
+
+fn fan_in_warning_threshold(max_capacity: usize) -> usize {
+    (max_capacity / 10).max(1)
+}
+
+fn warn_if_fan_in_near_capacity(fan_in: &Sender<TransactionStatusEvent>, tx_id: &str) {
+    let remaining_capacity = fan_in.capacity();
+    let max_capacity = fan_in.max_capacity();
+
+    if remaining_capacity <= fan_in_warning_threshold(max_capacity) {
+        warn!(
+            tx_id = %tx_id,
+            remaining_capacity,
+            max_capacity,
+            "WebSocket fan-in channel is near capacity"
+        );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        fan_in_warning_threshold, parse_websocket_fan_in_capacity, DEFAULT_WS_FAN_IN_CAPACITY,
+    };
+
+    #[test]
+    fn parses_configured_websocket_fan_in_capacity() {
+        assert_eq!(parse_websocket_fan_in_capacity(Some("2048")), 2048);
+        assert_eq!(parse_websocket_fan_in_capacity(Some(" 64 ")), 64);
+    }
+
+    #[test]
+    fn falls_back_to_default_for_missing_or_invalid_capacity() {
+        assert_eq!(
+            parse_websocket_fan_in_capacity(None),
+            DEFAULT_WS_FAN_IN_CAPACITY
+        );
+        assert_eq!(
+            parse_websocket_fan_in_capacity(Some("0")),
+            DEFAULT_WS_FAN_IN_CAPACITY
+        );
+        assert_eq!(
+            parse_websocket_fan_in_capacity(Some("not-a-number")),
+            DEFAULT_WS_FAN_IN_CAPACITY
+        );
+    }
+
+    #[test]
+    fn warning_threshold_is_ten_percent_with_minimum_one_slot() {
+        assert_eq!(fan_in_warning_threshold(1000), 100);
+        assert_eq!(fan_in_warning_threshold(9), 1);
+    }
 }
