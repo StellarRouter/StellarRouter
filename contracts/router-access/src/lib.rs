@@ -15,6 +15,7 @@
 //! `viewer` without needing explicit grants.
 //!
 //! ## Events (following naming convention: past tense verbs in snake_case)
+//! - `role_granted` -- Role granted to address (role, account, expires_at)
 //! - `role_granted` -- Role granted to address (role, account, expiry_timestamp)
 //! - `role_revoked` -- Role revoked from address (role, target)
 //! - `role_parent_set` -- Parent role set (role, parent_role)
@@ -97,6 +98,7 @@ impl RouterAccess {
     }
 
     /// Grant a role to an address. Caller must be super-admin or role admin.
+    /// `expires_at` is an absolute ledger timestamp; `None` creates a permanent grant.
     ///
     /// Only the direct role is stored. Inherited roles are resolved at
     /// check time via [`Self::has_role`].
@@ -110,7 +112,7 @@ impl RouterAccess {
         admin: Address,
         account: Address,
         role: String,
-        expires_in: Option<u64>,
+        expires_at: Option<u64>,
     ) -> Result<(), AccessError> {
         admin.require_auth();
         Self::require_role_manager(&env, &admin, &role)?;
@@ -122,10 +124,7 @@ impl RouterAccess {
             return Err(AccessError::AlreadyHasRole);
         }
 
-        let expiry_timestamp = match expires_in {
-            Some(seconds) => env.ledger().timestamp() + seconds,
-            None => u64::MAX,
-        };
+        let expiry_timestamp = expires_at.unwrap_or(u64::MAX);
 
         // Set HasRole flag
         env.storage()
@@ -550,13 +549,13 @@ impl RouterAccess {
         admin: Address,
         accounts: Vec<Address>,
         role: String,
-        expires_in: Option<u64>,
+        expires_at: Option<u64>,
     ) -> Result<Vec<Result<(), AccessError>>, AccessError> {
         admin.require_auth();
         Self::require_role_manager(&env, &admin, &role)?;
         let mut results = Vec::new(&env);
         for account in accounts.iter() {
-            results.push_back(Self::grant_role_internal(&env, &account, &role, expires_in));
+            results.push_back(Self::grant_role_internal(&env, &account, &role, expires_at));
         }
         Ok(results)
     }
@@ -766,7 +765,7 @@ impl RouterAccess {
         env: &Env,
         account: &Address,
         role: &String,
-        expires_in: Option<u64>,
+        expires_at: Option<u64>,
     ) -> Result<(), AccessError> {
         if Self::is_blacklisted_internal(env, account) {
             return Err(AccessError::Blacklisted);
@@ -774,10 +773,7 @@ impl RouterAccess {
         if Self::has_role_internal(env, account, role) {
             return Err(AccessError::AlreadyHasRole);
         }
-        let expiry_timestamp = match expires_in {
-            Some(seconds) => env.ledger().timestamp() + seconds,
-            None => u64::MAX,
-        };
+        let expiry_timestamp = expires_at.unwrap_or(u64::MAX);
         env.storage()
             .instance()
             .set(&DataKey::HasRole(role.clone(), account.clone()), &true);
@@ -880,9 +876,10 @@ mod tests {
         let role = String::from_str(&env, "operator");
         let user = Address::generate(&env);
 
-        client.grant_role(&admin, &user, &role, &Some(10));
+        let expires_at = env.ledger().timestamp() + 10;
+        client.grant_role(&admin, &user, &role, &Some(expires_at));
 
-        env.ledger().set_timestamp(env.ledger().timestamp() + 20);
+        env.ledger().set_timestamp(expires_at + 10);
 
         assert!(!client.has_role(&role, &user));
     }
@@ -893,9 +890,10 @@ mod tests {
         let role = String::from_str(&env, "operator");
         let user = Address::generate(&env);
 
-        client.grant_role(&admin, &user, &role, &Some(1));
+        let expires_at = env.ledger().timestamp() + 1;
+        client.grant_role(&admin, &user, &role, &Some(expires_at));
 
-        env.ledger().set_timestamp(env.ledger().timestamp() + 5);
+        env.ledger().set_timestamp(expires_at + 4);
 
         assert!(!client.has_role(&role, &user));
     }
@@ -1014,6 +1012,8 @@ mod tests {
         let role = String::from_str(&env, "editor");
         let user = Address::generate(&env);
 
+        let expires_at = env.ledger().timestamp() + 100;
+        client.grant_role(&admin, &user, &role, &Some(expires_at));
         client.grant_role(&admin, &user, &role, &Some(100));
 
         client.revoke_role(&admin, &role, &user);
@@ -1212,7 +1212,7 @@ mod tests {
     #[test]
     fn test_transfer_super_admin_to_self_succeeds() {
         // Edge case: transferring to self should be a no-op but not error
-        let (env, admin, client) = setup();
+        let (_env, admin, client) = setup();
         assert!(client.try_transfer_super_admin(&admin, &admin).is_ok());
         assert_eq!(client.super_admin(), admin);
     }
@@ -1254,6 +1254,8 @@ mod tests {
         let (env, admin, client) = setup();
         let role = String::from_str(&env, "operator");
         let user = Address::generate(&env);
+        let expires_at = env.ledger().timestamp() + 9999;
+        client.grant_role(&admin, &user, &role, &Some(expires_at));
         client.grant_role(&admin, &user, &role, &Some(9999));
         assert!(client.has_role(&role, &user));
         client.expire_role(&admin, &role, &user);
@@ -1265,10 +1267,11 @@ mod tests {
         let (env, admin, client) = setup();
         let role = String::from_str(&env, "operator");
         let user = Address::generate(&env);
-        client.grant_role(&admin, &user, &role, &Some(9999));
+        let expires_at = env.ledger().timestamp() + 9999;
+        client.grant_role(&admin, &user, &role, &Some(expires_at));
         client.expire_role(&admin, &role, &user);
         assert!(client
-            .try_grant_role(&admin, &user, &role, &Some(9999))
+            .try_grant_role(&admin, &user, &role, &Some(expires_at))
             .is_ok());
         assert!(client.has_role(&role, &user));
     }
@@ -1279,7 +1282,8 @@ mod tests {
         let role = String::from_str(&env, "operator");
         let user = Address::generate(&env);
         let attacker = Address::generate(&env);
-        client.grant_role(&admin, &user, &role, &Some(9999));
+        let expires_at = env.ledger().timestamp() + 9999;
+        client.grant_role(&admin, &user, &role, &Some(expires_at));
         let result = client.try_expire_role(&attacker, &role, &user);
         assert_eq!(result, Err(Ok(AccessError::Unauthorized)));
     }
@@ -1307,12 +1311,15 @@ mod tests {
         let role = String::from_str(&env, "operator");
         let user = Address::generate(&env);
 
+        let expires_at = env.ledger().timestamp() + 10;
+        client.grant_role(&admin, &user, &role, &Some(expires_at));
         client.grant_role(&admin, &user, &role, &Some(10));
 
         let members_before = client.get_role_members(&role, &0, &50);
         assert!(members_before.contains(&user));
         assert_eq!(members_before.len(), 1);
 
+        env.ledger().set_timestamp(expires_at + 10);
         env.ledger().set_timestamp(env.ledger().timestamp() + 20);
 
         assert!(!client.has_role(&role, &user));
@@ -1405,10 +1412,10 @@ mod tests {
         let (env, admin, client) = setup();
         let role = String::from_str(&env, "operator");
         let user = Address::generate(&env);
-        let now = env.ledger().timestamp();
-        client.grant_role(&admin, &user, &role, &Some(100));
+        let expires_at = env.ledger().timestamp() + 100;
+        client.grant_role(&admin, &user, &role, &Some(expires_at));
         let expiry = client.get_role_expiry(&role, &user);
-        assert_eq!(expiry, Some(now + 100));
+        assert_eq!(expiry, Some(expires_at));
     }
 
     #[test]

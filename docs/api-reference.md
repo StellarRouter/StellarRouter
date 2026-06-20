@@ -300,7 +300,7 @@ Deprecates every version registered under `name` in one call. Already-deprecated
 ---
 
 ### `grant_role(caller, role, target, expires_at: Option<u64>) → Result<(), AccessError>`
-Grants `role` to `target`. `expires_at` is an optional ledger sequence number after which the role expires. Caller must be super-admin or role admin.
+Grants `role` to `target`. `expires_at` is an optional absolute ledger timestamp after which the role expires. Caller must be super-admin or role admin.
 
 **Errors:** `Unauthorized`, `AlreadyHasRole`, `Blacklisted`
 
