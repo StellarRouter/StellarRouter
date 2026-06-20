@@ -1,0 +1,36 @@
+[package]
+name = "router-api-server-fuzz"
+version = "0.0.1"
+edition = "2021"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+# This `[workspace]` declaration makes the fuzz crate its own workspace so that
+# cargo commands run in the repo root do not try to build libfuzzer-sys (which
+# requires nightly) as part of the main workspace.
+[workspace]
+members = ["."]
+
+[dependencies]
+libfuzzer-sys = "0.4"
+
+[dependencies.router-api-server]
+path = "../api-server"
+
+# Disable default features on the fuzz crate itself to keep compile times short.
+[[bin]]
+name = "fuzz_xdr_parse"
+path = "fuzz_targets/fuzz_xdr_parse.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_strkey_decode"
+path = "fuzz_targets/fuzz_strkey_decode.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_base64_decode"
+path = "fuzz_targets/fuzz_base64_decode.rs"
+doc = false

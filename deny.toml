@@ -1,27 +1,41 @@
+# cargo-deny configuration — requires cargo-deny >=0.18
+# Migration from old format: https://github.com/EmbarkStudios/cargo-deny/pull/611
+#
+# Removed keys (all deprecated/deleted in >=0.18):
+#   [advisories] vulnerability, [licenses] unlicensed, copyleft, deny
+
 [advisories]
-vulnerability = "deny"
-unmaintained = "warn"
-unsound = "warn"
-yanked = "warn"
+# "all" = report unmaintained/unsound crates across workspace + transitive deps.
+# In >=0.18 these fields take a scope value, not a lint level.
+unmaintained = "all"
+unsound      = "all"
+yanked       = "warn"
+ignore = [
+    # RUSTSEC-2024-0437: Crash in protobuf 2.x via uncontrolled recursion when
+    # parsing deeply-nested externally-supplied data.  In this project protobuf
+    # is the internal intermediate format for prometheus metrics serialisation
+    # (registry.gather() → TextEncoder) and is never used to parse external
+    # input.  The vulnerability cannot be triggered in this usage.
+    { id = "RUSTSEC-2024-0437", reason = "protobuf only serialises internal metrics; no external protobuf input is ever parsed" },
+    # Unmaintained indirect deps pulled in by prometheus / utoipa:
+    { id = "RUSTSEC-2024-0436", reason = "paste is an unmaintained indirect dep with no known vulnerability" },
+    { id = "RUSTSEC-2024-0370", reason = "proc-macro-error is an unmaintained indirect dep with no known vulnerability" },
+    { id = "RUSTSEC-2026-0173", reason = "proc-macro-error2 is an unmaintained indirect dep with no known vulnerability" },
+]
 
 [licenses]
-unlicensed = "deny"
-copyleft = "warn"
+# In >=0.18, `unlicensed`, `copyleft`, and `deny` are removed.
+# Only `allow` is used; anything not listed here is flagged.
 allow = [
     "MIT",
     "Apache-2.0",
-    "Apache-2.0 OR MIT",
     "BSD-2-Clause",
     "BSD-3-Clause",
     "ISC",
     "Unicode-DFS-2016",
-]
-deny = [
-    "GPL-2.0",
-    "GPL-3.0",
-    "AGPL-3.0",
+    "Unicode-3.0",
 ]
 
 [bans]
 multiple-versions = "warn"
-wildcards = "warn"
+wildcards        = "warn"
