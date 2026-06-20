@@ -3,6 +3,14 @@ vulnerability = "deny"
 unmaintained = "warn"
 unsound = "warn"
 yanked = "warn"
+ignore = [
+    # RUSTSEC-2024-0437: Crash in protobuf 2.x via uncontrolled recursion when
+    # parsing deeply-nested externally-supplied data.  In this project protobuf
+    # is the internal intermediate format for prometheus metrics serialisation
+    # (registry.gather() → TextEncoder) and is never used to parse external
+    # input.  The vulnerability cannot be triggered in this usage.
+    { id = "RUSTSEC-2024-0437", reason = "protobuf only serialises internal metrics; no external protobuf input is ever parsed" },
+]
 
 [licenses]
 unlicensed = "deny"
