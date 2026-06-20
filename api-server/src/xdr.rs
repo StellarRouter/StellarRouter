@@ -126,7 +126,7 @@ pub fn encode_account_strkey(key: &[u8; 32]) -> String {
 const B64: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
 pub fn base64_encode(input: &[u8]) -> String {
-    let mut out = String::with_capacity((input.len() + 2) / 3 * 4);
+    let mut out = String::with_capacity(input.len().div_ceil(3) * 4);
     for chunk in input.chunks(3) {
         let b0 = chunk[0] as u32;
         let b1 = chunk.get(1).copied().unwrap_or(0) as u32;
@@ -217,7 +217,7 @@ impl XdrWriter {
     fn opaque_fixed(&mut self, data: &[u8]) {
         self.0.extend_from_slice(data);
         let pad = data.len().wrapping_neg() & 3;
-        self.0.extend(std::iter::repeat(0).take(pad));
+        self.0.extend(std::iter::repeat_n(0, pad));
     }
 
     /// Write a 4-byte length prefix, then `opaque_fixed(data)`.
@@ -558,7 +558,7 @@ fn skip_scval_body(r: &mut XdrReader, t: u32) -> Result<()> {
         3 | 4 => {
             r.u32()?;
         } // U32 / I32
-        5 | 6 | 7 | 8 => {
+        5..=8 => {
             r.take(8)?;
         } // U64 / I64 / Timepoint / Duration
         9 | 10 => {

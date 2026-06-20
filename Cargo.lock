@@ -2062,6 +2062,7 @@ dependencies = [
  "serde_json",
  "tokio",
  "tokio-tungstenite 0.26.2",
+ "tokio-util",
  "tower 0.4.13",
  "tracing",
  "tracing-subscriber",
@@ -2078,6 +2079,14 @@ dependencies = [
 
 [[package]]
 name = "router-core"
+version = "0.1.0"
+dependencies = [
+ "router-common",
+ "soroban-sdk",
+]
+
+[[package]]
+name = "router-execution"
 version = "0.1.0"
 dependencies = [
  "router-common",
@@ -3017,6 +3026,7 @@ dependencies = [
  "bytes",
  "futures-core",
  "futures-sink",
+ "futures-util",
  "pin-project-lite",
  "tokio",
 ]

@@ -6,15 +6,15 @@
 //!
 //! ## Scraping strategy
 //!
-//! - `router-core`:       `simulateTransaction` — `total_routed()`, `is_paused()`,
-//!                        `get_all_routes()` + `get_route(name)` per route.
+//! - `router-core`: `simulateTransaction` — `total_routed()`, `is_paused()`,
+//!   `get_all_routes()` + `get_route(name)` per route.
 //! - `router-middleware`: `simulateTransaction` — `total_calls()`,
-//!                        `get_configured_routes()` + `circuit_breaker_state(route)`.
-//! - `router-registry`:  `simulateTransaction` — `get_all_names()` (total count).
-//! - `router-quote`:     `getEvents` — counts `quote_generated` and `fee_estimated`
-//!                        events emitted by the contract.
+//!   `get_configured_routes()` + `circuit_breaker_state(route)`.
+//! - `router-registry`: `simulateTransaction` — `get_all_names()` (total count).
+//! - `router-quote`: `getEvents` — counts `quote_generated` and `fee_estimated`
+//!   events emitted by the contract.
 //! - `router-execution`: `getEvents` — counts `execution_result` and `execution_error`
-//!                        events; reads `MaxRetries` config via `getLedgerEntries`.
+//!   events; reads `MaxRetries` config via `getLedgerEntries`.
 //!
 //! ## Ledger cursor (quote + execution)
 //!

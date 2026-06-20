@@ -22,6 +22,7 @@ dashmap = { version = "6.1.0" }
 futures-util = { version = "0.3" }
 clap = { version = "4.5.37", features = ["derive", "env"] }
 async-trait = { version = "0.1.88" }
+tokio-util = { version = "0.7", features = ["rt"] }
 
 # Shared off-chain utilities
 router-off-chain-common = { path = "../router-off-chain-common" }

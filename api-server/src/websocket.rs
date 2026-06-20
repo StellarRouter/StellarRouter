@@ -5,10 +5,9 @@ use axum::{
     },
     response::IntoResponse,
 };
-use futures_util::stream::FuturesUnordered;
 use futures_util::{SinkExt, StreamExt};
 use serde_json::json;
-use tokio::sync::broadcast::error::RecvError;
+use tokio::sync::broadcast::{error::RecvError, Receiver};
 use tracing::{error, info, warn};
 
 use crate::{
@@ -26,14 +25,17 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
 
     info!("WebSocket client connected");
 
-    let mut subscriptions: Vec<String> = Vec::new();
-    let mut rx_handles: Vec<(
-        String,
-        tokio::sync::broadcast::Receiver<TransactionStatusEvent>,
-    )> = Vec::new();
+    // Fan-in channel: one relay task per subscription forwards events here.
+    let (fan_in_tx, mut fan_in_rx) = tokio::sync::mpsc::channel::<TransactionStatusEvent>(1000);
+
+    // Cancellation tokens so we can stop relay tasks on unsubscribe.
+    let mut subscriptions: Vec<(String, tokio_util::sync::CancellationToken)> = Vec::new();
 
     loop {
         tokio::select! {
+            biased; // always drain inbound client messages before outbound events
+
+            // ── inbound client messages ──────────────────────────────────────
             msg = receiver.next() => {
                 match msg {
                     Some(Ok(Message::Text(text))) => {
@@ -41,10 +43,44 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                             Ok(sub_msg) => {
                                 if sub_msg.action == "subscribe" {
                                     info!("Client subscribed to tx_id: {}", sub_msg.tx_id);
-                                    subscriptions.push(sub_msg.tx_id.clone());
-                                    state.add_subscriber(sub_msg.tx_id.clone());
-                                    let rx = state.tx_status_tx.subscribe();
-                                    rx_handles.push((sub_msg.tx_id.clone(), rx));
+
+                                    let already = subscriptions.iter().any(|(id, _)| id == &sub_msg.tx_id);
+                                    if !already {
+                                        let cancel = tokio_util::sync::CancellationToken::new();
+                                        subscriptions.push((sub_msg.tx_id.clone(), cancel.clone()));
+                                        state.add_subscriber(sub_msg.tx_id.clone());
+
+                                        let mut rx: Receiver<TransactionStatusEvent> =
+                                            state.tx_status_tx.subscribe();
+                                        let tx_id_filter = sub_msg.tx_id.clone();
+                                        let fan_in = fan_in_tx.clone();
+                                        tokio::spawn(async move {
+                                            loop {
+                                                tokio::select! {
+                                                    biased;
+                                                    _ = cancel.cancelled() => break,
+                                                    result = rx.recv() => match result {
+                                                        Ok(event) if event.tx_id == tx_id_filter => {
+                                                            if fan_in.send(event).await.is_err() {
+                                                                break;
+                                                            }
+                                                        }
+                                                        Ok(_) => {}
+                                                        Err(RecvError::Lagged(n)) => {
+                                                            warn!(
+                                                                "WS relay for {} lagged ({} skipped)",
+                                                                tx_id_filter, n
+                                                            );
+                                                        }
+                                                        Err(RecvError::Closed) => break,
+                                                    }
+                                                }
+                                            }
+                                        });
+                                    } else {
+                                        // Duplicate subscribe: bump counter only.
+                                        state.add_subscriber(sub_msg.tx_id.clone());
+                                    }
 
                                     let response = json!({
                                         "msg_type": "subscribed",
@@ -54,15 +90,35 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                                         },
                                     });
 
-                                    if let Err(e) = sender.send(Message::Text(response.to_string())).await {
+                                    if let Err(e) = sender
+                                        .send(Message::Text(response.to_string()))
+                                        .await
+                                    {
                                         error!("Failed to send subscription confirmation: {}", e);
                                         break;
                                     }
                                 } else if sub_msg.action == "unsubscribe" {
                                     info!("Client unsubscribed from tx_id: {}", sub_msg.tx_id);
-                                    subscriptions.retain(|id| id != &sub_msg.tx_id);
+
+                                    if let Some(pos) = subscriptions.iter().position(|(id, _)| id == &sub_msg.tx_id) {
+                                        let (_, cancel) = subscriptions.remove(pos);
+                                        cancel.cancel();
+                                    }
                                     state.remove_subscriber(&sub_msg.tx_id);
-                                    rx_handles.retain(|(id, _)| id != &sub_msg.tx_id);
+
+                                    // Send ack so the client can synchronize before
+                                    // checking that no further events arrive.
+                                    let response = json!({
+                                        "msg_type": "unsubscribed",
+                                        "data": { "tx_id": sub_msg.tx_id },
+                                    });
+                                    if let Err(e) = sender
+                                        .send(Message::Text(response.to_string()))
+                                        .await
+                                    {
+                                        error!("Failed to send unsubscribe ack: {}", e);
+                                        break;
+                                    }
                                 }
                             }
                             Err(e) => {
@@ -72,7 +128,8 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                     }
                     Some(Ok(Message::Close(_))) | None => {
                         info!("WebSocket client disconnected");
-                        for tx_id in &subscriptions {
+                        for (tx_id, cancel) in &subscriptions {
+                            cancel.cancel();
                             state.remove_subscriber(tx_id);
                         }
                         break;
@@ -84,54 +141,24 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                     _ => {}
                 }
             }
-            received = async {
-                // Race every subscription receiver concurrently. Using
-                // FuturesUnordered ensures an update on *any* subscribed tx_id is
-                // delivered as soon as it arrives, rather than only when the first
-                // receiver in the list happens to receive one.
-                let mut receivers: FuturesUnordered<_> = rx_handles
-                    .iter_mut()
-                    .map(|(tx_id, rx)| {
-                        let tx_id = tx_id.clone();
-                        async move { (tx_id, rx.recv().await) }
-                    })
-                    .collect();
 
-                match receivers.next().await {
-                    Some(result) => result,
-                    // No active subscriptions: park this branch so the loop is
-                    // driven solely by the inbound-message branch.
-                    None => std::future::pending().await,
-                }
-            } => {
-                let (sub_tx_id, recv_result) = received;
-                match recv_result {
-                    Ok(event) => {
-                        let response = json!({
-                            "msg_type": "status_update",
-                            "data": {
-                                "tx_id": event.tx_id,
-                                "status": event.status,
-                                "timestamp": event.timestamp,
-                                "message": event.message,
-                            },
-                        });
+            // ── outbound events from relay tasks ─────────────────────────────
+            Some(event) = fan_in_rx.recv() => {
+                // Guard: only forward if the subscription is still active.
+                let still_subscribed = subscriptions.iter().any(|(id, _)| id == &event.tx_id);
+                if still_subscribed {
+                    let response = json!({
+                        "msg_type": "status_update",
+                        "data": {
+                            "tx_id": event.tx_id,
+                            "status": event.status,
+                            "timestamp": event.timestamp,
+                            "message": event.message,
+                        },
+                    });
 
-                        if let Err(e) = sender.send(Message::Text(response.to_string())).await {
-                            error!("Failed to send status update: {}", e);
-                            break;
-                        }
-                    }
-                    Err(RecvError::Lagged(skipped)) => {
-                        // The receiver fell behind the broadcast buffer; it
-                        // resumes from the oldest retained event on the next poll.
-                        warn!(
-                            "WebSocket subscriber for tx_id {} lagged; {} event(s) dropped",
-                            sub_tx_id, skipped
-                        );
-                    }
-                    Err(RecvError::Closed) => {
-                        info!("Broadcast channel closed; closing WebSocket handler");
+                    if let Err(e) = sender.send(Message::Text(response.to_string())).await {
+                        error!("Failed to send status update: {}", e);
                         break;
                     }
                 }

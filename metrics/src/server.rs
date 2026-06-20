@@ -21,6 +21,7 @@ use axum::{
 };
 use prometheus::{Encoder, Registry, TextEncoder};
 use std::net::SocketAddr;
+use tokio::net::TcpListener;
 use tracing::{info, info_span, Instrument};
 
 use crate::auth::AuthConfig;
@@ -66,7 +67,8 @@ pub async fn serve(listen: String, registry: Registry, limiter: RateLimiter) -> 
     // Health/ready probes must be reachable without credentials
     let public = Router::new()
         .route("/health", get(health_handler))
-        .route("/ready", get(ready_handler));
+        .route("/ready", get(ready_handler))
+        .with_state(state.clone());
 
     let app = Router::new()
         .merge(protected)
@@ -75,13 +77,16 @@ pub async fn serve(listen: String, registry: Registry, limiter: RateLimiter) -> 
         .with_state(state);
 
     info!(%addr, "HTTP server listening");
-    let listener = tokio::net::TcpListener::bind(addr)
+    let listener = TcpListener::bind(addr)
         .await
         .with_context(|| format!("failed to bind to {addr}"))?;
 
-    axum::serve(listener, app)
-        .await
-        .context("HTTP server error")?;
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .await
+    .context("HTTP server error")?;
 
     Ok(())
 }

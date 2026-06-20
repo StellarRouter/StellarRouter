@@ -16,8 +16,6 @@
 //! - `contract_deprecated` — Contract version deprecated (contract_name, version)
 //! - `admin_transferred` — Admin transferred (old_admin, new_admin)
 
-extern crate alloc;
-use alloc::string::ToString;
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, Address, Env, String, Symbol, Vec,
 };
@@ -722,7 +720,11 @@ impl RouterRegistry {
         constraint: &String,
     ) -> Result<bool, RegistryError> {
         // Parse simple semver constraints: >=X, <=X, >X, <X, ^X, ~X
-        let constraint_str = constraint.to_string();
+        let len = constraint.len() as usize;
+        let mut buf = [0u8; 64];
+        constraint.copy_into_slice(&mut buf[..len]);
+        let constraint_str = core::str::from_utf8(&buf[..len])
+            .map_err(|_| RegistryError::InvalidConstraint)?;
 
         if constraint_str.starts_with(">=") {
             let min = constraint_str[2..]

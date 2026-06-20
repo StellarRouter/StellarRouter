@@ -31,8 +31,6 @@
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, Address, Env, String, Symbol, Vec,
 };
-extern crate alloc;
-use alloc::string::ToString;
 
 // ── Storage Keys ──────────────────────────────────────────────────────────────
 
@@ -443,7 +441,6 @@ impl RouterCore {
                 name: route.name.clone(),
                 paused: false,
                 updated_by: caller.clone(),
-                metadata: route.metadata.clone(),
             };
             env.storage()
                 .instance()
@@ -1195,11 +1192,13 @@ impl RouterCore {
     /// characters (space 0x20, tab 0x09, newline 0x0A, vertical tab 0x0B,
     /// form feed 0x0C, carriage return 0x0D).
     fn is_empty_or_whitespace(name: &String) -> bool {
-        if name.len() == 0 {
+        let len = name.len() as usize;
+        if len == 0 {
             return true;
         }
-        let s = name.to_string();
-        s.bytes().all(|b| matches!(b, 9 | 10 | 11 | 12 | 13 | 32))
+        let mut buf = [0u8; 64];
+        name.copy_into_slice(&mut buf[..len]);
+        buf[..len].iter().all(|b| matches!(b, 9 | 10 | 11 | 12 | 13 | 32))
     }
 
     /// Validates a route name for use in register_route and add_alias.
@@ -1228,8 +1227,10 @@ impl RouterCore {
         }
 
         // Only alphanumeric, '-', and '/' are allowed
-        let s = name.to_string();
-        for b in s.bytes() {
+        let len = name.len() as usize;
+        let mut buf = [0u8; 64];
+        name.copy_into_slice(&mut buf[..len]);
+        for &b in &buf[..len] {
             if !matches!(b, b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'-' | b'/') {
                 return Err(RouterError::InvalidRouteName);
             }

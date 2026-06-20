@@ -529,6 +529,236 @@ fn test_router_multicall_batching() {
     println!("\n=== Router Multicall Test PASSED ===\n");
 }
 
+/// End-to-end test for the timelock-guarded route update security pattern.
+///
+/// This test exercises the primary cross-contract safety pattern described in
+/// docs/security.md and docs/architecture.md: sensitive route changes in
+/// router-core must pass through the router-timelock delay queue. Without this
+/// guard a compromised admin key can redirect any route instantly.
+///
+/// Flow:
+///   1. Deploy + initialize router-core and router-timelock.
+///   2. Register an initial route in router-core.
+///   3. Queue a route-update operation in router-timelock.
+///   4. Call execute BEFORE the ETA — expect NotReady (error code 5).
+///   5. Advance past the ETA (testnet: wait; unit env: ledger.timestamp +=).
+///   6. Call execute AFTER the ETA — expect success.
+///   7. Manually apply the route update in router-core (execute marks the op
+///      done; the actual cross-contract call is the next step in the flow).
+///   8. Resolve the route — verify it reflects the new address.
+///
+/// NOTE: Because testnet time cannot be fast-forwarded via CLI, step 5 uses
+/// the minimum delay (60 s) and waits for real time to elapse. In the
+/// soroban-sdk unit environment (see cross_contract_tests.rs) the ledger
+/// timestamp is manipulated directly.
+#[test]
+#[ignore] // Run with: cargo test --test integration_tests -- --ignored --test-threads=1
+fn test_timelock_guarded_route_update() {
+    println!("\n=== Testing Timelock-Guarded Route Update Flow ===\n");
+
+    let fixture = TestSuite::setup().expect("Failed to set up test suite");
+
+    let core = fixture
+        .router_core
+        .as_ref()
+        .expect("Core contract not deployed");
+    let timelock = fixture
+        .router_timelock
+        .as_ref()
+        .expect("Timelock contract not deployed");
+    let admin = &fixture.admin;
+
+    // ── Step 1: Contracts are already deployed and initialized by TestSuite::setup().
+    // router-timelock was initialized with min_delay = 60 seconds.
+    println!("✓ Contracts deployed and initialized by TestSuite");
+
+    // ── Step 2: Register an initial route in router-core.
+    println!("\n--- Step 2: Register initial route ---");
+    let initial_addr = TestAccount::generate()
+        .expect("Failed to generate initial address")
+        .address;
+
+    core.invoke(
+        "register_route",
+        &[
+            "--caller",
+            &admin.address,
+            "--name",
+            "oracle",
+            "--address",
+            &initial_addr,
+            "--metadata",
+            "null",
+        ],
+        admin,
+    )
+    .expect("Failed to register initial route");
+
+    let resolved = core
+        .invoke("resolve", &["--name", "oracle"], admin)
+        .expect("Failed to resolve initial route");
+    assert!(
+        resolved.contains(&initial_addr),
+        "Initial route should resolve to initial_addr, got: {}",
+        resolved
+    );
+    println!(
+        "✓ Route 'oracle' registered and resolves to: {}",
+        initial_addr
+    );
+
+    // ── Step 3: Queue a route-update operation in router-timelock.
+    // The operation target is the new address we intend to point the route at.
+    println!("\n--- Step 3: Queue route update in router-timelock ---");
+    let new_addr = TestAccount::generate()
+        .expect("Failed to generate new address")
+        .address;
+
+    // delay = 60 s (equals min_delay), grace_period = 120 s, no dependencies.
+    let op_id_result = timelock.invoke(
+        "queue",
+        &[
+            "--proposer",
+            &admin.address,
+            "--description",
+            "Update oracle route to new address",
+            "--target",
+            &new_addr,
+            "--delay",
+            "60",
+            "--grace_period_seconds",
+            "120",
+            "--deps",
+            "[]",
+        ],
+        admin,
+    );
+    assert!(
+        op_id_result.is_ok(),
+        "Failed to queue operation: {:?}",
+        op_id_result
+    );
+    let op_id = op_id_result.unwrap();
+    println!("✓ Operation queued, op_id: {}", op_id);
+
+    // Confirm the operation is in Queued state (not yet Ready).
+    let status = timelock
+        .invoke("get_operation_status", &["--op_id", &op_id], admin)
+        .expect("Failed to get operation status");
+    assert!(
+        status.contains("Queued"),
+        "Operation should be Queued before ETA, got: {}",
+        status
+    );
+    println!("✓ Operation status is Queued (ETA not yet reached)");
+
+    // ── Step 4: Call execute BEFORE the ETA — must return NotReady (error code 5).
+    println!("\n--- Step 4: Execute before ETA (should fail with NotReady) ---");
+    let early_result = timelock.try_invoke(
+        "execute",
+        &["--caller", &admin.address, "--op_id", &op_id],
+        admin,
+    );
+    assert!(
+        early_result.is_err(),
+        "execute before ETA should fail, but got: {:?}",
+        early_result
+    );
+    let early_error = early_result.err().unwrap();
+    assert!(
+        early_error.contains("NotReady") || early_error.contains("5"),
+        "Expected NotReady (error code 5), got: {}",
+        early_error
+    );
+    println!(
+        "✓ execute before ETA correctly rejected with NotReady: {}",
+        early_error
+    );
+
+    // ── Step 5: Wait for the ETA to pass on testnet (min_delay = 60 s).
+    // We add a small buffer (5 s) to account for block time variance.
+    println!("\n--- Step 5: Waiting 65 s for ETA to pass on testnet ---");
+    std::thread::sleep(std::time::Duration::from_secs(65));
+    println!("✓ ETA has elapsed");
+
+    // Confirm the operation status has transitioned to Ready.
+    let status = timelock
+        .invoke("get_operation_status", &["--op_id", &op_id], admin)
+        .expect("Failed to get operation status after wait");
+    assert!(
+        status.contains("Ready"),
+        "Operation should be Ready after ETA, got: {}",
+        status
+    );
+    println!("✓ Operation status is Ready");
+
+    // ── Step 6: Call execute AFTER the ETA — expect success.
+    println!("\n--- Step 6: Execute after ETA (should succeed) ---");
+    timelock
+        .invoke(
+            "execute",
+            &["--caller", &admin.address, "--op_id", &op_id],
+            admin,
+        )
+        .expect("Failed to execute timelock operation after ETA");
+
+    // Verify the operation is now in Executed state.
+    let status = timelock
+        .invoke("get_operation_status", &["--op_id", &op_id], admin)
+        .expect("Failed to get operation status after execute");
+    assert!(
+        status.contains("Executed"),
+        "Operation should be Executed, got: {}",
+        status
+    );
+    println!("✓ Timelock operation executed successfully");
+
+    // ── Step 7: Apply the route update in router-core.
+    // The timelock execute() marks the op done but does NOT perform the
+    // cross-contract call itself (the current router-timelock design records
+    // the intended target address in the Op struct for off-chain actors or a
+    // future executor integration to act upon). The admin now performs the
+    // actual route update, which in production would be triggered by the
+    // timelock execution event.
+    println!("\n--- Step 7: Apply route update in router-core ---");
+    core.invoke(
+        "update_route",
+        &[
+            "--caller",
+            &admin.address,
+            "--name",
+            "oracle",
+            "--new_address",
+            &new_addr,
+        ],
+        admin,
+    )
+    .expect("Failed to update route in router-core");
+    println!("✓ Route updated in router-core");
+
+    // ── Step 8: Resolve the route and verify it reflects the new address.
+    println!("\n--- Step 8: Resolve route (should return new address) ---");
+    let resolved = core
+        .invoke("resolve", &["--name", "oracle"], admin)
+        .expect("Failed to resolve updated route");
+    assert!(
+        resolved.contains(&new_addr),
+        "Route should resolve to new_addr '{}', got: '{}'",
+        new_addr,
+        resolved
+    );
+    // Explicitly confirm the old address is gone.
+    assert!(
+        !resolved.contains(&initial_addr),
+        "Route should no longer resolve to initial_addr '{}', got: '{}'",
+        initial_addr,
+        resolved
+    );
+    println!("✓ Route resolves to new address: {}", resolved);
+
+    println!("\n=== Timelock-Guarded Route Update Test PASSED ===\n");
+}
+
 #[test]
 #[ignore]
 fn test_admin_transfer() {

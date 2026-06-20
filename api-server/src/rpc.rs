@@ -41,15 +41,18 @@ struct JsonRpcError {
 #[derive(Deserialize, Debug)]
 pub struct SimulateTransactionResult {
     #[serde(rename = "minResourceFee", default)]
+    #[allow(dead_code)]
     pub min_resource_fee: String,
     pub error: Option<String>,
     #[serde(default)]
+    #[allow(dead_code)]
     pub events: Vec<serde_json::Value>,
 }
 
 #[derive(Deserialize, Debug)]
 struct SimulateTransactionResultWithReturnValue {
     #[serde(rename = "minResourceFee", default)]
+    #[allow(dead_code)]
     pub min_resource_fee: String,
     pub error: Option<String>,
     #[serde(default)]
@@ -155,11 +158,6 @@ impl SorobanRpcClient {
             .results
             .into_iter()
             .next()
-            .map(|r| {
-                // Try to decode as a JSON array of strings (mock / test path),
-                // otherwise return an empty list.
-                serde_json::from_str::<Vec<String>>(&r.xdr).unwrap_or_default()
-            })
             .map(|r| xdr::parse_string_vec(&r.xdr))
             .transpose()?
             .unwrap_or_default();

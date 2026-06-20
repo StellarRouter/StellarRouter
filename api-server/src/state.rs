@@ -7,8 +7,10 @@ use crate::{auth::AuthConfig, rpc::SorobanRpcClient, types::TransactionStatusEve
 #[derive(Clone)]
 pub struct AppState {
     pub rpc: SorobanRpcClient,
+    #[allow(dead_code)]
     pub execution_contract_id: String,
     pub router_core_contract_id: String,
+    #[allow(dead_code)]
     pub auth_config: AuthConfig,
     pub tx_status_tx: broadcast::Sender<TransactionStatusEvent>,
     pub tx_subscribers: Arc<DashMap<String, usize>>,
@@ -32,6 +34,7 @@ impl AppState {
         }
     }
 
+    #[cfg(test)]
     pub fn broadcast_status(&self, event: TransactionStatusEvent) {
         let _ = self.tx_status_tx.send(event);
     }
