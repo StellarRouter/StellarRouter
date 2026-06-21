@@ -1356,7 +1356,7 @@ mod tests {
 
     #[test]
     fn test_get_all_names_empty() {
-        let (env, _admin, client) = setup();
+        let (_env, _admin, client) = setup();
         let names = client.get_all_names();
         assert!(names.is_empty());
     }
@@ -1635,6 +1635,146 @@ mod tests {
         
         let names = client.get_all_names();
         assert_eq!(names.len(), 2);
+    }
+
+    // ── bulk_register ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_bulk_register_success() {
+        let (env, admin, client) = setup();
+        let name1 = String::from_str(&env, "oracle");
+        let name2 = String::from_str(&env, "vault");
+        let addr1 = Address::generate(&env);
+        let addr2 = Address::generate(&env);
+
+        let entries = vec![
+            &env,
+            (name1.clone(), addr1.clone(), 1u32),
+            (name2.clone(), addr2.clone(), 2u32),
+        ];
+
+        let result = client.try_bulk_register(&admin, &entries);
+        assert_eq!(result, Ok(Ok(())));
+
+        assert_eq!(client.get(&name1, &1).address, addr1);
+        assert_eq!(client.get(&name2, &2).address, addr2);
+    }
+
+    #[test]
+    fn test_bulk_register_partial_failure() {
+        let (env, admin, client) = setup();
+        let name1 = String::from_str(&env, "oracle");
+        let name2 = String::from_str(&env, "vault");
+        let addr1 = Address::generate(&env);
+        let addr2 = Address::generate(&env);
+        let addr3 = Address::generate(&env);
+
+        // First entry valid, second has version=0 (invalid), third valid
+        let entries = vec![
+            &env,
+            (name1.clone(), addr1.clone(), 1u32),
+            (name2.clone(), addr2.clone(), 0u32),
+            (name1.clone(), addr3.clone(), 2u32),
+        ];
+
+        let result = client.try_bulk_register(&admin, &entries);
+        assert_eq!(result, Err(Ok(RegistryError::InvalidVersion)));
+
+        // Contract calls are atomic: nothing was persisted after the error
+        assert!(!client.is_registered(&name1, &1));
+        assert!(!client.is_registered(&name1, &2));
+    }
+
+    #[test]
+    fn test_bulk_register_duplicate_names_in_batch() {
+        let (env, admin, client) = setup();
+        let name = String::from_str(&env, "oracle");
+        let addr1 = Address::generate(&env);
+        let addr2 = Address::generate(&env);
+
+        // Same name, different versions in a single batch
+        let entries = vec![
+            &env,
+            (name.clone(), addr1.clone(), 1u32),
+            (name.clone(), addr2.clone(), 3u32),
+        ];
+
+        let result = client.try_bulk_register(&admin, &entries);
+        assert_eq!(result, Ok(Ok(())));
+
+        assert_eq!(client.get(&name, &1).address, addr1);
+        assert_eq!(client.get(&name, &3).address, addr2);
+    }
+
+    #[test]
+    fn test_bulk_register_empty_batch() {
+        let (env, admin, client) = setup();
+        let entries: Vec<(String, Address, u32)> = Vec::new(&env);
+
+        let result = client.try_bulk_register(&admin, &entries);
+        assert_eq!(result, Ok(Ok(())));
+    }
+
+    #[test]
+    fn test_bulk_register_unauthorized() {
+        let (env, _admin, client) = setup();
+        let attacker = Address::generate(&env);
+        let name = String::from_str(&env, "oracle");
+        let addr = Address::generate(&env);
+
+        let entries = vec![&env, (name, addr, 1u32)];
+        let result = client.try_bulk_register(&attacker, &entries);
+        assert_eq!(result, Err(Ok(RegistryError::Unauthorized)));
+    }
+
+    #[test]
+    fn test_bulk_register_already_registered() {
+        let (env, admin, client) = setup();
+        let name = String::from_str(&env, "oracle");
+        let addr1 = Address::generate(&env);
+        let addr2 = Address::generate(&env);
+
+        // Pre-register (name, 1)
+        client.register(&admin, &name, &addr1, &1);
+
+        // Try bulk with same (name, 1) duplication
+        let entries = vec![
+            &env,
+            (name.clone(), addr2.clone(), 2u32),
+            (name.clone(), addr1.clone(), 1u32),
+        ];
+
+        let result = client.try_bulk_register(&admin, &entries);
+        assert_eq!(result, Err(Ok(RegistryError::AlreadyRegistered)));
+
+        // Contract calls are atomic: nothing was persisted after the error
+        assert!(!client.is_registered(&name, &2));
+    }
+
+    #[test]
+    fn test_bulk_register_version_zero_fails() {
+        let (env, admin, client) = setup();
+        let name = String::from_str(&env, "oracle");
+        let addr = Address::generate(&env);
+
+        let entries = vec![&env, (name, addr, 0u32)];
+        let result = client.try_bulk_register(&admin, &entries);
+        assert_eq!(result, Err(Ok(RegistryError::InvalidVersion)));
+    }
+
+    #[test]
+    fn test_bulk_register_non_monotonic_fails() {
+        let (env, admin, client) = setup();
+        let name = String::from_str(&env, "oracle");
+        let addr1 = Address::generate(&env);
+        let addr2 = Address::generate(&env);
+
+        // Register v5 first, then try to register v3 (lower) in same batch
+        client.register(&admin, &name, &addr1, &5);
+
+        let entries = vec![&env, (name, addr2.clone(), 3u32)];
+        let result = client.try_bulk_register(&admin, &entries);
+        assert_eq!(result, Err(Ok(RegistryError::InvalidVersion)));
     }
 
     // ── is_registered ─────────────────────────────────────────────────────────
