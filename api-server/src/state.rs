@@ -2,7 +2,11 @@ use dashmap::DashMap;
 use std::sync::Arc;
 use tokio::sync::broadcast;
 
-use crate::{auth::AuthConfig, rpc::SorobanRpcClient, types::TransactionStatusEvent};
+use crate::{
+    auth::AuthConfig,
+    rpc::{FeeConfig, SorobanRpcClient},
+    types::TransactionStatusEvent,
+};
 
 #[derive(Clone)]
 pub struct AppState {
@@ -22,10 +26,11 @@ impl AppState {
         execution_contract_id: String,
         router_core_contract_id: String,
         auth_config: AuthConfig,
+        fee_config: FeeConfig,
     ) -> Self {
         let (tx_status_tx, _) = broadcast::channel(1000);
         Self {
-            rpc: SorobanRpcClient::new(rpc_url, Some(router_core_contract_id.clone())),
+            rpc: SorobanRpcClient::new(rpc_url, Some(router_core_contract_id.clone()), fee_config),
             execution_contract_id,
             router_core_contract_id,
             auth_config,

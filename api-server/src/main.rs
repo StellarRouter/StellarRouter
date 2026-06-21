@@ -28,6 +28,7 @@ use tracing::info;
 use crate::{
     auth::AuthConfig,
     rate_limit::{rate_limit_middleware, RateLimitConfig, RateLimiter},
+    rpc::FeeConfig,
     state::AppState,
 };
 
@@ -80,11 +81,23 @@ async fn main() -> Result<()> {
     );
     let rate_limiter = RateLimiter::new(rate_limit_config);
 
+    let fee_config = FeeConfig::from_env();
+    info!(
+        base_fee = fee_config.base_fee,
+        resource_fee_floor = fee_config.resource_fee_floor,
+        resource_fee_divisor = fee_config.resource_fee_divisor,
+        surge_load_threshold_bps = fee_config.surge_load_threshold_bps,
+        surge_multiplier = fee_config.surge_multiplier,
+        normal_multiplier = fee_config.normal_multiplier,
+        "Router fee-estimation config loaded"
+    );
+
     let state = AppState::new(
         args.rpc_url,
         args.execution_contract_id,
         args.router_core_contract_id,
         auth_config.clone(),
+        fee_config,
     );
 
     let protected_routes = Router::new()
