@@ -14,6 +14,7 @@ use crate::{
     auth::AuthConfig,
     handlers,
     rate_limit::{rate_limit_middleware, RateLimitConfig, RateLimiter},
+    rpc::FeeConfig,
     state::AppState,
     types::{
         RouteDetails, SimulateRequest, SimulateResponse, TransactionStatus, TransactionStatusEvent,
@@ -36,6 +37,7 @@ fn test_app() -> Router {
         "".to_string(),
         "".to_string(),
         auth,
+        FeeConfig::default(),
     );
 
     Router::new()
@@ -86,6 +88,7 @@ async fn spawn_ws_server() -> (std::net::SocketAddr, AppState) {
         "".to_string(),
         "".to_string(),
         auth.clone(),
+        FeeConfig::default(),
     );
 
     let app = Router::new()
