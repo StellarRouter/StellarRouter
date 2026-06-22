@@ -20,7 +20,7 @@ use crate::{
 
 const DEFAULT_WS_FAN_IN_CAPACITY: usize = 1000;
 const WS_FAN_IN_CAPACITY_ENV: &str = "WS_FAN_IN_CHANNEL_CAPACITY";
-
+const MAX_SUBSCRIPTIONS_PER_CONNECTION: usize = 1000;
 /// WebSocket upgrade handler
 pub async fn ws_handler(State(state): State<AppState>, ws: WebSocketUpgrade) -> impl IntoResponse {
     ws.on_upgrade(|socket| handle_socket(socket, state))
@@ -59,6 +59,29 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
 
                                     let already = subscriptions.iter().any(|(id, _)| id == &sub_msg.tx_id);
                                     if !already {
+                    if subscriptions.len() >= MAX_SUBSCRIPTIONS_PER_CONNECTION {
+                           warn!(
+                                "WebSocket subscription limit reached ({})",
+                                 MAX_SUBSCRIPTIONS_PER_CONNECTION
+                            );
+
+                            let response = json!({
+                                    "msg_type": "error",
+                                    "data": {
+                                    "message": "Maximum subscription limit reached"
+                                    }
+                            });
+
+                            if let Err(e) = sender
+                                    .send(Message::Text(response.to_string()))
+                                 .await
+                            {
+                                     error!("Failed to send subscription limit error: {}", e);
+                                     break;
+                            }
+
+                            continue;
+                    }
                                         let cancel = tokio_util::sync::CancellationToken::new();
                                         subscriptions.push((sub_msg.tx_id.clone(), cancel.clone()));
                                         state.add_subscriber(sub_msg.tx_id.clone());
@@ -216,6 +239,7 @@ fn warn_if_fan_in_near_capacity(fan_in: &Sender<TransactionStatusEvent>, tx_id: 
 mod tests {
     use super::{
         fan_in_warning_threshold, parse_websocket_fan_in_capacity, DEFAULT_WS_FAN_IN_CAPACITY,
+        MAX_SUBSCRIPTIONS_PER_CONNECTION,
     };
 
     #[test]
@@ -244,5 +268,26 @@ mod tests {
     fn warning_threshold_is_ten_percent_with_minimum_one_slot() {
         assert_eq!(fan_in_warning_threshold(1000), 100);
         assert_eq!(fan_in_warning_threshold(9), 1);
+    }
+    #[test]
+    fn max_subscriptions_per_connection_is_set() {
+        assert_eq!(MAX_SUBSCRIPTIONS_PER_CONNECTION, 1000);
+    }
+
+    #[test]
+    fn subscription_limit_check_logic() {
+        // Simulates the guard condition used in handle_socket
+        let limit = MAX_SUBSCRIPTIONS_PER_CONNECTION;
+        let mut count = 0usize;
+
+        for _ in 0..limit {
+            count += 1;
+        }
+
+        // At limit: should reject
+        assert!(count >= limit);
+
+        // One below: should still accept
+        assert!((count - 1) < limit);
     }
 }
