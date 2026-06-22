@@ -568,41 +568,39 @@ impl RouterMiddleware {
                         .set(&DataKey::RouteCallState(route), &route_call_state);
                 }
             }
-        } else {
-            if let Some(config) = env
-                .storage()
-                .instance()
-                .get::<DataKey, RouteConfig>(&DataKey::RouteConfig(route.clone()))
-            {
-                if config.failure_threshold > 0 {
-                    let mut route_call_state: RouteCallState = env
-                        .storage()
-                        .instance()
-                        .get(&DataKey::RouteCallState(route.clone()))
-                        .unwrap_or(RouteCallState {
-                            rate_limits: Map::new(&env),
-                            circuit_breaker: CircuitBreakerState {
-                                failure_count: 0,
-                                opened_at: 0,
-                                is_open: false,
-                                is_half_open: false,
-                            },
-                        });
+        } else if let Some(config) = env
+            .storage()
+            .instance()
+            .get::<DataKey, RouteConfig>(&DataKey::RouteConfig(route.clone()))
+        {
+            if config.failure_threshold > 0 {
+                let mut route_call_state: RouteCallState = env
+                    .storage()
+                    .instance()
+                    .get(&DataKey::RouteCallState(route.clone()))
+                    .unwrap_or(RouteCallState {
+                        rate_limits: Map::new(&env),
+                        circuit_breaker: CircuitBreakerState {
+                            failure_count: 0,
+                            opened_at: 0,
+                            is_open: false,
+                            is_half_open: false,
+                        },
+                    });
 
-                    // Handle half-open state: if probe succeeds, close circuit
-                    if route_call_state.circuit_breaker.is_half_open {
-                        route_call_state.circuit_breaker.is_half_open = false;
-                        route_call_state.circuit_breaker.failure_count = 0;
-                    } else if !route_call_state.circuit_breaker.is_open
-                        && route_call_state.circuit_breaker.failure_count > 0
-                    {
-                        route_call_state.circuit_breaker.failure_count = 0;
-                    }
-
-                    env.storage()
-                        .instance()
-                        .set(&DataKey::RouteCallState(route), &route_call_state);
+                // Handle half-open state: if probe succeeds, close circuit
+                if route_call_state.circuit_breaker.is_half_open {
+                    route_call_state.circuit_breaker.is_half_open = false;
+                    route_call_state.circuit_breaker.failure_count = 0;
+                } else if !route_call_state.circuit_breaker.is_open
+                    && route_call_state.circuit_breaker.failure_count > 0
+                {
+                    route_call_state.circuit_breaker.failure_count = 0;
                 }
+
+                env.storage()
+                    .instance()
+                    .set(&DataKey::RouteCallState(route), &route_call_state);
             }
         }
     }

@@ -6,9 +6,64 @@ on:
   pull_request:
 
 jobs:
+  # ── Fast gate: parse + format ─────────────────────────────────────────────
+  # Runs first, before any heavier jobs. Catches merge corruption (un-parseable
+  # files, mismatched braces, duplicate items) and formatting drift across the
+  # entire workspace, not just the off-chain crates. Kept separate so a format
+  # failure is immediately visible without waiting for test/build results.
+  lint:
+    name: Format & Parse Gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          # wasm32 target is needed for cargo check to resolve feature flags
+          # that gate soroban-sdk cfg(target_arch = "wasm32") items.
+          targets: wasm32-unknown-unknown
+          components: rustfmt, clippy
+
+      - name: Cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-lint-${{ hashFiles('**/Cargo.lock') }}
+
+      # Check formatting for every crate in the workspace.
+      # Previously only router-api-server and router-metrics-exporter were
+      # checked; WASM contracts were silently excluded, allowing merge
+      # corruption to persist undetected for 12+ commits (issue #49b).
+      - name: Check formatting (all workspace crates)
+        run: cargo fmt --all --check
+
+      # cargo check --workspace parses and type-checks every crate without
+      # producing any binary. This is the cheapest way to catch:
+      #   - mismatched braces / orphaned code fragments from merge conflicts
+      #   - duplicate function definitions
+      #   - missing imports or broken module trees
+      # Running it here, before the build job, means a broken contract can
+      # never sneak past CI even if a later job is blocked by an earlier failure.
+      - name: Check compilation (all workspace crates — native target)
+        run: cargo check --workspace
+
+      # Also check under the WASM target so cfg-gated soroban code is validated.
+      - name: Check compilation (all workspace crates — wasm32 target)
+        run: cargo check --workspace --target wasm32-unknown-unknown
+
+      # Clippy across all workspace crates.
+      - name: Run clippy (all workspace crates)
+        run: cargo clippy --workspace -- -D warnings
+
+  # ── Unit & integration tests for off-chain crates ─────────────────────────
   test:
     name: Test Suite
     runs-on: ubuntu-latest
+    needs: lint
     steps:
       - uses: actions/checkout@v4
 
@@ -27,30 +82,18 @@ jobs:
             target
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
 
-      - name: Check formatting
-        run: |
-          cargo fmt -p router-api-server --check
-          cargo fmt -p router-metrics-exporter --check
-
-      - name: Check compilation
-        run: |
-          cargo check -p router-api-server
-          cargo check -p router-metrics-exporter
-
-      - name: Run clippy
-        run: |
-          cargo clippy -p router-api-server -- -D warnings
-          cargo clippy -p router-metrics-exporter -- -D warnings
-
       - name: Run tests
         run: |
           cargo test -p router-api-server --verbose
           cargo test -p router-metrics-exporter --verbose
 
+  # ── WASM contract build ───────────────────────────────────────────────────
+  # Depends on lint (not just test) so that a test-job failure cannot mask a
+  # broken contract. lint already validated that every contract parses cleanly.
   build:
     name: Build WASM
     runs-on: ubuntu-latest
-    needs: test
+    needs: [lint, test]
     steps:
       - uses: actions/checkout@v4
 
@@ -82,6 +125,7 @@ jobs:
           path: target/wasm32-unknown-unknown/release/*.wasm
           retention-days: 7
 
+  # ── Integration tests (testnet, only on main) ─────────────────────────────
   integration-test:
     name: Integration Tests (Testnet)
     runs-on: ubuntu-latest
@@ -130,6 +174,7 @@ jobs:
             *.log
           retention-days: 7
 
+  # ── Code coverage (off-chain crates) ─────────────────────────────────────
   coverage:
     name: Code Coverage
     runs-on: ubuntu-latest

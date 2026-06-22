@@ -182,10 +182,10 @@ impl SorobanRpcClient {
         topic_filters: &[&str],
         start_ledger: u32,
     ) -> Result<Vec<ContractEvent>> {
-        let filters = topic_filters
+        let filters: Vec<serde_json::Value> = topic_filters
             .iter()
             .map(|t| json!({ "type": "contract", "contractIds": [contract_id], "topics": [[t]] }))
-            .collect::<serde_json::Value>();
+            .collect();
 
         let params = if start_ledger > 0 {
             json!({ "startLedger": start_ledger, "filters": filters })

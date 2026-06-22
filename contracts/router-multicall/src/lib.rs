@@ -700,6 +700,7 @@ mod tests {
             function: Symbol::new(&env, "success"),
             required: true,
             instruction_budget: None,
+            args: Vec::new(&env),
         });
 
         let summary = client.execute_batch(&caller, &calls, &true, &false);
@@ -722,12 +723,14 @@ mod tests {
             function: Symbol::new(&env, "success"),
             required: true,
             instruction_budget: None,
+            args: Vec::new(&env),
         });
         calls.push_back(CallDescriptor {
             target: mock_id.clone(),
             function: Symbol::new(&env, "fail"),
             required: false,
             instruction_budget: None,
+            args: Vec::new(&env),
         });
 
         let summary = client.execute_batch(&caller, &calls, &true, &false);
@@ -748,12 +751,14 @@ mod tests {
             function: Symbol::new(&env, "success"),
             required: true,
             instruction_budget: None,
+            args: Vec::new(&env),
         });
         calls.push_back(CallDescriptor {
             target: mock_id.clone(),
             function: Symbol::new(&env, "fail"),
             required: false,
             instruction_budget: None,
+            args: Vec::new(&env),
         });
 
         let summary = client.execute_batch(&caller, &calls, &false, &false);
@@ -810,6 +815,7 @@ mod tests {
             function: Symbol::new(&env, "fail"),
             required: true,
             instruction_budget: None,
+            args: Vec::new(&env),
         });
 
         let result = client.try_execute_batch(&caller, &calls, &false, &false);
@@ -829,6 +835,7 @@ mod tests {
             function: Symbol::new(&env, "success"),
             required: true,
             instruction_budget: None,
+            args: Vec::new(&env),
         });
 
         client.execute_batch(&caller, &calls, &false, &false);
@@ -850,6 +857,7 @@ mod tests {
             function: Symbol::new(&env, "fail"),
             required: true,
             instruction_budget: None,
+            args: Vec::new(&env),
         });
 
         // First call fails
@@ -862,6 +870,7 @@ mod tests {
             function: Symbol::new(&env, "success"),
             required: true,
             instruction_budget: None,
+            args: Vec::new(&env),
         });
         let result = client.try_execute_batch(&caller, &ok_calls, &false, &false);
         assert!(result.is_ok());
