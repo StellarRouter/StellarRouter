@@ -5,6 +5,7 @@
 /// contract ID strkey is decoded to its 32-byte hash before encoding.
 /// Response ScVal XDR is decoded with the typed parsers in `crate::xdr`.
 use anyhow::{anyhow, Result};
+use tracing::warn;
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -222,7 +223,20 @@ impl SorobanRpcClient {
         match self.call_simulate_rpc(target, function).await {
             Ok(result) => {
                 let would_succeed = result.error.is_none();
-                let resource_fee: i64 = result.min_resource_fee.parse().unwrap_or(1_000);
+                // Parse min_resource_fee returned by the RPC. If the field is
+                // missing, empty, or malformed, fall back to a conservative
+                // default but log a warning so operators can investigate.
+                let resource_fee: i64 = match result.min_resource_fee.trim().parse::<i64>() {
+                    Ok(n) if n > 0 => n,
+                    Ok(n) => {
+                        warn!(min_resource_fee = ?result.min_resource_fee, parsed = n, "min_resource_fee is not positive; using fallback {}", 1_000);
+                        1_000
+                    }
+                    Err(e) => {
+                        warn!(min_resource_fee = ?result.min_resource_fee, error = %e, "failed to parse min_resource_fee; using fallback {}", 1_000);
+                        1_000
+                    }
+                };
                 let base_fee: i64 = self.fee_config.base_fee;
                 let (surge_multiplier, high_load) = self.fee_config.surge(network_load_bps);
                 let total_fee =
