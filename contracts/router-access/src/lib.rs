@@ -15,7 +15,6 @@
 //! `viewer` without needing explicit grants.
 //!
 //! ## Events (following naming convention: past tense verbs in snake_case)
-//! - `role_granted` -- Role granted to address (role, account, expires_at)
 //! - `role_granted` -- Role granted to address (role, account, expiry_timestamp)
 //! - `role_revoked` -- Role revoked from address (role, target)
 //! - `role_parent_set` -- Parent role set (role, parent_role)

@@ -13,6 +13,7 @@ members = [
     "contracts/router-execution",
     "metrics",
     "router-off-chain-common",
+    "integration-tests",
 ]
 
 [workspace.dependencies]

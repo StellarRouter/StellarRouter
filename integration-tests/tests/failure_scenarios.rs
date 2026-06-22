@@ -7,7 +7,7 @@ extern crate std;
 
 use soroban_sdk::{
     testutils::{Address as _, Ledger},
-    Address, Env, String, Vec,
+    Address, Bytes, Env, String, Vec,
 };
 
 use router_core::{RouterCore, RouterCoreClient, RouterError};
@@ -158,9 +158,9 @@ fn test_registry_double_deprecate_fails() {
 
     let name = String::from_str(&env, "oracle");
     client.register(&admin, &name, &Address::generate(&env), &1);
-    client.deprecate(&admin, &name, &1);
+    client.deprecate(&admin, &name, &1, &None::<String>);
 
-    let result = client.try_deprecate(&admin, &name, &1);
+    let result = client.try_deprecate(&admin, &name, &1, &None::<String>);
     assert_eq!(result, Err(Ok(RegistryError::AlreadyDeprecated)));
 }
 
@@ -191,10 +191,12 @@ fn test_access_unauthorized_grant_fails() {
     client.initialize(&admin);
 
     let attacker = Address::generate(&env);
+    // grant_role(admin, account, role, expires_at)
     let result = client.try_grant_role(
         &attacker,
-        &String::from_str(&env, "operator"),
         &Address::generate(&env),
+        &String::from_str(&env, "operator"),
+        &None,
     );
     assert_eq!(result, Err(Ok(AccessError::Unauthorized)));
 }
@@ -207,12 +209,14 @@ fn test_access_blacklisted_address_cannot_receive_role() {
     client.initialize(&admin);
 
     let user = Address::generate(&env);
-    client.blacklist(&admin, &user);
+    // blacklist(caller, target, reason, expires_at)
+    client.blacklist(&admin, &user, &None::<String>, &None);
 
     let result = client.try_grant_role(
         &admin,
-        &String::from_str(&env, "operator"),
         &user,
+        &String::from_str(&env, "operator"),
+        &None,
     );
     assert_eq!(result, Err(Ok(AccessError::Blacklisted)));
 }
@@ -224,7 +228,8 @@ fn test_access_cannot_blacklist_super_admin() {
     let client = RouterAccessClient::new(&env, &id);
     client.initialize(&admin);
 
-    let result = client.try_blacklist(&admin, &admin);
+    // blacklist(caller, target, reason, expires_at)
+    let result = client.try_blacklist(&admin, &admin, &None::<String>, &None);
     assert_eq!(result, Err(Ok(AccessError::CannotBlacklistAdmin)));
 }
 
@@ -237,9 +242,10 @@ fn test_access_double_grant_fails() {
 
     let role = String::from_str(&env, "operator");
     let user = Address::generate(&env);
-    client.grant_role(&admin, &role, &user);
+    // grant_role(admin, account, role, expires_at)
+    client.grant_role(&admin, &user, &role, &None);
 
-    let result = client.try_grant_role(&admin, &role, &user);
+    let result = client.try_grant_role(&admin, &user, &role, &None);
     assert_eq!(result, Err(Ok(AccessError::AlreadyHasRole)));
 }
 
@@ -332,6 +338,9 @@ fn test_middleware_unauthorized_configure_fails() {
 
 // ── router-timelock failure scenarios ────────────────────────────────────────
 
+// queue signature: (proposer, description, target, delay, grace_period_seconds, deps)
+// execute returns NotReady (not TooEarly) when called before eta
+
 #[test]
 fn test_timelock_execute_too_early() {
     let (env, admin) = make_env();
@@ -339,17 +348,18 @@ fn test_timelock_execute_too_early() {
     let client = RouterTimelockClient::new(&env, &id);
     client.initialize(&admin, &3600);
 
-    let deps = Vec::new(&env);
+    let deps: Vec<Bytes> = Vec::new(&env);
     let op_id = client.queue(
         &admin,
         &String::from_str(&env, "upgrade oracle"),
         &Address::generate(&env),
         &3600,
+        &86_400u64, // grace_period_seconds
         &deps,
     );
 
     let result = client.try_execute(&admin, &op_id);
-    assert_eq!(result, Err(Ok(TimelockError::TooEarly)));
+    assert_eq!(result, Err(Ok(TimelockError::NotReady)));
 }
 
 #[test]
@@ -359,15 +369,16 @@ fn test_timelock_delay_below_minimum_fails() {
     let client = RouterTimelockClient::new(&env, &id);
     client.initialize(&admin, &3600);
 
-    let deps = Vec::new(&env);
+    let deps: Vec<Bytes> = Vec::new(&env);
     let result = client.try_queue(
         &admin,
         &String::from_str(&env, "upgrade oracle"),
         &Address::generate(&env),
         &100, // below min_delay of 3600
+        &86_400u64,
         &deps,
     );
-    assert_eq!(result, Err(Ok(TimelockError::InvalidDelay)));
+    assert_eq!(result, Err(Ok(TimelockError::DelayTooShort)));
 }
 
 #[test]
@@ -377,19 +388,20 @@ fn test_timelock_execute_cancelled_op_fails() {
     let client = RouterTimelockClient::new(&env, &id);
     client.initialize(&admin, &3600);
 
-    let deps = Vec::new(&env);
+    let deps: Vec<Bytes> = Vec::new(&env);
     let op_id = client.queue(
         &admin,
         &String::from_str(&env, "upgrade oracle"),
         &Address::generate(&env),
         &3600,
+        &86_400u64,
         &deps,
     );
     client.cancel(&admin, &op_id);
 
     env.ledger().with_mut(|l| l.timestamp += 3601);
     let result = client.try_execute(&admin, &op_id);
-    assert_eq!(result, Err(Ok(TimelockError::AlreadyCancelled)));
+    assert_eq!(result, Err(Ok(TimelockError::Cancelled)));
 }
 
 #[test]
@@ -399,12 +411,13 @@ fn test_timelock_double_execute_fails() {
     let client = RouterTimelockClient::new(&env, &id);
     client.initialize(&admin, &3600);
 
-    let deps = Vec::new(&env);
+    let deps: Vec<Bytes> = Vec::new(&env);
     let op_id = client.queue(
         &admin,
         &String::from_str(&env, "upgrade oracle"),
         &Address::generate(&env),
         &3600,
+        &86_400u64,
         &deps,
     );
     env.ledger().with_mut(|l| l.timestamp += 3601);
@@ -422,12 +435,13 @@ fn test_timelock_unauthorized_queue_fails() {
     client.initialize(&admin, &3600);
 
     let attacker = Address::generate(&env);
-    let deps = Vec::new(&env);
+    let deps: Vec<Bytes> = Vec::new(&env);
     let result = client.try_queue(
         &attacker,
         &String::from_str(&env, "malicious"),
         &Address::generate(&env),
         &3600,
+        &86_400u64,
         &deps,
     );
     assert_eq!(result, Err(Ok(TimelockError::Unauthorized)));

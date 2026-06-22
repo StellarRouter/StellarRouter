@@ -29,9 +29,9 @@ pub enum DataKey {
     MaxRetries,
     TotalExecutions,
     TotalErrors,
-    BackoffBaseMs,    // base delay in milliseconds before first retry
+    BackoffBaseMs,     // base delay in milliseconds before first retry
     BackoffMultiplier, // multiplier applied each retry (stored as fixed-point *100, e.g. 200 = 2x)
-    ExecHistory,   // Vec<ExecutionRecord>
+    ExecHistory,       // Vec<ExecutionRecord>
 }
 
 // ── Error Types ───────────────────────────────────────────────────────────────
@@ -269,7 +269,13 @@ impl RouterExecution {
                 args,
             );
             if sim_result.is_err() {
-                Self::log_error(&env, &request.target, &request.function, ExecutionError::SimulationFailed, 0);
+                Self::log_error(
+                    &env,
+                    &request.target,
+                    &request.function,
+                    ExecutionError::SimulationFailed,
+                    0,
+                );
                 return Err(ExecutionError::SimulationFailed);
             }
         }
@@ -330,7 +336,13 @@ impl RouterExecution {
                         // Retry
                         continue;
                     }
-                    Self::log_error(&env, &request.target, &request.function, ExecutionError::ContractRejected, attempts);
+                    Self::log_error(
+                        &env,
+                        &request.target,
+                        &request.function,
+                        ExecutionError::ContractRejected,
+                        attempts,
+                    );
                     Self::append_history(&env, &request.target, &request.function, false, 0);
                     return Err(ExecutionError::ContractRejected);
                 }
@@ -574,7 +586,13 @@ impl RouterExecution {
         delay
     }
 
-    fn log_error(env: &Env, target: &Address, function: &Symbol, error: ExecutionError, attempts: u32) {
+    fn log_error(
+        env: &Env,
+        target: &Address,
+        function: &Symbol,
+        error: ExecutionError,
+        attempts: u32,
+    ) {
         Self::increment_counter(env, &DataKey::TotalErrors);
         // Emit a structured error event; does not leak internal details beyond
         // the error code and attempt count.
@@ -589,7 +607,13 @@ impl RouterExecution {
         env.storage().instance().set(key, &(val + 1));
     }
 
-    fn append_history(env: &Env, target: &Address, function: &Symbol, success: bool, fee_paid: i128) {
+    fn append_history(
+        env: &Env,
+        target: &Address,
+        function: &Symbol,
+        success: bool,
+        fee_paid: i128,
+    ) {
         let mut history: Vec<ExecutionRecord> = env
             .storage()
             .instance()

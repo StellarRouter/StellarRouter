@@ -94,7 +94,7 @@ fn test_core_route_updated_after_registry_version_bump() {
 
     // Bump registry to v2
     s.registry.register(&s.admin, &name, &v2_addr, &2);
-    s.registry.deprecate(&s.admin, &name, &1);
+    s.registry.deprecate(&s.admin, &name, &1, &None::<String>);
     assert_eq!(s.registry.get_latest(&name).address, v2_addr);
 
     // Update core route to match
@@ -116,7 +116,7 @@ fn test_core_rejects_unauthorized_even_with_unrelated_role() {
     let unrelated_role = String::from_str(&s.env, "viewer");
 
     // Grant user an unrelated role in access
-    s.access.grant_role(&s.admin, &unrelated_role, &user);
+    s.access.grant_role(&s.admin, &user, &unrelated_role, &None);
     assert!(s.access.has_role(&unrelated_role, &user));
 
     // User should still be rejected by core (core uses its own admin check)
@@ -139,8 +139,8 @@ fn test_access_blacklist_state_is_independent_of_core() {
     s.core.register_route(&s.admin, &name, &addr, &None);
 
     // Grant role then blacklist user in access
-    s.access.grant_role(&s.admin, &role, &user);
-    s.access.blacklist(&s.admin, &user);
+    s.access.grant_role(&s.admin, &user, &role, &None);
+    s.access.blacklist(&s.admin, &user, &None::<String>, &None);
     assert!(!s.access.has_role(&role, &user));
 
     // Core resolve is unaffected — it doesn't consult access

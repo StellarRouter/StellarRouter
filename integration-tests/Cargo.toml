@@ -4,12 +4,32 @@ version = "0.1.0"
 edition = "2021"
 publish = false
 
+[lib]
+path = "src/lib.rs"
+
 [[test]]
 name = "integration_tests"
 path = "tests/integration_tests.rs"
 
+[[test]]
+name = "cross_contract_tests"
+path = "tests/cross_contract_tests.rs"
+
+[[test]]
+name = "failure_scenarios"
+path = "tests/failure_scenarios.rs"
+
 [dependencies]
-# No runtime dependencies needed - tests use stellar CLI
 
 [dev-dependencies]
-# Tests are self-contained and use stellar CLI via Command
+# soroban-sdk with testutils enables the *Client types and register_contract helper
+# used by cross_contract_tests.rs and failure_scenarios.rs.
+soroban-sdk      = { version = "21.7.6", features = ["testutils"] }
+router-core      = { path = "../contracts/router-core" }
+router-registry  = { path = "../contracts/router-registry" }
+router-access    = { path = "../contracts/router-access" }
+router-middleware = { path = "../contracts/router-middleware" }
+router-timelock  = { path = "../contracts/router-timelock" }
+router-multicall = { path = "../contracts/router-multicall" }
+router-execution = { path = "../contracts/router-execution" }
+router-quote     = { path = "../contracts/router-quote" }
