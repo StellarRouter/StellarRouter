@@ -4,6 +4,7 @@ use axum::{
     response::IntoResponse,
     Json,
 };
+use router_off_chain_common::validation::validate_contract_id;
 use serde_json::json;
 use tracing::{error, info};
 
@@ -52,12 +53,12 @@ pub async fn simulate(
         ));
     }
 
-    if req.target.len() != 56 || !req.target.starts_with('C') {
+    // Use shared validation from router-off-chain-common
+    if let Err(e) = validate_contract_id(&req.target) {
         return Err((
             StatusCode::BAD_REQUEST,
             Json(ErrorResponse {
-                error: "target must be a 56-character Stellar contract ID starting with C"
-                    .to_string(),
+                error: format!("target must be a 56-character Stellar contract ID starting with C: {}", e.message),
             }),
         ));
     }
