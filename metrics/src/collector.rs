@@ -78,8 +78,25 @@ impl Collector {
         };
 
         loop {
-            let cycle_ok = self.scrape_all(&client).await;
-            self.metrics.up.set(if cycle_ok { 1.0 } else { 0.0 });
+            // Run the scrape in a spawned task so we can detect panics (task join errors)
+            // and recover by logging and marking the `up` gauge to 0. This prevents a
+            // silent crash of the scrape loop if `scrape_all` panics.
+            let cloned = self.clone();
+            let client_clone = client.clone();
+
+            let handle = tokio::spawn(async move { cloned.scrape_all(&client_clone).await });
+
+            match handle.await {
+                Ok(cycle_ok) => {
+                    self.metrics.up.set(if cycle_ok { 1.0 } else { 0.0 });
+                }
+                Err(join_err) => {
+                    error!(%join_err, "scrape task panicked or was cancelled");
+                    // Mark router as down so metrics reflect the outage.
+                    self.metrics.up.set(0.0);
+                }
+            }
+
             tokio::time::sleep(interval).await;
         }
     }
