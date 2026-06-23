@@ -31,6 +31,26 @@ use dashmap::DashMap;
 use serde::Serialize;
 use tracing::warn;
 
+fn truncate_utf8_to_bytes(s: &str, max_bytes: usize) -> Option<&str> {
+    if s.is_empty() {
+        return Some(s);
+    }
+    if s.len() <= max_bytes {
+        return Some(s);
+    }
+
+    let mut end = max_bytes;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+
+    if end == 0 {
+        None
+    } else {
+        Some(&s[..end])
+    }
+}
+
 // ── Config ────────────────────────────────────────────────────────────────────
 
 /// Rate-limit configuration.
@@ -177,13 +197,19 @@ pub async fn rate_limit_middleware(
     req: Request<Body>,
     next: Next,
 ) -> Response {
+    const MAX_API_KEY_BYTES: usize = 256;
+
     // Prefer X-Api-Key as the rate-limit key; fall back to remote IP.
+    //
+    // To avoid unbounded memory growth in the underlying DashMap, cap the
+    // header value length.
     let key = req
         .headers()
         .get("x-api-key")
         .and_then(|v| v.to_str().ok())
         .filter(|v| !v.is_empty())
-        .map(|v| format!("api-key:{v}"))
+        .and_then(|v| truncate_utf8_to_bytes(v, MAX_API_KEY_BYTES))
+        .map(|t| format!("api-key:{t}"))
         .unwrap_or_else(|| format!("ip:{}", addr.ip()));
 
     if limiter.check(&key) {
@@ -198,7 +224,9 @@ pub async fn rate_limit_middleware(
         [("retry-after", retry_after.to_string())],
         Json(RateLimitErrorBody {
             error: "rate_limit_exceeded",
-            message: format!("Too many requests. Retry after {retry_after} second(s)."),
+            message: format!(
+                "Too many requests. Retry after {retry_after} second(s)."
+            ),
             retry_after_secs: retry_after,
         }),
     )
@@ -239,4 +267,21 @@ mod tests {
         assert!(rl.check("192.168.1.2"));
         assert!(!rl.check("192.168.1.1"));
     }
+
+    #[test]
+    fn truncate_utf8_to_bytes_caps_length() {
+        let s = "a".repeat(1024);
+        let t = truncate_utf8_to_bytes(&s, 256).unwrap();
+        assert_eq!(t.len(), 256);
+    }
+
+    #[test]
+    fn truncate_utf8_to_bytes_never_returns_invalid_utf8() {
+        // 2-byte UTF-8 char
+        let s = "é".repeat(200);
+        let t = truncate_utf8_to_bytes(&s, 10).unwrap();
+        assert!(t.is_char_boundary(0));
+        assert!(t.is_char_boundary(t.len()));
+    }
 }
+
