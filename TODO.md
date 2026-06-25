@@ -1,8 +1,8 @@
 # TODO
 
-- [x] Implement API key length limiting in `router-off-chain-common/src/rate_limit.rs` (truncate to 256 bytes where possible, otherwise reject to IP fallback)
-
-- [ ] Add unit tests for: normal API key, empty header, oversized API key, non-UTF8 header
-
-- [ ] Run Rust tests (`cargo test`) to ensure no regressions
+- [ ] Confirm current behavior for GET /routes and Soroban RPC error handling in api-server/src/rpc.rs.
+- [ ] Implement change so get_all_routes propagates RPC/backend errors (no silent Ok(vec![])).
+- [ ] Add/update response shape or error propagation so callers can distinguish empty registry vs backend failure.
+- [ ] Add tests (unit/integration) covering RPC failure -> non-empty error response for GET /routes.
+- [ ] Run cargo test for api-server (and any affected workspace crates).
 
