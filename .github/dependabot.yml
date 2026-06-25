@@ -3,9 +3,28 @@ updates:
   - package-ecosystem: "cargo"
     directory: "/"
     schedule:
-      interval: "weekly"
+      interval: "monthly"
     open-pull-requests-limit: 5
+    ignore:
+      - dependency-name: "soroban-sdk"
+    groups:
+      web-framework:
+        patterns:
+          - "axum*"
+          - "tower*"
+          - "utoipa*"
+      async-runtime:
+        patterns:
+          - "tokio*"
+          - "futures-util"
+      observability:
+        patterns:
+          - "tracing*"
+          - "prometheus"
+      serialization:
+        patterns:
+          - "serde*"
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
-      interval: "weekly"
+      interval: "monthly"
