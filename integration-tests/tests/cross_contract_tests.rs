@@ -15,10 +15,10 @@ use soroban_sdk::{
 
 // ── Contract imports ──────────────────────────────────────────────────────────
 
-use router_core::{RouterCore, RouterCoreClient};
-use router_registry::{RouterRegistry, RouterRegistryClient};
 use router_access::{RouterAccess, RouterAccessClient};
+use router_core::{RouterCore, RouterCoreClient};
 use router_middleware::{RouterMiddleware, RouterMiddlewareClient};
+use router_registry::{RouterRegistry, RouterRegistryClient};
 
 // ── Shared setup ──────────────────────────────────────────────────────────────
 
@@ -53,7 +53,14 @@ fn setup() -> Suite<'static> {
     access.initialize(&admin);
     middleware.initialize(&admin);
 
-    Suite { env, admin, core, registry, access, middleware }
+    Suite {
+        env,
+        admin,
+        core,
+        registry,
+        access,
+        middleware,
+    }
 }
 
 // ── router-core + router-registry ────────────────────────────────────────────
@@ -160,7 +167,8 @@ fn test_middleware_pre_call_passes_for_enabled_route() {
     let caller = Address::generate(&s.env);
 
     s.core.register_route(&s.admin, &route, &addr, &None);
-    s.middleware.configure_route(&s.admin, &route, &10, &60, &true, &0, &0, &0);
+    s.middleware
+        .configure_route(&s.admin, &route, &10, &60, &true, &0, &0, &0);
 
     s.middleware.pre_call(&caller, &route);
     assert_eq!(s.middleware.total_calls(), 1);
@@ -175,12 +183,16 @@ fn test_middleware_rate_limit_blocks_after_threshold() {
 
     s.core.register_route(&s.admin, &route, &addr, &None);
     // max 2 calls per 60s window
-    s.middleware.configure_route(&s.admin, &route, &2, &60, &true, &0, &0, &0);
+    s.middleware
+        .configure_route(&s.admin, &route, &2, &60, &true, &0, &0, &0);
 
     s.middleware.pre_call(&caller, &route);
     s.middleware.pre_call(&caller, &route);
     let result = s.middleware.try_pre_call(&caller, &route);
-    assert_eq!(result, Err(Ok(router_middleware::MiddlewareError::RateLimitExceeded)));
+    assert_eq!(
+        result,
+        Err(Ok(router_middleware::MiddlewareError::RateLimitExceeded))
+    );
 }
 
 #[test]
@@ -191,10 +203,14 @@ fn test_middleware_disabled_route_blocks_pre_call() {
     let caller = Address::generate(&s.env);
 
     s.core.register_route(&s.admin, &route, &addr, &None);
-    s.middleware.configure_route(&s.admin, &route, &0, &0, &false, &0, &0, &0);
+    s.middleware
+        .configure_route(&s.admin, &route, &0, &0, &false, &0, &0, &0);
 
     let result = s.middleware.try_pre_call(&caller, &route);
-    assert_eq!(result, Err(Ok(router_middleware::MiddlewareError::RouteDisabled)));
+    assert_eq!(
+        result,
+        Err(Ok(router_middleware::MiddlewareError::RouteDisabled))
+    );
 }
 
 // ── Full resolution path ──────────────────────────────────────────────────────
@@ -219,7 +235,8 @@ fn test_full_resolution_path() {
     s.core.register_route(&s.admin, &route, &oracle_addr, &None);
 
     // Step 3: configure middleware (5 calls/min, circuit breaker threshold 3)
-    s.middleware.configure_route(&s.admin, &route, &5, &60, &true, &3, &30, &0);
+    s.middleware
+        .configure_route(&s.admin, &route, &5, &60, &true, &3, &30, &0);
 
     // Step 4: pre_call
     assert!(s.middleware.try_pre_call(&caller, &route).is_ok());
@@ -245,7 +262,8 @@ fn test_pause_and_unpause_route_in_core() {
     let oracle_addr = Address::generate(&s.env);
 
     s.core.register_route(&s.admin, &route, &oracle_addr, &None);
-    s.middleware.configure_route(&s.admin, &route, &0, &0, &true, &0, &0, &0);
+    s.middleware
+        .configure_route(&s.admin, &route, &0, &0, &true, &0, &0, &0);
 
     // Pause in core
     s.core.set_route_paused(&s.admin, &route, &true);
@@ -273,7 +291,8 @@ fn test_circuit_breaker_trips_after_failures() {
 
     s.core.register_route(&s.admin, &route, &oracle_addr, &None);
     // failure_threshold = 2
-    s.middleware.configure_route(&s.admin, &route, &0, &0, &true, &2, &60, &0);
+    s.middleware
+        .configure_route(&s.admin, &route, &0, &0, &true, &2, &60, &0);
 
     // Two failures trip the circuit
     s.middleware.post_call(&caller, &route, &false);
@@ -281,7 +300,10 @@ fn test_circuit_breaker_trips_after_failures() {
 
     // pre_call should now be blocked
     let result = s.middleware.try_pre_call(&caller, &route);
-    assert_eq!(result, Err(Ok(router_middleware::MiddlewareError::CircuitOpen)));
+    assert_eq!(
+        result,
+        Err(Ok(router_middleware::MiddlewareError::CircuitOpen))
+    );
 
     // Advance past recovery window
     s.env.ledger().with_mut(|l| l.timestamp += 61);

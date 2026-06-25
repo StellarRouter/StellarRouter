@@ -150,11 +150,8 @@ pub const EVENT_CONTRACT_DEPRECATED: &str = "contract_deprecated";
 #[macro_export]
 macro_rules! require_admin {
     ($env:expr, $caller:expr, $key:expr, $not_init_err:expr, $unauth_err:expr) => {{
-        let admin: soroban_sdk::Address = $env
-            .storage()
-            .instance()
-            .get($key)
-            .ok_or($not_init_err)?;
+        let admin: soroban_sdk::Address =
+            $env.storage().instance().get($key).ok_or($not_init_err)?;
         if &admin != $caller {
             return Err($unauth_err);
         }
@@ -273,13 +270,14 @@ mod tests {
 /// ```
 #[macro_export]
 macro_rules! admin_transfer_complete {
-    ($env:expr, $current:expr, $new_admin:expr, $data_key_expr:expr) => {
-        {
-            $env.storage().instance().set($data_key_expr, $new_admin);
-            $env.events().publish(
-                (soroban_sdk::Symbol::new($env, $crate::EVENT_ADMIN_TRANSFERRED),),
-                ($current, $new_admin),
-            );
-        }
-    };
+    ($env:expr, $current:expr, $new_admin:expr, $data_key_expr:expr) => {{
+        $env.storage().instance().set($data_key_expr, $new_admin);
+        $env.events().publish(
+            (soroban_sdk::Symbol::new(
+                $env,
+                $crate::EVENT_ADMIN_TRANSFERRED,
+            ),),
+            ($current, $new_admin),
+        );
+    }};
 }

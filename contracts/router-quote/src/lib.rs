@@ -111,11 +111,7 @@ impl RouterQuote {
     /// # Errors
     /// * [`QuoteError::AlreadyInitialized`] — contract already initialized.
     /// * [`QuoteError::InvalidFeeBps`] — `default_fee_bps > 10_000`.
-    pub fn initialize(
-        env: Env,
-        admin: Address,
-        default_fee_bps: u32,
-    ) -> Result<(), QuoteError> {
+    pub fn initialize(env: Env, admin: Address, default_fee_bps: u32) -> Result<(), QuoteError> {
         if env.storage().instance().has(&DataKey::Admin) {
             return Err(QuoteError::AlreadyInitialized);
         }
@@ -153,10 +149,8 @@ impl RouterQuote {
         env.storage()
             .instance()
             .set(&DataKey::RouteFee(route.clone()), &fee_bps);
-        env.events().publish(
-            (Symbol::new(&env, "route_fee_set"),),
-            (route, fee_bps),
-        );
+        env.events()
+            .publish((Symbol::new(&env, "route_fee_set"),), (route, fee_bps));
         Ok(())
     }
 
@@ -647,7 +641,14 @@ mod tests {
 
     // ── compare_quotes ────────────────────────────────────────────────────────
 
-    fn make_request(env: &Env, route: &str, fee_bps: u32, amount_in: i128, admin: &Address, client: &RouterQuoteClient) -> QuoteRequest {
+    fn make_request(
+        env: &Env,
+        route: &str,
+        fee_bps: u32,
+        amount_in: i128,
+        admin: &Address,
+        client: &RouterQuoteClient,
+    ) -> QuoteRequest {
         let r = String::from_str(env, route);
         client.set_route_fee(admin, &r, &fee_bps);
         QuoteRequest {
@@ -691,9 +692,23 @@ mod tests {
         // 0.5% fee: amount_out = 9950
         // 1.0% fee: amount_out = 9900 (worst)
         let mut requests = Vec::new(&env);
-        requests.push_back(make_request(&env, "route_worst",  100, 10000, &admin, &client));
-        requests.push_back(make_request(&env, "route_best",    30, 10000, &admin, &client));
-        requests.push_back(make_request(&env, "route_middle",  50, 10000, &admin, &client));
+        requests.push_back(make_request(
+            &env,
+            "route_worst",
+            100,
+            10000,
+            &admin,
+            &client,
+        ));
+        requests.push_back(make_request(&env, "route_best", 30, 10000, &admin, &client));
+        requests.push_back(make_request(
+            &env,
+            "route_middle",
+            50,
+            10000,
+            &admin,
+            &client,
+        ));
         // All pass threshold 10000
         let result = client.compare_quotes(&requests, &10000_i128);
         assert_eq!(result.len(), 3);
@@ -718,7 +733,7 @@ mod tests {
         let mut requests = Vec::new(&env);
         requests.push_back(make_request(&env, "route_a", 50, 10000, &admin, &client)); // 9950 out
         requests.push_back(make_request(&env, "route_b", 20, 10000, &admin, &client)); // 9980 out
-        // Both pass threshold 10000
+                                                                                       // Both pass threshold 10000
         let result = client.compare_quotes(&requests, &10000_i128);
         assert_eq!(result.len(), 2);
         // route_b (lower fee) should be first

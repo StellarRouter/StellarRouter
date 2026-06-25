@@ -18,8 +18,7 @@
 //! - `admin_transferred` — Admin transferred (old_admin, new_admin)
 
 use soroban_sdk::{
-    contract, contractimpl, contracttype, contracterror,
-    Address, Env, Vec, Symbol, Val,
+    contract, contracterror, contractimpl, contracttype, Address, Env, Symbol, Val, Vec,
 };
 
 // ── Storage Keys ──────────────────────────────────────────────────────────────
@@ -29,7 +28,7 @@ pub enum DataKey {
     Admin,
     MaxBatchSize,
     TotalBatches,
-    Executing, // reentrancy guard
+    Executing,             // reentrancy guard
     BatchResult(u64, u32), // (batch_id, call_index) -> CallResult
 }
 
@@ -129,7 +128,9 @@ impl RouterMulticall {
             return Err(MulticallError::InvalidConfig);
         }
         env.storage().instance().set(&DataKey::Admin, &admin);
-        env.storage().instance().set(&DataKey::MaxBatchSize, &max_batch_size);
+        env.storage()
+            .instance()
+            .set(&DataKey::MaxBatchSize, &max_batch_size);
         env.storage().instance().set(&DataKey::TotalBatches, &0u64);
         Ok(())
     }
@@ -180,7 +181,12 @@ impl RouterMulticall {
         caller.require_auth();
 
         // Reentrancy guard
-        if env.storage().instance().get::<DataKey, bool>(&DataKey::Executing).unwrap_or(false) {
+        if env
+            .storage()
+            .instance()
+            .get::<DataKey, bool>(&DataKey::Executing)
+            .unwrap_or(false)
+        {
             return Err(MulticallError::Reentrancy);
         }
         env.storage().instance().set(&DataKey::Executing, &true);
@@ -255,7 +261,9 @@ impl RouterMulticall {
         }
 
         if !simulate {
-            env.storage().instance().set(&DataKey::TotalBatches, &(batch_id + 1));
+            env.storage()
+                .instance()
+                .set(&DataKey::TotalBatches, &(batch_id + 1));
         }
 
         env.storage().instance().remove(&DataKey::Executing);
@@ -295,10 +303,14 @@ impl RouterMulticall {
         if max_batch_size == 0 {
             return Err(MulticallError::InvalidConfig);
         }
-        let old_max: u32 = env.storage().instance()
+        let old_max: u32 = env
+            .storage()
+            .instance()
             .get(&DataKey::MaxBatchSize)
             .unwrap_or(0);
-        env.storage().instance().set(&DataKey::MaxBatchSize, &max_batch_size);
+        env.storage()
+            .instance()
+            .set(&DataKey::MaxBatchSize, &max_batch_size);
         env.events().publish(
             (Symbol::new(&env, "max_batch_size_updated"),),
             (old_max, max_batch_size),
@@ -317,7 +329,10 @@ impl RouterMulticall {
     /// # Returns
     /// The total number of batches that have been executed.
     pub fn total_batches(env: Env) -> u64 {
-        env.storage().instance().get(&DataKey::TotalBatches).unwrap_or(0)
+        env.storage()
+            .instance()
+            .get(&DataKey::TotalBatches)
+            .unwrap_or(0)
     }
 
     /// Get the max batch size.
@@ -347,7 +362,7 @@ impl RouterMulticall {
     ///
     /// # Panics
     /// * Panics if the contract has not been initialized.
-    /// 
+    ///
     /// Get the current admin address.
     ///
     /// # Errors
@@ -375,13 +390,16 @@ impl RouterMulticall {
     /// # Errors
     /// * [`MulticallError::Unauthorized`] — if `current` is not the admin.
     /// * [`MulticallError::NotInitialized`] — if the contract has not been initialized.
-    pub fn transfer_admin(env: Env, current: Address, new_admin: Address) -> Result<(), MulticallError> {
+    pub fn transfer_admin(
+        env: Env,
+        current: Address,
+        new_admin: Address,
+    ) -> Result<(), MulticallError> {
         current.require_auth();
         router_common::require_admin_simple!(&env, &current, &DataKey::Admin, MulticallError)?;
         router_common::admin_transfer_complete!(&env, &current, &new_admin, &DataKey::Admin);
         Ok(())
     }
-
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -390,7 +408,10 @@ impl RouterMulticall {
 mod tests {
     extern crate std;
     use super::*;
-    use soroban_sdk::{testutils::{Address as _, Events}, Env, FromVal, Symbol, Vec};
+    use soroban_sdk::{
+        testutils::{Address as _, Events},
+        Env, FromVal, Symbol, Vec,
+    };
 
     fn setup() -> (Env, Address, RouterMulticallClient<'static>) {
         let env = Env::default();
@@ -769,39 +790,39 @@ mod tests {
 
     #[test]
     fn test_call_result_event_includes_caller() {
-            let (env, _admin, client) = setup();
-            let mock_id = env.register_contract(None, MockContract);
-            let caller = Address::generate(&env);
+        let (env, _admin, client) = setup();
+        let mock_id = env.register_contract(None, MockContract);
+        let caller = Address::generate(&env);
 
-            let mut calls = Vec::new(&env);
-            calls.push_back(CallDescriptor {
-                target: mock_id.clone(),
-                function: Symbol::new(&env, "success"),
-                required: true,
-                instruction_budget: None,
-                args: Vec::new(&env),
-            });
+        let mut calls = Vec::new(&env);
+        calls.push_back(CallDescriptor {
+            target: mock_id.clone(),
+            function: Symbol::new(&env, "success"),
+            required: true,
+            instruction_budget: None,
+            args: Vec::new(&env),
+        });
 
-            client.execute_batch(&caller, &calls, &false, &false);
+        client.execute_batch(&caller, &calls, &false, &false);
 
-            // Find the call_result event — tuple is (contract_id, topics: Vec<Val>, data: Val)
-            let all_events = env.events().all();
-            let (_, _, data) = all_events
-                .iter()
-                .find(|(_, topics, _)| {
-                    topics
-                        .get(0)
-                        .map(|v| Symbol::from_val(&env, &v) == Symbol::new(&env, "call_result"))
-                        .unwrap_or(false)
-                })
-                .expect("call_result event not found");
+        // Find the call_result event — tuple is (contract_id, topics: Vec<Val>, data: Val)
+        let all_events = env.events().all();
+        let (_, _, data) = all_events
+            .iter()
+            .find(|(_, topics, _)| {
+                topics
+                    .get(0)
+                    .map(|v| Symbol::from_val(&env, &v) == Symbol::new(&env, "call_result"))
+                    .unwrap_or(false)
+            })
+            .expect("call_result event not found");
 
-            // Data is a Vec<Val>; decode first element as Address and assert it equals caller
-            let data_vec = soroban_sdk::Vec::<soroban_sdk::Val>::from_val(&env, &data);
-            let event_caller = Address::from_val(&env, &data_vec.get(0).unwrap());
+        // Data is a Vec<Val>; decode first element as Address and assert it equals caller
+        let data_vec = soroban_sdk::Vec::<soroban_sdk::Val>::from_val(&env, &data);
+        let event_caller = Address::from_val(&env, &data_vec.get(0).unwrap());
 
-            assert_eq!(event_caller, caller);
-        }
+        assert_eq!(event_caller, caller);
+    }
 
     #[test]
     fn test_total_batches_not_incremented_when_required_call_fails() {

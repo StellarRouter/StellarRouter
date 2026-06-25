@@ -43,14 +43,14 @@ use soroban_sdk::{
 #[contracttype]
 pub enum DataKey {
     SuperAdmin,
-    HasRole(String, Address),          // (role, address) -> bool (direct grant only)
-    RoleAdmin(String),                 // role -> Address who manages it
+    HasRole(String, Address), // (role, address) -> bool (direct grant only)
+    RoleAdmin(String),        // role -> Address who manages it
     Blacklisted(Address),
-    RoleParent(String),                // role -> parent role name (hierarchy edge)
-    RoleMember(String, u32),           // (role, index) -> Address
-    RoleMemberIndex(String, Address),  // (role, account) -> index
-    RoleMemberCount(String),           // role -> total indexed member count
-    AddressRoles(Address),             // address -> Vec<String>
+    RoleParent(String),               // role -> parent role name (hierarchy edge)
+    RoleMember(String, u32),          // (role, index) -> Address
+    RoleMemberIndex(String, Address), // (role, account) -> index
+    RoleMemberCount(String),          // role -> total indexed member count
+    AddressRoles(Address),            // address -> Vec<String>
     RoleExpiry(String, Address),
     BlacklistReason(Address),
     BlacklistExpiry(Address),
@@ -144,9 +144,10 @@ impl RouterAccess {
             env.storage()
                 .instance()
                 .set(&DataKey::RoleMember(role.clone(), count), &account);
-            env.storage()
-                .instance()
-                .set(&DataKey::RoleMemberIndex(role.clone(), account.clone()), &count);
+            env.storage().instance().set(
+                &DataKey::RoleMemberIndex(role.clone(), account.clone()),
+                &count,
+            );
             env.storage()
                 .instance()
                 .set(&DataKey::RoleMemberCount(role.clone()), &(count + 1));
@@ -299,11 +300,7 @@ impl RouterAccess {
     ///
     /// # Errors
     /// * [`AccessError::Unauthorized`] -- caller is not the super-admin.
-    pub fn remove_role_parent(
-        env: Env,
-        caller: Address,
-        role: String,
-    ) -> Result<(), AccessError> {
+    pub fn remove_role_parent(env: Env, caller: Address, role: String) -> Result<(), AccessError> {
         caller.require_auth();
         Self::require_super_admin(&env, &caller)?;
         env.storage()
@@ -318,9 +315,7 @@ impl RouterAccess {
 
     /// Get the direct parent role of a role, if one is set.
     pub fn get_role_parent(env: Env, role: String) -> Option<String> {
-        env.storage()
-            .instance()
-            .get(&DataKey::RoleParent(role))
+        env.storage().instance().get(&DataKey::RoleParent(role))
     }
 
     /// Set the admin for a specific role (who can grant/revoke it).
@@ -791,9 +786,10 @@ impl RouterAccess {
             env.storage()
                 .instance()
                 .set(&DataKey::RoleMember(role.clone(), count), account);
-            env.storage()
-                .instance()
-                .set(&DataKey::RoleMemberIndex(role.clone(), account.clone()), &count);
+            env.storage().instance().set(
+                &DataKey::RoleMemberIndex(role.clone(), account.clone()),
+                &count,
+            );
             env.storage()
                 .instance()
                 .set(&DataKey::RoleMemberCount(role.clone()), &(count + 1));
@@ -810,12 +806,10 @@ impl RouterAccess {
         env.storage()
             .instance()
             .set(&DataKey::AddressRoles(account.clone()), &roles);
-        env.storage()
-            .instance()
-            .set(
-                &DataKey::RoleExpiry(role.clone(), account.clone()),
-                &expiry_timestamp,
-            );
+        env.storage().instance().set(
+            &DataKey::RoleExpiry(role.clone(), account.clone()),
+            &expiry_timestamp,
+        );
         env.events().publish(
             (Symbol::new(env, router_common::EVENT_ROLE_GRANTED),),
             (account.clone(), role.clone(), expiry_timestamp),
@@ -824,11 +818,7 @@ impl RouterAccess {
     }
 
     /// Internal helper used by `revoke_role_batch`.
-    fn revoke_role_internal(
-        env: &Env,
-        role: &String,
-        target: &Address,
-    ) -> Result<(), AccessError> {
+    fn revoke_role_internal(env: &Env, role: &String, target: &Address) -> Result<(), AccessError> {
         let key = DataKey::HasRole(role.clone(), target.clone());
         if !env.storage().instance().has(&key) {
             return Err(AccessError::RoleNotFound);

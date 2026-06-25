@@ -29,7 +29,7 @@ use soroban_sdk::{
 pub enum DataKey {
     Admin,
     RouteCallState(String), // route_name -> RouteCallState
-    RouteConfig(String),        // route_name -> RouteConfig
+    RouteConfig(String),    // route_name -> RouteConfig
     GlobalEnabled,
     TotalCalls,
     CallLog(String),        // route_name -> CallLogState
@@ -284,10 +284,10 @@ impl RouterMiddleware {
         }
 
         // 2. Compute new states (if applicable) without writing yet
-        let new_route_call_state = if let Some(config) =
-            env.storage()
-                .instance()
-                .get::<DataKey, RouteConfig>(&DataKey::RouteConfig(route.clone()))
+        let new_route_call_state = if let Some(config) = env
+            .storage()
+            .instance()
+            .get::<DataKey, RouteConfig>(&DataKey::RouteConfig(route.clone()))
         {
             let mut route_call_state: RouteCallState = env
                 .storage()
@@ -333,15 +333,14 @@ impl RouterMiddleware {
             // 2c. Rate limit check — compute new state but do not write yet
             if config.max_calls_per_window > 0 {
                 let now = env.ledger().timestamp();
-                let state: RateLimitState =
-                    route_call_state
-                        .rate_limits
-                        .get(caller.clone())
-                        .unwrap_or(RateLimitState {
-                            calls_in_window: 0,
-                            window_start: now,
-                            total_violations: 0,
-                        });
+                let state: RateLimitState = route_call_state
+                    .rate_limits
+                    .get(caller.clone())
+                    .unwrap_or(RateLimitState {
+                        calls_in_window: 0,
+                        window_start: now,
+                        total_violations: 0,
+                    });
 
                 let window_elapsed = now >= state.window_start + config.window_seconds;
                 let calls = if window_elapsed {
@@ -547,18 +546,26 @@ impl RouterMiddleware {
                         route_call_state.circuit_breaker.failure_count = 1;
                         env.events().publish(
                             (Symbol::new(&env, "circuit_opened"),),
-                            (route.clone(), route_call_state.circuit_breaker.failure_count),
+                            (
+                                route.clone(),
+                                route_call_state.circuit_breaker.failure_count,
+                            ),
                         );
                     } else {
                         // Normal failure handling
                         route_call_state.circuit_breaker.failure_count += 1;
 
-                        if route_call_state.circuit_breaker.failure_count >= config.failure_threshold {
+                        if route_call_state.circuit_breaker.failure_count
+                            >= config.failure_threshold
+                        {
                             route_call_state.circuit_breaker.is_open = true;
                             route_call_state.circuit_breaker.opened_at = env.ledger().timestamp();
                             env.events().publish(
                                 (Symbol::new(&env, "circuit_opened"),),
-                                (route.clone(), route_call_state.circuit_breaker.failure_count),
+                                (
+                                    route.clone(),
+                                    route_call_state.circuit_breaker.failure_count,
+                                ),
                             );
                         }
                     }
@@ -802,11 +809,11 @@ impl RouterMiddleware {
     ) -> Result<(), MiddlewareError> {
         caller.require_auth();
         router_common::require_admin_simple!(&env, &caller, &DataKey::Admin, MiddlewareError)?;
-        env.storage().instance().remove(&DataKey::CallLog(route.clone()));
-        env.events().publish(
-            (Symbol::new(&env, "call_log_cleared"),),
-            route,
-        );
+        env.storage()
+            .instance()
+            .remove(&DataKey::CallLog(route.clone()));
+        env.events()
+            .publish((Symbol::new(&env, "call_log_cleared"),), route);
         Ok(())
     }
 
@@ -874,7 +881,11 @@ impl RouterMiddleware {
     /// # Returns
     /// `Some(`[`RateLimitState`]`)` if the caller has made at least one call on this route,
     /// `None` otherwise.
-    pub fn get_rate_limit_stats(env: Env, route: String, caller: Address) -> Option<RateLimitState> {
+    pub fn get_rate_limit_stats(
+        env: Env,
+        route: String,
+        caller: Address,
+    ) -> Option<RateLimitState> {
         Self::rate_limit_state(env, route, caller)
     }
 
@@ -1050,7 +1061,7 @@ impl RouterMiddleware {
     ///
     /// # Panics
     /// * Panics if the contract has not been initialized.
-    /// 
+    ///
     /// Get the current admin address.
     ///
     /// # Errors
@@ -1138,7 +1149,6 @@ impl RouterMiddleware {
         router_common::admin_transfer_complete!(&env, &current, &new_admin, &DataKey::Admin);
         Ok(())
     }
-
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -1316,11 +1326,11 @@ mod tests {
         client.post_call(&caller, &route, &false);
         // success should reset
         client.post_call(&caller, &route, &true);
-        
+
         // 2 more failures should NOT trip it, because it was reset
         client.post_call(&caller, &route, &false);
         client.post_call(&caller, &route, &false);
-        
+
         // Circuit should still be closed
         assert!(client.try_pre_call(&caller, &route).is_ok());
     }
@@ -1339,7 +1349,10 @@ mod tests {
 
         // 2nd failure - should trip
         client.post_call(&caller, &route, &false);
-        assert_eq!(client.try_pre_call(&caller, &route), Err(Ok(MiddlewareError::CircuitOpen)));
+        assert_eq!(
+            client.try_pre_call(&caller, &route),
+            Err(Ok(MiddlewareError::CircuitOpen))
+        );
     }
 
     #[test]
@@ -1351,7 +1364,10 @@ mod tests {
         client.configure_route(&admin, &route, &0, &0, &true, &1, &0, &0);
 
         client.post_call(&caller, &route, &false);
-        assert_eq!(client.try_pre_call(&caller, &route), Err(Ok(MiddlewareError::CircuitOpen)));
+        assert_eq!(
+            client.try_pre_call(&caller, &route),
+            Err(Ok(MiddlewareError::CircuitOpen))
+        );
     }
 
     #[test]
@@ -1373,7 +1389,10 @@ mod tests {
         client.post_call(&caller, &route, &true);
         client.post_call(&caller, &route, &false);
 
-        assert_eq!(client.get_call_log_length(&route), client.get_call_log(&route).len());
+        assert_eq!(
+            client.get_call_log_length(&route),
+            client.get_call_log(&route).len()
+        );
     }
 
     #[test]
@@ -1975,11 +1994,11 @@ mod tests {
         // retention=3, make 5 calls so ring buffer wraps
         client.configure_route(&admin, &route, &0, &0, &true, &0, &0, &3);
 
-        client.post_call(&caller, &route, &true);  // evicted
+        client.post_call(&caller, &route, &true); // evicted
         client.post_call(&caller, &route, &false); // evicted
-        client.post_call(&caller, &route, &true);  // retained
+        client.post_call(&caller, &route, &true); // retained
         client.post_call(&caller, &route, &false); // retained
-        client.post_call(&caller, &route, &true);  // retained
+        client.post_call(&caller, &route, &true); // retained
 
         // 3 retained: success, failure, success
         let success = client.get_call_log_filtered(&route, &true);
@@ -2055,7 +2074,7 @@ mod tests {
         let (env, admin, client) = setup();
         let route = String::from_str(&env, "oracle/get_price");
         let caller = Address::generate(&env);
-        
+
         // Configure with failure_threshold=3
         client.configure_route(&admin, &route, &0, &0, &true, &3, &60, &0);
 
@@ -2074,7 +2093,7 @@ mod tests {
         let (env, admin, client) = setup();
         let route = String::from_str(&env, "oracle/get_price");
         let caller = Address::generate(&env);
-        
+
         // Configure with failure_threshold=1, recovery_window=60s
         client.configure_route(&admin, &route, &0, &0, &true, &1, &60, &0);
 
@@ -2103,7 +2122,7 @@ mod tests {
         let (env, admin, client) = setup();
         let route = String::from_str(&env, "oracle/get_price");
         let caller = Address::generate(&env);
-        
+
         // Configure with failure_threshold=2, recovery_window=100s
         client.configure_route(&admin, &route, &0, &0, &true, &2, &100, &0);
 
@@ -2122,7 +2141,10 @@ mod tests {
 
         // pre_call should now succeed (auto-recovery)
         let result = client.try_pre_call(&caller, &route);
-        assert!(result.is_ok(), "pre_call should succeed after recovery window");
+        assert!(
+            result.is_ok(),
+            "pre_call should succeed after recovery window"
+        );
     }
 
     #[test]
@@ -2130,7 +2152,7 @@ mod tests {
         let (env, admin, client) = setup();
         let route = String::from_str(&env, "oracle/get_price");
         let caller = Address::generate(&env);
-        
+
         // Configure with failure_threshold=2, recovery_window=60s
         client.configure_route(&admin, &route, &0, &0, &true, &2, &60, &0);
 
@@ -2161,7 +2183,7 @@ mod tests {
         let (env, admin, client) = setup();
         let route = String::from_str(&env, "oracle/get_price");
         let caller = Address::generate(&env);
-        
+
         // Configure with failure_threshold=1, recovery_window=50s
         client.configure_route(&admin, &route, &0, &0, &true, &1, &50, &0);
 
@@ -2183,7 +2205,10 @@ mod tests {
         // Verify state is fully reset
         let state_recovered = client.circuit_breaker_state(&route).unwrap();
         assert!(!state_recovered.is_open, "is_open should be false");
-        assert_eq!(state_recovered.failure_count, 0, "failure_count should be 0");
+        assert_eq!(
+            state_recovered.failure_count, 0,
+            "failure_count should be 0"
+        );
         assert_eq!(state_recovered.opened_at, 0, "opened_at should be 0");
     }
 
@@ -2192,7 +2217,7 @@ mod tests {
         let (env, admin, client) = setup();
         let route = String::from_str(&env, "oracle/get_price");
         let caller = Address::generate(&env);
-        
+
         // Configure with failure_threshold=1, recovery_window=100s
         client.configure_route(&admin, &route, &0, &0, &true, &1, &100, &0);
 

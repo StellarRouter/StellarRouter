@@ -181,10 +181,18 @@ impl RouterExecution {
             return Err(ExecutionError::InvalidConfig);
         }
         env.storage().instance().set(&DataKey::Admin, &admin);
-        env.storage().instance().set(&DataKey::MaxRetries, &max_retries);
-        env.storage().instance().set(&DataKey::BackoffBaseMs, &backoff_base_ms);
-        env.storage().instance().set(&DataKey::BackoffMultiplier, &backoff_multiplier);
-        env.storage().instance().set(&DataKey::TotalExecutions, &0u64);
+        env.storage()
+            .instance()
+            .set(&DataKey::MaxRetries, &max_retries);
+        env.storage()
+            .instance()
+            .set(&DataKey::BackoffBaseMs, &backoff_base_ms);
+        env.storage()
+            .instance()
+            .set(&DataKey::BackoffMultiplier, &backoff_multiplier);
+        env.storage()
+            .instance()
+            .set(&DataKey::TotalExecutions, &0u64);
         env.storage().instance().set(&DataKey::TotalErrors, &0u64);
         Ok(())
     }
@@ -210,8 +218,12 @@ impl RouterExecution {
         if backoff_multiplier < 100 {
             return Err(ExecutionError::InvalidConfig);
         }
-        env.storage().instance().set(&DataKey::BackoffBaseMs, &backoff_base_ms);
-        env.storage().instance().set(&DataKey::BackoffMultiplier, &backoff_multiplier);
+        env.storage()
+            .instance()
+            .set(&DataKey::BackoffBaseMs, &backoff_base_ms);
+        env.storage()
+            .instance()
+            .set(&DataKey::BackoffMultiplier, &backoff_multiplier);
         Ok(())
     }
 
@@ -219,8 +231,16 @@ impl RouterExecution {
     ///
     /// Returns `(backoff_base_ms, backoff_multiplier)`.
     pub fn backoff_config(env: Env) -> (u64, u32) {
-        let base: u64 = env.storage().instance().get(&DataKey::BackoffBaseMs).unwrap_or(0);
-        let mult: u32 = env.storage().instance().get(&DataKey::BackoffMultiplier).unwrap_or(100);
+        let base: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::BackoffBaseMs)
+            .unwrap_or(0);
+        let mult: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::BackoffMultiplier)
+            .unwrap_or(100);
         (base, mult)
     }
 
@@ -388,7 +408,11 @@ impl RouterExecution {
         // Resource fee scales with amount (0.1% of amount, min 100 stroops)
         let resource_fee: i128 = {
             let scaled = amount / 1000;
-            if scaled < 100 { 100 } else { scaled }
+            if scaled < 100 {
+                100
+            } else {
+                scaled
+            }
         };
 
         // Surge pricing: if high_load_threshold >= 8000 bps (80%), apply 2x multiplier
@@ -499,11 +523,7 @@ impl RouterExecution {
     /// * [`ExecutionError::Unauthorized`] — if `caller` is not the admin.
     /// * [`ExecutionError::NotInitialized`] — if the contract is not initialized.
     /// * [`ExecutionError::InvalidConfig`] — if `new_max` > 5.
-    pub fn set_max_retries(
-        env: Env,
-        caller: Address,
-        new_max: u32,
-    ) -> Result<(), ExecutionError> {
+    pub fn set_max_retries(env: Env, caller: Address, new_max: u32) -> Result<(), ExecutionError> {
         caller.require_auth();
         let admin: Address = env
             .storage()
@@ -537,7 +557,11 @@ impl RouterExecution {
             .get(&DataKey::ExecHistory)
             .unwrap_or(Vec::new(&env));
         let len = history.len();
-        let take = if limit as u32 > len { len } else { limit as u32 };
+        let take = if limit as u32 > len {
+            len
+        } else {
+            limit as u32
+        };
         let mut result = Vec::new(&env);
         // Return newest-first: iterate from the end
         let mut i = len;
@@ -565,8 +589,16 @@ impl RouterExecution {
     ///
     /// Returns `(total_executions, total_errors)`.
     pub fn stats(env: Env) -> (u64, u64) {
-        let execs: u64 = env.storage().instance().get(&DataKey::TotalExecutions).unwrap_or(0);
-        let errors: u64 = env.storage().instance().get(&DataKey::TotalErrors).unwrap_or(0);
+        let execs: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::TotalExecutions)
+            .unwrap_or(0);
+        let errors: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::TotalErrors)
+            .unwrap_or(0);
         (execs, errors)
     }
 
@@ -626,7 +658,9 @@ impl RouterExecution {
             success,
             fee_paid,
         });
-        env.storage().instance().set(&DataKey::ExecHistory, &history);
+        env.storage()
+            .instance()
+            .set(&DataKey::ExecHistory, &history);
     }
 }
 
@@ -635,14 +669,21 @@ impl RouterExecution {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use soroban_sdk::{testutils::{Address as _, Events as _}, Env, IntoVal, TryFromVal};
+    use soroban_sdk::{
+        testutils::{Address as _, Events as _},
+        Env, IntoVal, TryFromVal,
+    };
 
     #[contract]
     pub struct MockTarget;
     #[contractimpl]
     impl MockTarget {
-        pub fn success(env: Env) -> Symbol { Symbol::new(&env, "ok") }
-        pub fn fail() { panic!("mock fail"); }
+        pub fn success(env: Env) -> Symbol {
+            Symbol::new(&env, "ok")
+        }
+        pub fn fail() {
+            panic!("mock fail");
+        }
     }
 
     fn setup() -> (Env, Address, RouterExecutionClient<'static>) {
@@ -684,7 +725,7 @@ mod tests {
             max_retries: 2,
         };
         let _ = client.try_execute(&caller, &req);
-        
+
         // Verify that execution_retry events were emitted the requested number of times
         let events = env.events().all();
         let mut retry_count = 0;
@@ -723,7 +764,7 @@ mod tests {
         let (env, _, client) = setup();
         let caller = Address::generate(&env);
         let target = env.register_contract(None, MockTarget);
-        
+
         // 1 successful call
         let req_success = ExecutionRequest {
             target: target.clone(),
@@ -732,7 +773,7 @@ mod tests {
             max_retries: 0,
         };
         client.execute(&caller, &req_success);
-        
+
         // 1 failed call
         let req_fail = ExecutionRequest {
             target: target.clone(),
@@ -741,11 +782,11 @@ mod tests {
             max_retries: 0,
         };
         let _ = client.try_execute(&caller, &req_fail);
-        
+
         let history = client.get_execution_history(&10);
         // Note: failed executions are rolled back and not present in history.
         assert_eq!(history.len(), 1);
-        
+
         let first = history.get(0).unwrap();
         assert_eq!(first.function, Symbol::new(&env, "success"));
         assert_eq!(first.success, true);
@@ -797,7 +838,10 @@ mod tests {
         assert!(!estimate.high_load);
         assert_eq!(estimate.surge_multiplier, 100);
         assert_eq!(estimate.base_fee, 100);
-        assert_eq!(estimate.total_fee, estimate.base_fee + estimate.resource_fee);
+        assert_eq!(
+            estimate.total_fee,
+            estimate.base_fee + estimate.resource_fee
+        );
     }
 
     #[test]
@@ -809,7 +853,10 @@ mod tests {
         assert!(estimate.high_load);
         assert_eq!(estimate.surge_multiplier, 200);
         // total = (base + resource) * 2
-        assert_eq!(estimate.total_fee, (estimate.base_fee + estimate.resource_fee) * 2);
+        assert_eq!(
+            estimate.total_fee,
+            (estimate.base_fee + estimate.resource_fee) * 2
+        );
     }
 
     #[test]

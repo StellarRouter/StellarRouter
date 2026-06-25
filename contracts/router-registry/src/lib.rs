@@ -163,9 +163,10 @@ impl RouterRegistry {
             .set(&DataKey::Entry(name.clone(), version), &entry);
 
         // Update address index
-        env.storage()
-            .instance()
-            .set(&DataKey::AddressIndex(address.clone()), &(name.clone(), version));
+        env.storage().instance().set(
+            &DataKey::AddressIndex(address.clone()),
+            &(name.clone(), version),
+        );
 
         // Update version list
         let mut versions = Self::get_versions_list(&env, &name);
@@ -188,17 +189,20 @@ impl RouterRegistry {
         }
 
         // Update address index for O(1) reverse lookup
-        env.storage()
-            .instance()
-            .set(&DataKey::AddressIndex(entry.address.clone()), &(name.clone(), version));
+        env.storage().instance().set(
+            &DataKey::AddressIndex(entry.address.clone()),
+            &(name.clone(), version),
+        );
 
         // New version is always the highest (validated above), so it becomes the new latest.
         env.storage()
             .instance()
             .set(&DataKey::LatestVersion(name.clone()), &version);
 
-        env.events()
-            .publish((Symbol::new(&env, "contract_registered"),), (name, version, None::<String>));
+        env.events().publish(
+            (Symbol::new(&env, "contract_registered"),),
+            (name, version, None::<String>),
+        );
 
         Ok(())
     }
@@ -262,9 +266,10 @@ impl RouterRegistry {
                 .instance()
                 .set(&DataKey::Entry(name.clone(), version), &entry);
 
-            env.storage()
-                .instance()
-                .set(&DataKey::AddressIndex(address.clone()), &(name.clone(), version));
+            env.storage().instance().set(
+                &DataKey::AddressIndex(address.clone()),
+                &(name.clone(), version),
+            );
 
             let mut versions = Self::get_versions_list(&env, &name);
             versions.push_back(version);
@@ -329,9 +334,7 @@ impl RouterRegistry {
     /// # Returns
     /// `true` if an entry exists for `(name, version)`, `false` otherwise.
     pub fn is_registered(env: Env, name: String, version: u32) -> bool {
-        env.storage()
-            .instance()
-            .has(&DataKey::Entry(name, version))
+        env.storage().instance().has(&DataKey::Entry(name, version))
     }
 
     /// Get the latest (highest version) non-deprecated entry for a name.
@@ -614,7 +617,7 @@ impl RouterRegistry {
     ///
     /// # Panics
     /// * Panics if the contract has not been initialized.
-    /// 
+    ///
     /// Get the current admin address.
     ///
     /// # Errors
@@ -701,9 +704,7 @@ impl RouterRegistry {
     pub fn get_entry_by_address(env: Env, address: Address) -> Option<ContractEntry> {
         let key = DataKey::AddressIndex(address);
         let (name, version): (String, u32) = env.storage().instance().get(&key)?;
-        env.storage()
-            .instance()
-            .get(&DataKey::Entry(name, version))
+        env.storage().instance().get(&DataKey::Entry(name, version))
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────────
@@ -723,8 +724,8 @@ impl RouterRegistry {
         let len = constraint.len() as usize;
         let mut buf = [0u8; 64];
         constraint.copy_into_slice(&mut buf[..len]);
-        let constraint_str = core::str::from_utf8(&buf[..len])
-            .map_err(|_| RegistryError::InvalidConstraint)?;
+        let constraint_str =
+            core::str::from_utf8(&buf[..len]).map_err(|_| RegistryError::InvalidConstraint)?;
 
         if constraint_str.starts_with(">=") {
             let min = constraint_str[2..]
@@ -1132,7 +1133,7 @@ mod tests {
             Address::generate(&env),
             Address::generate(&env),
         );
-        
+
         // Register some versions as admin
         client.register(&admin, &name, &a1, &1);
         client.register(&admin, &name, &a2, &2);
@@ -1145,7 +1146,7 @@ mod tests {
             (name.clone(), 2u32),
             (name.clone(), 3u32),
         ];
-        
+
         let result = client.try_deprecate_many(&unauthorized, &entries);
         assert!(result.is_ok());
         let results = result.unwrap().unwrap();
@@ -1624,7 +1625,7 @@ mod tests {
         let name1 = String::from_str(&env, "oracle");
         let addr1 = Address::generate(&env);
         client.register(&admin, &name1, &addr1, &1);
-        
+
         let names = client.get_all_names();
         assert_eq!(names.len(), 1);
         assert_eq!(names.get(0).unwrap(), name1);
@@ -1632,7 +1633,7 @@ mod tests {
         let name2 = String::from_str(&env, "vault");
         let addr2 = Address::generate(&env);
         client.register(&admin, &name2, &addr2, &1);
-        
+
         let names = client.get_all_names();
         assert_eq!(names.len(), 2);
     }

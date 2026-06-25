@@ -10,10 +10,10 @@ use soroban_sdk::{
     Address, Bytes, Env, String, Vec,
 };
 
+use router_access::{AccessError, RouterAccess, RouterAccessClient};
 use router_core::{RouterCore, RouterCoreClient, RouterError};
-use router_registry::{RouterRegistry, RouterRegistryClient, RegistryError};
-use router_access::{RouterAccess, RouterAccessClient, AccessError};
-use router_middleware::{RouterMiddleware, RouterMiddlewareClient, MiddlewareError};
+use router_middleware::{MiddlewareError, RouterMiddleware, RouterMiddlewareClient};
+use router_registry::{RegistryError, RouterRegistry, RouterRegistryClient};
 use router_timelock::{RouterTimelock, RouterTimelockClient, TimelockError};
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -212,12 +212,7 @@ fn test_access_blacklisted_address_cannot_receive_role() {
     // blacklist(caller, target, reason, expires_at)
     client.blacklist(&admin, &user, &None::<String>, &None);
 
-    let result = client.try_grant_role(
-        &admin,
-        &user,
-        &String::from_str(&env, "operator"),
-        &None,
-    );
+    let result = client.try_grant_role(&admin, &user, &String::from_str(&env, "operator"), &None);
     assert_eq!(result, Err(Ok(AccessError::Blacklisted)));
 }
 
@@ -331,7 +326,12 @@ fn test_middleware_unauthorized_configure_fails() {
     let result = client.try_configure_route(
         &attacker,
         &String::from_str(&env, "oracle/price"),
-        &0, &0, &true, &0, &0, &0,
+        &0,
+        &0,
+        &true,
+        &0,
+        &0,
+        &0,
     );
     assert_eq!(result, Err(Ok(MiddlewareError::Unauthorized)));
 }

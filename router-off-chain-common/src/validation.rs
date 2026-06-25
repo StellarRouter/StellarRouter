@@ -81,9 +81,7 @@ pub fn validate_listen_addr(addr: &str) -> Result<(), ValidationError> {
     addr.parse::<std::net::SocketAddr>()
         .map(|_| ())
         .map_err(|_| {
-            ValidationError::new(
-                "listen address must be a valid host:port (e.g. 0.0.0.0:9090)",
-            )
+            ValidationError::new("listen address must be a valid host:port (e.g. 0.0.0.0:9090)")
         })
 }
 

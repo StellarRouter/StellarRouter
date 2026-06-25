@@ -77,16 +77,14 @@ impl RateLimitConfig {
     ///
     /// Returns an error if a variable is present but cannot be parsed.
     pub fn from_env() -> anyhow::Result<Self> {
-        let max_requests = parse_optional_u32("ROUTER_RATE_LIMIT_MAX_REQUESTS")?
-            .unwrap_or(60);
+        let max_requests = parse_optional_u32("ROUTER_RATE_LIMIT_MAX_REQUESTS")?.unwrap_or(60);
         if max_requests == 0 {
             return Err(anyhow::anyhow!(
                 "ROUTER_RATE_LIMIT_MAX_REQUESTS must be greater than 0"
             ));
         }
 
-        let window_secs = parse_optional_u64("ROUTER_RATE_LIMIT_WINDOW_SECS")?
-            .unwrap_or(60);
+        let window_secs = parse_optional_u64("ROUTER_RATE_LIMIT_WINDOW_SECS")?.unwrap_or(60);
         if window_secs == 0 {
             return Err(anyhow::anyhow!(
                 "ROUTER_RATE_LIMIT_WINDOW_SECS must be greater than 0"
@@ -224,9 +222,7 @@ pub async fn rate_limit_middleware(
         [("retry-after", retry_after.to_string())],
         Json(RateLimitErrorBody {
             error: "rate_limit_exceeded",
-            message: format!(
-                "Too many requests. Retry after {retry_after} second(s)."
-            ),
+            message: format!("Too many requests. Retry after {retry_after} second(s)."),
             retry_after_secs: retry_after,
         }),
     )
@@ -284,4 +280,3 @@ mod tests {
         assert!(t.is_char_boundary(t.len()));
     }
 }
-

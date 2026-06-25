@@ -58,7 +58,10 @@ pub async fn simulate(
         return Err((
             StatusCode::BAD_REQUEST,
             Json(ErrorResponse {
-                error: format!("target must be a 56-character Stellar contract ID starting with C: {}", e.message),
+                error: format!(
+                    "target must be a 56-character Stellar contract ID starting with C: {}",
+                    e.message
+                ),
             }),
         ));
     }
