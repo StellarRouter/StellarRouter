@@ -86,6 +86,11 @@ jobs:
         run: |
           cargo test -p router-api-server --verbose
           cargo test -p router-metrics-exporter --verbose
+          # Run Soroban contract unit tests with testutils feature
+          for pkg in router-core router-registry router-access router-middleware \
+                     router-timelock router-multicall router-execution router-quote; do
+            cargo test -p $pkg --features testutils --verbose
+          done
 
   # ── WASM contract build ───────────────────────────────────────────────────
   # Depends on lint (not just test) so that a test-job failure cannot mask a
