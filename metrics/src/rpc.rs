@@ -10,7 +10,11 @@ use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::time::Duration;
-use tracing::debug;
+use tracing::{debug, warn};
+
+/// Maximum number of pages to fetch in a single `get_events` call.
+/// Prevents unbounded loops if the RPC server misbehaves.
+const GET_EVENTS_MAX_PAGES: usize = 20;
 
 // ── JSON-RPC request / response types ────────────────────────────────────────
 
@@ -72,6 +76,9 @@ pub struct ContractEvent {
 #[derive(Debug, Deserialize)]
 struct GetEventsResult {
     events: Option<Vec<ContractEvent>>,
+    #[serde(rename = "latestLedger")]
+    #[allow(dead_code)]
+    latest_ledger: Option<u64>,
 }
 
 // ── Client ────────────────────────────────────────────────────────────────────
@@ -173,6 +180,9 @@ impl SorobanRpcClient {
 
     /// Call `getEvents` to fetch contract events matching the given topic filters.
     ///
+    /// Paginates through all available pages until exhausted or until
+    /// [`GET_EVENTS_MAX_PAGES`] is reached (logged as a warning).
+    ///
     /// `contract_id` — the contract whose events to query.
     /// `topic_filters` — list of topic symbol strings to match (e.g. `["quote_generated"]`).
     /// `start_ledger` — earliest ledger to include (0 = let the RPC choose).
@@ -187,39 +197,83 @@ impl SorobanRpcClient {
             .map(|t| json!({ "type": "contract", "contractIds": [contract_id], "topics": [[t]] }))
             .collect();
 
-        let params = if start_ledger > 0 {
-            json!({ "startLedger": start_ledger, "filters": filters })
-        } else {
-            json!({ "filters": filters })
-        };
+        let mut all_events: Vec<ContractEvent> = Vec::new();
+        let mut paging_token: Option<String> = None;
+        let mut pages_fetched: usize = 0;
 
-        let req = RpcRequest {
-            jsonrpc: "2.0",
-            id: 1,
-            method: "getEvents",
-            params,
-        };
+        loop {
+            let params = match (&paging_token, start_ledger) {
+                (Some(token), _) => json!({ "pagingToken": token, "filters": filters }),
+                (None, ledger) if ledger > 0 => {
+                    json!({ "startLedger": ledger, "filters": filters })
+                }
+                (None, _) => json!({ "filters": filters }),
+            };
 
-        let resp: RpcResponse = self
-            .http
-            .post(&self.rpc_url)
-            .json(&req)
-            .send()
-            .await
-            .context("HTTP request failed")?
-            .json()
-            .await
-            .context("failed to parse JSON-RPC response")?;
+            let req = RpcRequest {
+                jsonrpc: "2.0",
+                id: 1,
+                method: "getEvents",
+                params,
+            };
 
-        if let Some(err) = resp.error {
-            return Err(anyhow!("RPC error {}: {}", err.code, err.message));
+            let resp: RpcResponse = self
+                .http
+                .post(&self.rpc_url)
+                .json(&req)
+                .send()
+                .await
+                .context("HTTP request failed")?
+                .json()
+                .await
+                .context("failed to parse JSON-RPC response")?;
+
+            if let Some(err) = resp.error {
+                return Err(anyhow!("RPC error {}: {}", err.code, err.message));
+            }
+
+            let raw_value = resp.result.ok_or_else(|| anyhow!("empty RPC result"))?;
+
+            // Deserialize the raw response to extract paging tokens.
+            let raw_result: GetEventsResult =
+                serde_json::from_value(raw_value.clone())
+                    .context("failed to deserialize getEvents result")?;
+
+            let page_events = raw_result.events.unwrap_or_default();
+            if page_events.is_empty() {
+                break;
+            }
+
+            // Extract the paging token from the last event in this page
+            // by re-parsing the events array to find pagingToken fields.
+            let last_paging_token = extract_last_paging_token(&raw_value);
+
+            all_events.extend(page_events);
+            pages_fetched += 1;
+
+            if pages_fetched >= GET_EVENTS_MAX_PAGES {
+                warn!(
+                    pages = pages_fetched,
+                    total_events = all_events.len(),
+                    "get_events hit max-pages cap ({}); remaining events may be missed",
+                    GET_EVENTS_MAX_PAGES
+                );
+                break;
+            }
+
+            match last_paging_token {
+                Some(token) => paging_token = Some(token),
+                None => break, // No continuation cursor — done.
+            }
         }
 
-        let result: GetEventsResult =
-            serde_json::from_value(resp.result.ok_or_else(|| anyhow!("empty RPC result"))?)
-                .context("failed to deserialize getEvents result")?;
+        debug!(
+            pages = pages_fetched,
+            total_events = all_events.len(),
+            "get_events pagination complete"
+        );
 
-        Ok(result.events.unwrap_or_default())
+        Ok(all_events)
     }
 
     /// Convenience: call a view function and extract a `u64` from the result.
@@ -436,6 +490,20 @@ fn hex_encode_arg(s: &str) -> String {
         write!(out, "{b:02x}").ok();
     }
     out
+}
+
+/// Extract the `pagingToken` from the last event in a `getEvents` response.
+///
+/// The Soroban RPC embeds a continuation cursor in each event's `pagingToken`
+/// field.  We only need the token from the final event to request the next page.
+fn extract_last_paging_token(raw_result: &Value) -> Option<String> {
+    raw_result
+        .get("events")?
+        .as_array()?
+        .last()?
+        .get("pagingToken")?
+        .as_str()
+        .map(|s| s.to_string())
 }
 // ── Storage key XDR helpers ───────────────────────────────────────────────────
 
@@ -766,5 +834,126 @@ mod tests {
         let v = json!(["oracle", "price_feed"]);
         let result = extract_string_vec_from_sim_result(&v).unwrap();
         assert_eq!(result, vec!["oracle", "price_feed"]);
+    }
+
+    #[test]
+    fn test_extract_last_paging_token_present() {
+        let v = json!({
+            "events": [
+                { "contractId": "C1", "ledger": 1, "topic": [], "value": {}, "pagingToken": "token-a" },
+                { "contractId": "C1", "ledger": 2, "topic": [], "value": {}, "pagingToken": "token-b" }
+            ],
+            "latestLedger": 100
+        });
+        assert_eq!(
+            extract_last_paging_token(&v),
+            Some("token-b".to_string())
+        );
+    }
+
+    #[test]
+    fn test_extract_last_paging_token_absent() {
+        let v = json!({
+            "events": [
+                { "contractId": "C1", "ledger": 1, "topic": [], "value": {} }
+            ],
+            "latestLedger": 100
+        });
+        assert_eq!(extract_last_paging_token(&v), None);
+    }
+
+    #[test]
+    fn test_extract_last_paging_token_empty_events() {
+        let v = json!({ "events": [], "latestLedger": 50 });
+        assert_eq!(extract_last_paging_token(&v), None);
+    }
+
+    #[test]
+    fn test_get_events_max_pages_constant() {
+        assert_eq!(GET_EVENTS_MAX_PAGES, 20);
+    }
+
+    #[tokio::test]
+    async fn test_get_events_paginates_multiple_pages() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+
+        // Spawn a mock HTTP server that returns 3 pages of events.
+        let call_count = Arc::new(AtomicUsize::new(0));
+        let call_count_clone = call_count.clone();
+
+        let app = axum::Router::new().route(
+            "/",
+            axum::routing::post(move |_body: axum::body::Body| {
+                let count = call_count_clone.clone();
+                async move {
+                    let n = count.fetch_add(1, Ordering::SeqCst);
+                    let response = match n {
+                        0 => {
+                            // Page 1: 2 events with paging token
+                            json!({
+                                "jsonrpc": "2.0",
+                                "id": 1,
+                                "result": {
+                                    "events": [
+                                        { "contractId": "CONTRACT", "ledger": 10, "topic": [], "value": {"u64": 1}, "pagingToken": "cursor-1" },
+                                        { "contractId": "CONTRACT", "ledger": 11, "topic": [], "value": {"u64": 2}, "pagingToken": "cursor-2" }
+                                    ],
+                                    "latestLedger": 100
+                                }
+                            })
+                        }
+                        1 => {
+                            // Page 2: 1 event with paging token
+                            json!({
+                                "jsonrpc": "2.0",
+                                "id": 1,
+                                "result": {
+                                    "events": [
+                                        { "contractId": "CONTRACT", "ledger": 12, "topic": [], "value": {"u64": 3}, "pagingToken": "cursor-3" }
+                                    ],
+                                    "latestLedger": 100
+                                }
+                            })
+                        }
+                        _ => {
+                            // Page 3: empty — signals end of pagination
+                            json!({
+                                "jsonrpc": "2.0",
+                                "id": 1,
+                                "result": {
+                                    "events": [],
+                                    "latestLedger": 100
+                                }
+                            })
+                        }
+                    };
+                    axum::Json(response)
+                }
+            }),
+        );
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        let client =
+            SorobanRpcClient::new(format!("http://{addr}"), 5).expect("build client");
+
+        let events = client
+            .get_events("CONTRACT", &["post_call"], 10)
+            .await
+            .expect("get_events should succeed");
+
+        // All 3 events across 3 pages should be present.
+        assert_eq!(events.len(), 3);
+        assert_eq!(events[0].ledger, 10);
+        assert_eq!(events[1].ledger, 11);
+        assert_eq!(events[2].ledger, 12);
+
+        // The mock server should have been called 3 times (page1 + page2 + empty page3).
+        assert_eq!(call_count.load(Ordering::SeqCst), 3);
     }
 }
