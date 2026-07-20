@@ -639,6 +639,46 @@ fn test_simulate_request_serialization() {
     assert_eq!(deserialized.function, req.function);
 }
 
+#[tokio::test]
+async fn test_ws_oversized_frame_closes_connection() {
+    use futures_util::{SinkExt, StreamExt};
+    use std::time::Duration;
+    use tokio::time::timeout;
+    use tokio_tungstenite::connect_async;
+    use tokio_tungstenite::tungstenite::Message as TungMessage;
+
+    let (addr, _state) = spawn_ws_server().await;
+    let url = format!("ws://{}/ws", addr);
+
+    let (ws_stream, _resp) = connect_async(&url).await.expect("connect");
+    let (mut write, mut read) = ws_stream.split();
+
+    // Send a message well over the 4 KB limit (8 KB of padding).
+    let oversized = "x".repeat(8 * 1024);
+    let send_result = write.send(TungMessage::Text(oversized.into())).await;
+
+    // The send itself may succeed (buffered), but the server should close the
+    // connection shortly after receiving the oversized frame.
+    if send_result.is_err() {
+        // Connection already closed — acceptable.
+        return;
+    }
+
+    // Read from the stream: the server should close (None) or return an error.
+    let next = timeout(Duration::from_secs(3), read.next()).await;
+    match next {
+        Ok(Some(Err(_))) | Ok(None) => {
+            // Connection was closed/reset by server — expected behavior.
+        }
+        Ok(Some(Ok(TungMessage::Close(_)))) => {
+            // Clean close frame — also acceptable.
+        }
+        _ => {
+            panic!("expected connection to be closed after oversized frame");
+        }
+    }
+}
+
 #[test]
 fn test_transaction_status_event_serialization() {
     let event = TransactionStatusEvent {
