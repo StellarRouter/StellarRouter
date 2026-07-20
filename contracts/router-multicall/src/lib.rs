@@ -410,7 +410,7 @@ mod tests {
     use super::*;
     use soroban_sdk::{
         testutils::{Address as _, Events},
-        Env, FromVal, Symbol, Vec,
+        Env, FromVal, IntoVal, Symbol, Vec,
     };
 
     fn setup() -> (Env, Address, RouterMulticallClient<'static>) {
