@@ -603,10 +603,11 @@ impl RouterCore {
     /// total-routed counter, and emits a `routed` event. If `name` is an alias,
     /// resolves to the original route.
     ///
-    /// When multiple scored routes exist, score-based selection is applied:
-    /// all route names are evaluated via `get_best_route` and the highest-scoring
-    /// non-paused route is returned automatically. If no scored routes exist,
-    /// falls back to the direct lookup by `name`.
+    /// When multiple scored routes exist, `get_best_route` can be used by
+    /// clients to choose the best route from arbitrary candidate sets.
+    /// `resolve(name)` always returns the requested route or alias target and is
+    /// not redirected to a different route solely because another route has a
+    /// higher score.
     ///
     /// # Arguments
     /// * `env` - The Soroban environment.
@@ -640,27 +641,7 @@ impl RouterCore {
             name.clone()
         };
 
-        // Score-based selection: if any route has a score, use get_best_route
-        // across all candidates to return the highest-scoring non-paused route.
-        let all_names = Self::get_route_names(&env);
-        let has_any_score = all_names
-            .iter()
-            .any(|n| env.storage().instance().has(&DataKey::Score(n.clone())));
-
-        let final_name = if has_any_score {
-            // Use score-based selection over all routes; fall back to resolved_name
-            match Self::get_best_route(
-                env.clone(),
-                all_names,
-                i64::MIN,
-                Some(resolved_name.clone()),
-            )? {
-                Some(best) => best,
-                None => resolved_name.clone(),
-            }
-        } else {
-            resolved_name.clone()
-        };
+        let final_name = resolved_name.clone();
 
         let entry: RouteEntry = env
             .storage()
@@ -2510,6 +2491,40 @@ mod tests {
         let candidates = vec![&env, r1, r2.clone(), r3];
         let best = client.get_best_route(&candidates, &0, &None);
         assert_eq!(best, Some(r2));
+    }
+
+    #[test]
+    fn test_resolve_returns_requested_route_when_other_route_is_higher_scored() {
+        let (env, admin, client) = setup();
+        let route_a = String::from_str(&env, "route-a");
+        let route_b = String::from_str(&env, "route-b");
+        let addr_a = Address::generate(&env);
+        let addr_b = Address::generate(&env);
+
+        client.register_route(&admin, &route_a, &addr_a, &None);
+        client.register_route(&admin, &route_b, &addr_b, &None);
+
+        client.set_route_score(
+            &admin,
+            &route_b,
+            &RouteScore {
+                liquidity_score: 100,
+                fee_bps: 0,
+                reliability_score: 100,
+            },
+        );
+        client.set_route_score(
+            &admin,
+            &route_a,
+            &RouteScore {
+                liquidity_score: 10,
+                fee_bps: 0,
+                reliability_score: 10,
+            },
+        );
+
+        let resolved = client.resolve(&route_a);
+        assert_eq!(resolved, addr_a);
     }
 
     #[test]
