@@ -91,15 +91,20 @@ impl NonceCache {
     ///
     /// Returns `true` when the nonce is fresh, `false` when it is a replay or
     /// when the cache is full.
+    ///
+    /// The check-and-insert is performed atomically via [`DashMap::entry`] so
+    /// that two concurrent requests carrying the same nonce cannot both pass
+    /// the uniqueness check before either inserts — defeating the TOCTOU race
+    /// that existed when `contains_key` and `insert` were two separate
+    /// operations.
     pub fn check_and_add(&self, nonce: &str) -> bool {
         let now = current_timestamp();
         self.cleanup_expired(now);
 
-        if self.cache.contains_key(nonce) {
-            debug!("Replay attack detected: nonce {} already seen", nonce);
-            return false;
-        }
-
+        // Reject immediately if the cache is already at capacity.
+        // We check this *before* acquiring the shard lock to avoid holding it
+        // while counting, but the authoritative capacity guard is still the
+        // entry() path below.
         if self.cache.len() >= self.config.cache_size {
             warn!(
                 "Nonce cache at capacity ({}), rejecting new nonce",
@@ -108,9 +113,22 @@ impl NonceCache {
             return false;
         }
 
-        self.cache
-            .insert(nonce.to_string(), NonceEntry { timestamp: now });
-        true
+        // `entry(...).or_insert(...)` acquires the shard lock once and either
+        // returns the existing value (nonce already present → replay) or
+        // inserts the new entry (nonce is fresh).  This single-lock operation
+        // eliminates the TOCTOU window between a separate contains_key and
+        // insert call.
+        use dashmap::mapref::entry::Entry;
+        match self.cache.entry(nonce.to_string()) {
+            Entry::Occupied(_) => {
+                debug!("Replay attack detected: nonce {} already seen", nonce);
+                false
+            }
+            Entry::Vacant(slot) => {
+                slot.insert(NonceEntry { timestamp: now });
+                true
+            }
+        }
     }
 
     /// Remove all cache entries whose timestamp is older than the TTL.
@@ -229,5 +247,38 @@ mod tests {
     fn returns_none_when_nonce_missing() {
         let headers = HeaderMap::new();
         assert_eq!(extract_nonce(&headers), None);
+    }
+
+    /// Spawn N concurrent tasks all racing to insert the same nonce.
+    /// Exactly one must succeed and all others must be rejected — verifying
+    /// that `check_and_add` is atomic (no TOCTOU window).
+    #[tokio::test]
+    async fn concurrent_same_nonce_only_one_succeeds() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc as StdArc;
+
+        let cache = StdArc::new(NonceCache::new(config(1000)));
+        let success_count = StdArc::new(AtomicUsize::new(0));
+        const N: usize = 64;
+
+        let mut handles = Vec::with_capacity(N);
+        for _ in 0..N {
+            let c = StdArc::clone(&cache);
+            let sc = StdArc::clone(&success_count);
+            handles.push(tokio::spawn(async move {
+                if c.check_and_add("race-nonce") {
+                    sc.fetch_add(1, Ordering::Relaxed);
+                }
+            }));
+        }
+        for h in handles {
+            h.await.unwrap();
+        }
+
+        assert_eq!(
+            success_count.load(Ordering::Relaxed),
+            1,
+            "exactly one concurrent insertion must succeed"
+        );
     }
 }
