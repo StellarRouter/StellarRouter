@@ -1,6 +1,7 @@
 mod auth;
 mod handlers;
 mod openapi;
+mod poller;
 mod rate_limit;
 mod replay_protection;
 mod rpc;
@@ -28,6 +29,7 @@ use tracing::info;
 
 use crate::{
     auth::AuthConfig,
+    poller::TxStatusPoller,
     rate_limit::{rate_limit_middleware, RateLimitConfig, RateLimiter},
     replay_protection::{replay_protection_middleware, NonceCache, ReplayProtectionConfig},
     rpc::FeeConfig,
@@ -110,6 +112,15 @@ async fn main() -> Result<()> {
         auth_config.clone(),
         fee_config,
     );
+
+    // Spawn the RPC polling producer. It queries the Soroban RPC for each
+    // actively-subscribed transaction and forwards status updates into the
+    // WebSocket broadcast channel. Without this, subscribed clients would
+    // never receive a status_update event in a real deployment.
+    let poller = TxStatusPoller::new(state.clone());
+    tokio::spawn(async move {
+        poller.run().await;
+    });
 
     let protected_routes = Router::new()
         .route("/simulate", post(handlers::simulate))
