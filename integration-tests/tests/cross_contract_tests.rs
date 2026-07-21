@@ -10,14 +10,15 @@ extern crate std;
 
 use soroban_sdk::{
     testutils::{Address as _, Ledger},
-    Address, Env, String,
+    Address, Env, IntoVal, String, Symbol, Val, Vec,
 };
 
 // ── Contract imports ──────────────────────────────────────────────────────────
 
 use router_access::{RouterAccess, RouterAccessClient};
-use router_core::{RouterCore, RouterCoreClient};
+use router_core::{RouteMetadata, RouterCore, RouterCoreClient};
 use router_middleware::{RouterMiddleware, RouterMiddlewareClient};
+use router_multicall::{CallDescriptor, RouterMulticall, RouterMulticallClient};
 use router_registry::{RouterRegistry, RouterRegistryClient};
 
 // ── Shared setup ──────────────────────────────────────────────────────────────
@@ -26,9 +27,13 @@ struct Suite<'a> {
     env: Env,
     admin: Address,
     core: RouterCoreClient<'a>,
+    core_id: Address,
     registry: RouterRegistryClient<'a>,
+    registry_id: Address,
     access: RouterAccessClient<'a>,
+    access_id: Address,
     middleware: RouterMiddlewareClient<'a>,
+    middleware_id: Address,
 }
 
 fn setup() -> Suite<'static> {
@@ -57,9 +62,13 @@ fn setup() -> Suite<'static> {
         env,
         admin,
         core,
+        core_id: core_id.clone(),
         registry,
+        registry_id: registry_id.clone(),
         access,
+        access_id: access_id.clone(),
         middleware,
+        middleware_id: middleware_id.clone(),
     }
 }
 
@@ -308,4 +317,122 @@ fn test_circuit_breaker_trips_after_failures() {
     // Advance past recovery window
     s.env.ledger().with_mut(|l| l.timestamp += 61);
     assert!(s.middleware.try_pre_call(&caller, &route).is_ok());
+}
+
+// ── router-multicall × core × middleware ─────────────────────────────────────
+
+/// Execute a batch through router-multicall that mixes a
+/// router-core.register_route call and a router-middleware.configure_route
+/// call, asserting both land atomically.
+#[test]
+fn test_multicall_execute_batch_mixes_core_and_middleware() {
+    let s = setup();
+    let multicall_id = s.env.register_contract(None, RouterMulticall);
+    let multicall = RouterMulticallClient::new(&s.env, &multicall_id);
+    multicall.initialize(&s.admin, &10);
+
+    let route = String::from_str(&s.env, "oracle");
+    let target_addr = Address::generate(&s.env);
+
+    // ── Call 1: router-core.register_route ──────────────────────────────
+    // register_route(caller, name, address, metadata)
+    let mut reg_args: Vec<Val> = Vec::new(&s.env);
+    reg_args.push_back(s.admin.clone().into_val(&s.env));
+    reg_args.push_back(route.clone().into_val(&s.env));
+    reg_args.push_back(target_addr.clone().into_val(&s.env));
+    reg_args.push_back(None::<RouteMetadata>.into_val(&s.env));
+
+    let reg_call = CallDescriptor {
+        target: s.core_id.clone(),
+        function: Symbol::new(&s.env, "register_route"),
+        required: true,
+        instruction_budget: None,
+        args: reg_args,
+    };
+
+    // ── Call 2: router-middleware.configure_route ───────────────────────
+    let mut cfg_args: Vec<Val> = Vec::new(&s.env);
+    cfg_args.push_back(s.admin.clone().into_val(&s.env));
+    cfg_args.push_back(route.clone().into_val(&s.env));
+    cfg_args.push_back((10u32).into_val(&s.env));
+    cfg_args.push_back((60u64).into_val(&s.env));
+    cfg_args.push_back(true.into_val(&s.env));
+    cfg_args.push_back((0u32).into_val(&s.env));
+    cfg_args.push_back((0u64).into_val(&s.env));
+    cfg_args.push_back((0u32).into_val(&s.env));
+
+    let cfg_call = CallDescriptor {
+        target: s.middleware_id.clone(),
+        function: Symbol::new(&s.env, "configure_route"),
+        required: true,
+        instruction_budget: None,
+        args: cfg_args,
+    };
+
+    let mut calls: Vec<CallDescriptor> = Vec::new(&s.env);
+    calls.push_back(reg_call);
+    calls.push_back(cfg_call);
+
+    let summary = multicall.execute_batch(&s.admin, &calls, &false, &false);
+
+    assert_eq!(summary.total, 2);
+    assert_eq!(summary.succeeded, 2);
+    assert_eq!(summary.failed, 0);
+
+    // Verify router-core state: route "oracle" resolves to target_addr
+    let resolved = s.core.resolve(&route);
+    assert_eq!(resolved, target_addr);
+
+    // Verify router-middleware state: "oracle" is in the configured list
+    let configured = s.middleware.get_configured_routes();
+    assert!(
+        configured.contains(&route),
+        "oracle should be a configured middleware route"
+    );
+}
+
+/// Batch through multicall where a required call fails (duplicate route
+/// registration). The entire batch must abort.
+#[test]
+fn test_multicall_required_call_failure_aborts_batch() {
+    let s = setup();
+    let multicall_id = s.env.register_contract(None, RouterMulticall);
+    let multicall = RouterMulticallClient::new(&s.env, &multicall_id);
+    multicall.initialize(&s.admin, &10);
+
+    let route = String::from_str(&s.env, "oracle");
+    let target_addr = Address::generate(&s.env);
+
+    // Pre-register the route in core directly so the batch call will fail
+    // with RouteAlreadyExists.
+    s.core.register_route(&s.admin, &route, &target_addr, &None);
+
+    // Build args for a duplicate register_route call
+    let mut reg_args: Vec<Val> = Vec::new(&s.env);
+    reg_args.push_back(s.admin.clone().into_val(&s.env));
+    reg_args.push_back(route.clone().into_val(&s.env));
+    reg_args.push_back(Address::generate(&s.env).into_val(&s.env));
+    reg_args.push_back(None::<RouteMetadata>.into_val(&s.env));
+
+    let mut calls: Vec<CallDescriptor> = Vec::new(&s.env);
+    calls.push_back(CallDescriptor {
+        target: s.core_id.clone(),
+        function: Symbol::new(&s.env, "register_route"),
+        required: true,
+        instruction_budget: None,
+        args: reg_args,
+    });
+
+    let result = multicall.try_execute_batch(&s.admin, &calls, &false, &false);
+    assert_eq!(
+        result,
+        Err(Ok(router_multicall::MulticallError::RequiredCallFailed))
+    );
+
+    // Verify batch counter was NOT incremented (the batch was aborted)
+    assert_eq!(multicall.total_batches(), 0);
+
+    // Verify original route is still intact
+    let resolved = s.core.resolve(&route);
+    assert_eq!(resolved, target_addr);
 }
