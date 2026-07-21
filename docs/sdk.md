@@ -1,5 +1,11 @@
 # JavaScript / TypeScript SDK
 
+> **Status: planned, not yet implemented.** The `stellar-router-sdk` npm package,
+> the `RouterClient` class, and the API described below do not exist in this
+> repository yet. This document describes the intended design so contributors
+> can build toward it. Do not `npm install stellar-router-sdk` — it isn't
+> published.
+
 A client library for interacting with the stellar-router contracts from JS/TS.
 
 ## Installation
@@ -31,4 +37,8 @@ await client.registerRoute("oracle", "C...", { description: "Price feed" });
 All methods throw RouterSdkError with a .code (e.g. "RouteNotFound") on failure.
 
 ## Publishing
+
+> This section describes the intended release process once the package
+> exists; there is nothing to publish yet.
+
 npm version patch && npm publish
