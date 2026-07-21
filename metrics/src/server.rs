@@ -186,6 +186,8 @@ async fn ready_handler(State(state): State<AppState>) -> impl IntoResponse {
             let g = m.get_gauge();
             if g.is_some() {
                 Some(g.value())
+            if m.gauge.is_some() {
+                m.gauge.as_ref().map(|g| g.value())
             } else {
                 None
             }

@@ -56,7 +56,7 @@ pub struct RouteMetadata {
     /// Human-readable description (max 256 chars)
     pub description: String,
     /// Tags for categorization (max 5 tags)
-    pub tags: Vec<String>,
+    pub tags: Vec<Symbol>,
     /// Owner address (use the zero/contract address as sentinel for "no owner")
     pub owner: Address,
 }
@@ -74,12 +74,58 @@ pub struct RouteEntry {
     pub updated_by: Address,
 }
 
-#[contracttype]
 #[derive(Clone, Debug, PartialEq)]
 pub struct RouteRegisterInput {
     pub name: String,
     pub address: Address,
     pub metadata: Option<RouteMetadata>,
+}
+
+impl soroban_sdk::TryFromVal<soroban_sdk::Env, soroban_sdk::Val> for RouteRegisterInput {
+    type Error = soroban_sdk::ConversionError;
+    fn try_from_val(env: &soroban_sdk::Env, val: &soroban_sdk::Val) -> Result<Self, Self::Error> {
+        use soroban_sdk::{EnvBase, TryIntoVal, Val};
+        const KEYS: [&str; 3] = ["address", "metadata", "name"];
+        let mut vals: [Val; 3] = [Val::VOID.to_val(); 3];
+        let map: soroban_sdk::MapObject =
+            val.try_into().map_err(|_| soroban_sdk::ConversionError)?;
+        env.map_unpack_to_slice(map, &KEYS, &mut vals)
+            .map_err(|_| soroban_sdk::ConversionError)?;
+        Ok(Self {
+            address: vals[0]
+                .try_into_val(env)
+                .map_err(|_| soroban_sdk::ConversionError)?,
+            metadata: vals[1]
+                .try_into_val(env)
+                .map_err(|_| soroban_sdk::ConversionError)?,
+            name: vals[2]
+                .try_into_val(env)
+                .map_err(|_| soroban_sdk::ConversionError)?,
+        })
+    }
+}
+
+impl soroban_sdk::TryFromVal<soroban_sdk::Env, RouteRegisterInput> for soroban_sdk::Val {
+    type Error = soroban_sdk::ConversionError;
+    fn try_from_val(env: &soroban_sdk::Env, val: &RouteRegisterInput) -> Result<Self, Self::Error> {
+        use soroban_sdk::{EnvBase, TryIntoVal, Val};
+        const KEYS: [&str; 3] = ["address", "metadata", "name"];
+        let vals: [Val; 3] = [
+            (&val.address)
+                .try_into_val(env)
+                .map_err(|_| soroban_sdk::ConversionError)?,
+            (&val.metadata)
+                .try_into_val(env)
+                .map_err(|_| soroban_sdk::ConversionError)?,
+            (&val.name)
+                .try_into_val(env)
+                .map_err(|_| soroban_sdk::ConversionError)?,
+        ];
+        Ok(env
+            .map_new_from_slices(&KEYS, &vals)
+            .map_err(|_| soroban_sdk::ConversionError)?
+            .into())
+    }
 }
 
 /// Scoring attributes for a route used in path selection.
@@ -1377,7 +1423,7 @@ mod tests {
         let addr = Address::generate(&env);
         let mut tags = Vec::new(&env);
         for i in 0..6 {
-            tags.push_back(String::from_str(
+            tags.push_back(Symbol::new(
                 &env,
                 &alloc::string::String::from("tag").repeat(i + 1),
             ));
@@ -1893,8 +1939,8 @@ mod tests {
         let description = String::from_str(&env, "Oracle price feed");
         let tags = vec![
             &env,
-            String::from_str(&env, "defi"),
-            String::from_str(&env, "oracle"),
+            Symbol::new(&env, "defi"),
+            Symbol::new(&env, "oracle"),
         ];
         let owner = admin.clone();
 
@@ -1919,7 +1965,7 @@ mod tests {
         client.register_route(&admin, &name, &addr, &None);
 
         let description = String::from_str(&env, "Updated oracle");
-        let tags = vec![&env, String::from_str(&env, "v2")];
+        let tags = vec![&env, Symbol::new(&env, "v2")];
         let metadata = Some(RouteMetadata {
             description,
             tags,
@@ -1942,7 +1988,7 @@ mod tests {
         let name = String::from_str(&env, "oracle");
         let addr = Address::generate(&env);
         let description = String::from_str(&env, "Test metadata");
-        let tags = vec![&env, String::from_str(&env, "test")];
+        let tags = vec![&env, Symbol::new(&env, "test")];
         let metadata = Some(RouteMetadata {
             description,
             tags,
@@ -1971,7 +2017,7 @@ mod tests {
         let addr = Address::generate(&env);
 
         let description = String::from_str(&env, "Initial metadata");
-        let tags = vec![&env, String::from_str(&env, "test")];
+        let tags = vec![&env, Symbol::new(&env, "test")];
         let metadata = Some(RouteMetadata {
             description,
             tags,
@@ -2124,7 +2170,7 @@ mod tests {
         client.register_route(&admin, &name, &addr, &None);
 
         let mut tags = Vec::new(&env);
-        tags.push_back(String::from_str(&env, "defi"));
+        tags.push_back(Symbol::new(&env, "defi"));
         let metadata = Some(RouteMetadata {
             description: String::from_str(&env, "valid description"),
             tags,
@@ -2196,10 +2242,10 @@ mod tests {
         let addr = Address::generate(&env);
         client.register_route(&admin, &name, &addr, &None);
 
-        // Exactly 5 tags — must succeed
+        // 6 tags — must fail
         let mut tags = Vec::new(&env);
-        for i in 0..5u32 {
-            tags.push_back(String::from_str(&env, &i.to_string()));
+        for i in 0..6u32 {
+            tags.push_back(Symbol::new(&env, &i.to_string()));
         }
         let metadata = Some(RouteMetadata {
             description: String::from_str(&env, "valid"),
@@ -2219,7 +2265,7 @@ mod tests {
         // 6 tags — must fail
         let mut tags = Vec::new(&env);
         for i in 0..6u32 {
-            tags.push_back(String::from_str(&env, &i.to_string()));
+            tags.push_back(Symbol::new(&env, &i.to_string()));
         }
         let metadata = Some(RouteMetadata {
             description: String::from_str(&env, "valid"),
@@ -2926,5 +2972,397 @@ mod tests {
 
         assert_eq!(results.len(), 1);
         assert_eq!(results.get(0).unwrap(), BatchResolveResult::Ok(addr));
+    }
+
+    // ── register_routes_batch tests ─────────────────────────────────────────────
+
+    #[test]
+    fn test_register_routes_batch_succeeds() {
+        let (env, admin, client) = setup();
+        let oracle = String::from_str(&env, "oracle");
+        let vault = String::from_str(&env, "vault");
+        let swap = String::from_str(&env, "swap");
+        let addr1 = Address::generate(&env);
+        let addr2 = Address::generate(&env);
+        let addr3 = Address::generate(&env);
+
+        let routes = vec![
+            &env,
+            RouteRegisterInput {
+                name: oracle.clone(),
+                address: addr1.clone(),
+                metadata: None,
+            },
+            RouteRegisterInput {
+                name: vault.clone(),
+                address: addr2.clone(),
+                metadata: None,
+            },
+            RouteRegisterInput {
+                name: swap.clone(),
+                address: addr3.clone(),
+                metadata: None,
+            },
+        ];
+
+        client.register_routes_batch(&admin, &routes);
+
+        // Verify all routes were registered
+        assert_eq!(client.resolve(&oracle), addr1);
+        assert_eq!(client.resolve(&vault), addr2);
+        assert_eq!(client.resolve(&swap), addr3);
+        assert_eq!(client.route_count(), 3);
+    }
+
+    #[test]
+    fn test_register_routes_batch_with_metadata() {
+        let (env, admin, client) = setup();
+        let oracle = String::from_str(&env, "oracle");
+        let vault = String::from_str(&env, "vault");
+        let addr1 = Address::generate(&env);
+        let addr2 = Address::generate(&env);
+
+        let description = String::from_str(&env, "Oracle price feed");
+        let tags = vec![&env, String::from_str(&env, "defi"), String::from_str(&env, "oracle")];
+        let metadata = Some(RouteMetadata {
+            description: description.clone(),
+            tags: tags.clone(),
+            owner: admin.clone(),
+        });
+
+        let routes = vec![
+            &env,
+            RouteRegisterInput {
+                name: oracle.clone(),
+                address: addr1.clone(),
+                metadata: metadata.clone(),
+            },
+            RouteRegisterInput {
+                name: vault.clone(),
+                address: addr2.clone(),
+                metadata: None,
+            },
+        ];
+
+        client.register_routes_batch(&admin, &routes);
+
+        // Verify metadata was stored for the first route
+        assert_eq!(client.get_metadata(&oracle), metadata);
+        assert_eq!(client.get_metadata(&vault), None);
+    }
+
+    #[test]
+    fn test_register_routes_batch_duplicate_names_fails() {
+        let (env, admin, client) = setup();
+        let oracle = String::from_str(&env, "oracle");
+        let addr1 = Address::generate(&env);
+        let addr2 = Address::generate(&env);
+
+        let routes = vec![
+            &env,
+            RouteRegisterInput {
+                name: oracle.clone(),
+                address: addr1.clone(),
+                metadata: None,
+            },
+            RouteRegisterInput {
+                name: oracle.clone(),
+                address: addr2.clone(),
+                metadata: None,
+            },
+        ];
+
+        let result = client.try_register_routes_batch(&admin, &routes);
+        assert_eq!(result, Err(Ok(RouterError::RouteAlreadyExists)));
+
+        // Verify no routes were registered (atomic failure)
+        assert_eq!(client.route_count(), 0);
+    }
+
+    #[test]
+    fn test_register_routes_batch_invalid_name_fails() {
+        let (env, admin, client) = setup();
+        let oracle = String::from_str(&env, "oracle");
+        let empty_name = String::from_str(&env, "");
+        let addr1 = Address::generate(&env);
+        let addr2 = Address::generate(&env);
+
+        let routes = vec![
+            &env,
+            RouteRegisterInput {
+                name: oracle.clone(),
+                address: addr1.clone(),
+                metadata: None,
+            },
+            RouteRegisterInput {
+                name: empty_name,
+                address: addr2.clone(),
+                metadata: None,
+            },
+        ];
+
+        let result = client.try_register_routes_batch(&admin, &routes);
+        assert_eq!(result, Err(Ok(RouterError::InvalidRouteName)));
+
+        // Verify no routes were registered (atomic failure)
+        assert_eq!(client.route_count(), 0);
+    }
+
+    #[test]
+    fn test_register_routes_batch_invalid_metadata_fails() {
+        let (env, admin, client) = setup();
+        let oracle = String::from_str(&env, "oracle");
+        let vault = String::from_str(&env, "vault");
+        let addr1 = Address::generate(&env);
+        let addr2 = Address::generate(&env);
+
+        let long_description = String::from_str(&env, &"a".repeat(257));
+        let invalid_metadata = Some(RouteMetadata {
+            description: long_description,
+            tags: Vec::new(&env),
+            owner: admin.clone(),
+        });
+
+        let routes = vec![
+            &env,
+            RouteRegisterInput {
+                name: oracle.clone(),
+                address: addr1.clone(),
+                metadata: None,
+            },
+            RouteRegisterInput {
+                name: vault.clone(),
+                address: addr2.clone(),
+                metadata: invalid_metadata,
+            },
+        ];
+
+        let result = client.try_register_routes_batch(&admin, &routes);
+        assert_eq!(result, Err(Ok(RouterError::InvalidMetadata)));
+
+        // Verify no routes were registered (atomic failure)
+        assert_eq!(client.route_count(), 0);
+    }
+
+    #[test]
+    fn test_register_routes_batch_unauthorized_fails() {
+        let (env, _admin, client) = setup();
+        let oracle = String::from_str(&env, "oracle");
+        let addr = Address::generate(&env);
+        let attacker = Address::generate(&env);
+
+        let routes = vec![
+            &env,
+            RouteRegisterInput {
+                name: oracle.clone(),
+                address: addr.clone(),
+                metadata: None,
+            },
+        ];
+
+        let result = client.try_register_routes_batch(&attacker, &routes);
+        assert_eq!(result, Err(Ok(RouterError::Unauthorized)));
+    }
+
+    #[test]
+    fn test_register_routes_batch_emits_events() {
+        let (env, admin, client) = setup();
+        let oracle = String::from_str(&env, "oracle");
+        let vault = String::from_str(&env, "vault");
+        let addr1 = Address::generate(&env);
+        let addr2 = Address::generate(&env);
+
+        let routes = vec![
+            &env,
+            RouteRegisterInput {
+                name: oracle.clone(),
+                address: addr1.clone(),
+                metadata: None,
+            },
+            RouteRegisterInput {
+                name: vault.clone(),
+                address: addr2.clone(),
+                metadata: None,
+            },
+        ];
+
+        let events_before = env.events().all().len();
+        client.register_routes_batch(&admin, &routes);
+        let events_after = env.events().all().len();
+
+        // Two route_registered events should be emitted
+        assert_eq!(events_after, events_before + 2);
+    }
+
+    #[test]
+    fn test_register_routes_batch_empty_vector_succeeds() {
+        let (env, admin, client) = setup();
+        let routes: Vec<RouteRegisterInput> = Vec::new(&env);
+
+        client.register_routes_batch(&admin, &routes);
+
+        // Should succeed with no routes registered
+        assert_eq!(client.route_count(), 0);
+    }
+
+    // ── remove_routes_batch tests ───────────────────────────────────────────────
+
+    #[test]
+    fn test_remove_routes_batch_succeeds() {
+        let (env, admin, client) = setup();
+        let oracle = String::from_str(&env, "oracle");
+        let vault = String::from_str(&env, "vault");
+        let swap = String::from_str(&env, "swap");
+        let addr = Address::generate(&env);
+
+        // Register three routes
+        client.register_route(&admin, &oracle, &addr, &None);
+        client.register_route(&admin, &vault, &addr, &None);
+        client.register_route(&admin, &swap, &addr, &None);
+        assert_eq!(client.route_count(), 3);
+
+        // Remove two routes
+        let names = vec![&env, oracle.clone(), vault.clone()];
+        client.remove_routes_batch(&admin, &names);
+
+        // Verify routes were removed
+        assert_eq!(client.try_resolve(&oracle), Err(Ok(RouterError::RouteNotFound)));
+        assert_eq!(client.try_resolve(&vault), Err(Ok(RouterError::RouteNotFound)));
+        assert_eq!(client.resolve(&swap), addr);
+        assert_eq!(client.route_count(), 1);
+    }
+
+    #[test]
+    fn test_remove_routes_batch_nonexistent_route_fails() {
+        let (env, admin, client) = setup();
+        let oracle = String::from_str(&env, "oracle");
+        let vault = String::from_str(&env, "vault");
+        let missing = String::from_str(&env, "missing");
+        let addr = Address::generate(&env);
+
+        // Register two routes
+        client.register_route(&admin, &oracle, &addr, &None);
+        client.register_route(&admin, &vault, &addr, &None);
+        assert_eq!(client.route_count(), 2);
+
+        // Try to remove one existing and one non-existent route
+        let names = vec![&env, oracle.clone(), missing.clone()];
+        let result = client.try_remove_routes_batch(&admin, &names);
+        assert_eq!(result, Err(Ok(RouterError::RouteNotFound)));
+
+        // Verify no routes were removed (atomic failure)
+        assert_eq!(client.route_count(), 2);
+        assert_eq!(client.resolve(&oracle), addr);
+        assert_eq!(client.resolve(&vault), addr);
+    }
+
+    #[test]
+    fn test_remove_routes_batch_unauthorized_fails() {
+        let (env, admin, client) = setup();
+        let oracle = String::from_str(&env, "oracle");
+        let addr = Address::generate(&env);
+
+        client.register_route(&admin, &oracle, &addr, &None);
+
+        let attacker = Address::generate(&env);
+        let names = vec![&env, oracle.clone()];
+        let result = client.try_remove_routes_batch(&attacker, &names);
+        assert_eq!(result, Err(Ok(RouterError::Unauthorized)));
+
+        // Verify route still exists
+        assert_eq!(client.resolve(&oracle), addr);
+    }
+
+    #[test]
+    fn test_remove_routes_batch_emits_events() {
+        let (env, admin, client) = setup();
+        let oracle = String::from_str(&env, "oracle");
+        let vault = String::from_str(&env, "vault");
+        let addr = Address::generate(&env);
+
+        client.register_route(&admin, &oracle, &addr, &None);
+        client.register_route(&admin, &vault, &addr, &None);
+
+        let names = vec![&env, oracle.clone(), vault.clone()];
+        let events_before = env.events().all().len();
+        client.remove_routes_batch(&admin, &names);
+        let events_after = env.events().all().len();
+
+        // Two route_removed events should be emitted
+        assert_eq!(events_after, events_before + 2);
+    }
+
+    #[test]
+    fn test_remove_routes_batch_cleans_up_aliases() {
+        let (env, admin, client) = setup();
+        let oracle = String::from_str(&env, "oracle");
+        let oracle_v1 = String::from_str(&env, "oracle-v1");
+        let vault = String::from_str(&env, "vault");
+        let vault_v1 = String::from_str(&env, "vault-v1");
+        let addr = Address::generate(&env);
+
+        // Register routes and create aliases
+        client.register_route(&admin, &oracle, &addr, &None);
+        client.register_route(&admin, &vault, &addr, &None);
+        client.add_alias(&admin, &oracle, &oracle_v1);
+        client.add_alias(&admin, &vault, &vault_v1);
+
+        // Verify aliases work initially
+        assert_eq!(client.resolve(&oracle_v1), addr);
+        assert_eq!(client.resolve(&vault_v1), addr);
+
+        // Remove both routes
+        let names = vec![&env, oracle.clone(), vault.clone()];
+        client.remove_routes_batch(&admin, &names);
+
+        // Aliases should now return RouteNotFound
+        assert_eq!(
+            client.try_resolve(&oracle_v1),
+            Err(Ok(RouterError::RouteNotFound))
+        );
+        assert_eq!(
+            client.try_resolve(&vault_v1),
+            Err(Ok(RouterError::RouteNotFound))
+        );
+    }
+
+    #[test]
+    fn test_remove_routes_batch_empty_vector_succeeds() {
+        let (env, admin, client) = setup();
+        let names: Vec<String> = Vec::new(&env);
+
+        client.remove_routes_batch(&admin, &names);
+
+        // Should succeed with no routes removed
+        assert_eq!(client.route_count(), 0);
+    }
+
+    #[test]
+    fn test_remove_routes_batch_partial_alias_cleanup() {
+        let (env, admin, client) = setup();
+        let oracle = String::from_str(&env, "oracle");
+        let oracle_v1 = String::from_str(&env, "oracle-v1");
+        let vault = String::from_str(&env, "vault");
+        let vault_v1 = String::from_str(&env, "vault-v1");
+        let addr = Address::generate(&env);
+
+        // Register routes and create aliases
+        client.register_route(&admin, &oracle, &addr, &None);
+        client.register_route(&admin, &vault, &addr, &None);
+        client.add_alias(&admin, &oracle, &oracle_v1);
+        client.add_alias(&admin, &vault, &vault_v1);
+
+        // Remove only oracle (not vault)
+        let names = vec![&env, oracle.clone()];
+        client.remove_routes_batch(&admin, &names);
+
+        // Oracle alias should be cleaned up
+        assert_eq!(
+            client.try_resolve(&oracle_v1),
+            Err(Ok(RouterError::RouteNotFound))
+        );
+
+        // Vault alias should still work
+        assert_eq!(client.resolve(&vault_v1), addr);
     }
 }
