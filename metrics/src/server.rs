@@ -183,8 +183,8 @@ async fn ready_handler(State(state): State<AppState>) -> impl IntoResponse {
         .find(|mf| mf.get_name() == "router_up")
         .and_then(|mf| mf.get_metric().first())
         .and_then(|m| {
-            if m.has_gauge() {
-                Some(m.get_gauge().get_value())
+            if m.gauge.is_some() {
+                m.gauge.as_ref().map(|g| g.value())
             } else {
                 None
             }

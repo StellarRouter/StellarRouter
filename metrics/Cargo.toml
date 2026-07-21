@@ -50,7 +50,7 @@ tokio-util = { version = "0.7.15" }
 
 # OpenAPI/Swagger
 utoipa = { version = "4.2.3", features = ["axum_extras"] }
-utoipa-swagger-ui = { version = "9.0.0", features = ["axum"] }
+utoipa-swagger-ui = { version = "7", features = ["axum"] }
 
 [dev-dependencies]
 tower = { version = "0.5.3" }
