@@ -2,6 +2,7 @@ mod auth;
 mod handlers;
 mod openapi;
 mod rate_limit;
+mod replay_protection;
 mod rpc;
 mod state;
 mod types;
@@ -28,6 +29,7 @@ use tracing::info;
 use crate::{
     auth::AuthConfig,
     rate_limit::{rate_limit_middleware, RateLimitConfig, RateLimiter},
+    replay_protection::{replay_protection_middleware, NonceCache, ReplayProtectionConfig},
     rpc::FeeConfig,
     state::AppState,
 };
@@ -81,6 +83,15 @@ async fn main() -> Result<()> {
     );
     let rate_limiter = RateLimiter::new(rate_limit_config);
 
+    let replay_config = ReplayProtectionConfig::from_env();
+    info!(
+        enabled = replay_config.enabled,
+        cache_size = replay_config.cache_size,
+        nonce_ttl_secs = replay_config.nonce_ttl_secs,
+        "Router replay protection config loaded"
+    );
+    let nonce_cache = NonceCache::new(replay_config);
+
     let fee_config = FeeConfig::from_env();
     info!(
         base_fee = fee_config.base_fee,
@@ -102,6 +113,10 @@ async fn main() -> Result<()> {
 
     let protected_routes = Router::new()
         .route("/simulate", post(handlers::simulate))
+        .route_layer(from_fn_with_state(
+            nonce_cache,
+            replay_protection_middleware,
+        ))
         .route("/routes", get(handlers::list_routes))
         .route("/routes/:name", get(handlers::get_route))
         .route("/ws", get(websocket::ws_handler))
