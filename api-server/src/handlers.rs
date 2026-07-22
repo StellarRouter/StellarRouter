@@ -4,7 +4,7 @@ use axum::{
     response::IntoResponse,
     Json,
 };
-use router_off_chain_common::validation::validate_contract_id;
+use router_off_chain_common::validation::{validate_contract_id, validate_route_name};
 use serde_json::json;
 use tracing::{error, info};
 
@@ -145,6 +145,16 @@ pub async fn get_route(
     Path(name): Path<String>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<ErrorResponse>)> {
     info!(route = %name, "fetching route");
+
+    // Use shared validation from router-off-chain-common
+    if let Err(e) = validate_route_name(&name) {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: format!("invalid route name: {}", e.message),
+            }),
+        ));
+    }
 
     match state.rpc.get_route(&name).await {
         Ok(Some(entry)) => Ok((StatusCode::OK, Json(entry))),
