@@ -92,6 +92,15 @@ pub enum QuoteError {
     RouteNotFound = 7,
     /// `max_price_impact_bps` argument is outside `[0, 10_000]`.
     InvalidPriceImpactBps = 8,
+    /// A fee/price-impact computation on `amount_in` would overflow `i128`.
+    ///
+    /// `amount_in` has no configured upper bound, so an extreme value can
+    /// make `amount_in * fee_bps` (or the later `fee_amount * 10_000`)
+    /// exceed `i128::MAX`. This is returned instead of silently treating
+    /// the overflowing computation as zero, which would otherwise produce
+    /// a fee-free, zero-price-impact quote for an amount that was never
+    /// actually validated against the fee model.
+    AmountOverflow = 9,
 }
 
 // ── Contract ──────────────────────────────────────────────────────────────────
@@ -176,21 +185,32 @@ impl RouterQuote {
     ///
     /// # Errors
     /// * [`QuoteError::InvalidAmount`] — if `amount_in <= 0`.
+    /// * [`QuoteError::AmountOverflow`] — if `amount_in` is large enough that
+    ///   computing the fee or price impact would overflow `i128`. This is a
+    ///   hard rejection, never a silent fee-free fallback — see
+    ///   [`QuoteError::AmountOverflow`] for why that matters.
     pub fn get_quote(env: Env, request: QuoteRequest) -> Result<QuoteResponse, QuoteError> {
         if request.amount_in <= 0 {
             return Err(QuoteError::InvalidAmount);
         }
         let fee_bps = Self::get_route_fee(env.clone(), request.route.clone());
+        // Every step here is `checked_*` and propagates `AmountOverflow` on
+        // failure instead of `unwrap_or(0)` — an overflowing multiplication
+        // must never be treated as "fee is zero", or an attacker can pick an
+        // `amount_in` large enough to get a fee-free, zero-impact quote.
         let fee_amount = request
             .amount_in
             .checked_mul(fee_bps as i128)
             .and_then(|v| v.checked_div(10000))
-            .unwrap_or(0);
-        let amount_out = request.amount_in.checked_sub(fee_amount).unwrap_or(0);
+            .ok_or(QuoteError::AmountOverflow)?;
+        let amount_out = request
+            .amount_in
+            .checked_sub(fee_amount)
+            .ok_or(QuoteError::AmountOverflow)?;
         let price_impact_bps = fee_amount
             .checked_mul(10000)
             .and_then(|v| v.checked_div(request.amount_in))
-            .unwrap_or(0);
+            .ok_or(QuoteError::AmountOverflow)?;
         let response = QuoteResponse {
             route: request.route.clone(),
             token_in: request.token_in,
@@ -213,6 +233,8 @@ impl RouterQuote {
     /// # Errors
     /// * [`QuoteError::NoQuotesProvided`] — if `requests` is empty.
     /// * [`QuoteError::InvalidAmount`] — if any `amount_in <= 0`.
+    /// * [`QuoteError::AmountOverflow`] — if any `amount_in` overflows the
+    ///   fee/price-impact computation in [`Self::get_quote`].
     pub fn get_quotes(
         env: Env,
         requests: Vec<QuoteRequest>,
@@ -233,6 +255,8 @@ impl RouterQuote {
     /// # Errors
     /// * [`QuoteError::NoQuotesProvided`] — if `requests` is empty.
     /// * [`QuoteError::InvalidAmount`] — if any `amount_in <= 0`.
+    /// * [`QuoteError::AmountOverflow`] — if any `amount_in` overflows the
+    ///   fee/price-impact computation in [`Self::get_quote`].
     pub fn get_best_quote(
         env: Env,
         requests: Vec<QuoteRequest>,
@@ -282,13 +306,15 @@ impl RouterQuote {
     /// # Errors
     /// * [`QuoteError::NoQuotesProvided`] — `requests` is empty.
     /// * [`QuoteError::InvalidAmount`] — any `amount_in <= 0`.
+    /// * [`QuoteError::AmountOverflow`] — any `amount_in` overflows the
+    ///   fee/price-impact computation in [`Self::get_quote`].
     /// * [`QuoteError::InvalidPriceImpactBps`] — `max_price_impact_bps` not in `[0, 10_000]`.
     pub fn compare_quotes(
         env: Env,
         requests: Vec<QuoteRequest>,
         max_price_impact_bps: i128,
     ) -> Result<Vec<QuoteResponse>, QuoteError> {
-        if max_price_impact_bps < 0 || max_price_impact_bps > 10000 {
+        if !(0..=10000).contains(&max_price_impact_bps) {
             return Err(QuoteError::InvalidPriceImpactBps);
         }
         let quotes = Self::get_quotes(env.clone(), requests)?;
@@ -547,6 +573,67 @@ mod tests {
         };
         let result = client.try_get_quote(&request);
         assert_eq!(result, Err(Ok(QuoteError::InvalidAmount)));
+    }
+
+    #[test]
+    fn test_get_quote_amount_overflow_fails() {
+        // Regression test for Issue #90: an `amount_in` large enough that
+        // `amount_in * fee_bps` overflows i128 must be rejected, not treated
+        // as a fee-free, zero-price-impact quote via `unwrap_or(0)`.
+        let (env, _admin, client) = setup(); // default_fee_bps = 100 (1%)
+        let request = QuoteRequest {
+            route: String::from_str(&env, "uniswap"),
+            token_in: Address::generate(&env),
+            token_out: Address::generate(&env),
+            amount_in: i128::MAX,
+        };
+        let result = client.try_get_quote(&request);
+        assert_eq!(result, Err(Ok(QuoteError::AmountOverflow)));
+    }
+
+    #[test]
+    fn test_get_quote_large_amount_just_below_overflow_succeeds() {
+        // Boundary check: a very large but non-overflowing amount_in must
+        // still produce a normal, fee-charging quote — the overflow guard
+        // must not reject legitimately large trades.
+        let (env, admin, client) = setup();
+        let route = String::from_str(&env, "uniswap");
+        client.set_route_fee(&admin, &route, &1); // 0.01%, minimizes headroom needed
+                                                  // i128::MAX / fee_bps, comfortably clear of the overflow boundary.
+        let amount_in = i128::MAX / 1000;
+        let request = QuoteRequest {
+            route,
+            token_in: Address::generate(&env),
+            token_out: Address::generate(&env),
+            amount_in,
+        };
+        let response = client.get_quote(&request);
+        let expected_fee = amount_in / 10000; // fee_bps = 1
+        assert_eq!(response.fee_amount, expected_fee);
+        assert_eq!(response.amount_out, amount_in - expected_fee);
+        assert!(response.fee_amount > 0);
+    }
+
+    #[test]
+    fn test_get_quotes_propagates_amount_overflow() {
+        // The overflow guard must hold through the multi-route entry point
+        // too, not just the single-route one.
+        let (env, _admin, client) = setup();
+        let mut requests = Vec::new(&env);
+        requests.push_back(QuoteRequest {
+            route: String::from_str(&env, "uniswap"),
+            token_in: Address::generate(&env),
+            token_out: Address::generate(&env),
+            amount_in: 10000,
+        });
+        requests.push_back(QuoteRequest {
+            route: String::from_str(&env, "sushiswap"),
+            token_in: Address::generate(&env),
+            token_out: Address::generate(&env),
+            amount_in: i128::MAX,
+        });
+        let result = client.try_get_quotes(&requests);
+        assert_eq!(result, Err(Ok(QuoteError::AmountOverflow)));
     }
 
     // ── get_quotes ────────────────────────────────────────────────────────────
