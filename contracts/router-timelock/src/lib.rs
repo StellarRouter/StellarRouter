@@ -381,6 +381,9 @@ impl RouterTimelock {
     /// calls and are therefore subject to `min_delay` when queued.
     ///
     /// Returns `TimelockError::NotCouncilMember` if `member` is not in the council.
+    /// Returns `TimelockError::InvalidConfig` if removing `member` would drop the
+    /// council below the currently configured `required_approvals`, which would
+    /// make `fast_track_approve` permanently unreachable.
     ///
     /// Emits `council_member_removed` with the removed member address.
     pub fn remove_council_member(
@@ -409,6 +412,16 @@ impl RouterTimelock {
 
         if !found {
             return Err(TimelockError::NotCouncilMember);
+        }
+
+        let required: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::RequiredApprovals)
+            .unwrap_or(0);
+
+        if required > 0 && new_council.len() < required {
+            return Err(TimelockError::InvalidConfig);
         }
 
         env.storage()
@@ -1451,6 +1464,28 @@ mod tests {
         );
     }
 
+    #[test]
+    fn test_remove_council_member_below_required_approvals_fails() {
+        let (env, admin, client) = setup();
+        let m1 = Address::generate(&env);
+        let m2 = Address::generate(&env);
+        let mut council = Vec::new(&env);
+        council.push_back(m1.clone());
+        council.push_back(m2.clone());
+        // 2-member council, required_approvals = 2 — removing either member
+        // would drop the council below the threshold.
+        client.set_emergency_council(&admin, &council, &2);
+
+        assert_eq!(
+            client.try_remove_council_member(&admin, &m1),
+            Err(Ok(TimelockError::InvalidConfig))
+        );
+        // council is unchanged
+        assert_eq!(client.get_council().len(), 2);
+        assert!(client.is_council_member(&m1));
+        assert!(client.is_council_member(&m2));
+    }
+
     // ── set_fast_track_enabled ────────────────────────────────────────────────
 
     #[test]
@@ -1642,6 +1677,41 @@ mod tests {
             client.try_fast_track_approve(&m3, &op_id),
             Err(Ok(TimelockError::AlreadyExecuted))
         );
+    }
+
+    #[test]
+    fn test_get_fast_track_approvals_returns_approver_list() {
+        let (env, admin, client) = setup();
+        let m1 = Address::generate(&env);
+        let m2 = Address::generate(&env);
+        let m3 = Address::generate(&env);
+        let mut council = Vec::new(&env);
+        council.push_back(m1.clone());
+        council.push_back(m2.clone());
+        council.push_back(m3.clone());
+        // required = 3, so approvals from a 2-member subset don't trigger execution
+        client.set_emergency_council(&admin, &council, &3);
+        client.set_fast_track_enabled(&admin, &true);
+
+        let target = Address::generate(&env);
+        let deps: Vec<Bytes> = Vec::new(&env);
+        let op_id = client.queue(
+            &admin,
+            &String::from_str(&env, "emergency patch"),
+            &target,
+            &3600,
+            &GRACE,
+            &deps,
+        );
+
+        client.fast_track_approve(&m1, &op_id);
+        client.fast_track_approve(&m2, &op_id);
+
+        let approvals = client.get_fast_track_approvals(&op_id);
+        assert_eq!(approvals.len(), 2);
+        assert_eq!(approvals.get(0).unwrap(), m1);
+        assert_eq!(approvals.get(1).unwrap(), m2);
+        assert!(!client.get_op(&op_id).unwrap().executed);
     }
 
     #[test]

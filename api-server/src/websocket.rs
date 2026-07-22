@@ -21,9 +21,18 @@ use crate::{
 const DEFAULT_WS_FAN_IN_CAPACITY: usize = 1000;
 const WS_FAN_IN_CAPACITY_ENV: &str = "WS_FAN_IN_CHANNEL_CAPACITY";
 const MAX_SUBSCRIPTIONS_PER_CONNECTION: usize = 1000;
+/// Maximum inbound WebSocket message size in bytes.
+/// Subscribe/unsubscribe payloads are tiny JSON, so 4 KB is more than sufficient.
+const WS_MAX_MESSAGE_SIZE: usize = 4 * 1024;
+/// Maximum inbound WebSocket frame size in bytes.
+/// Aligned with the message size limit since messages are not expected to be
+/// split across multiple frames for this protocol.
+const WS_MAX_FRAME_SIZE: usize = 4 * 1024;
 /// WebSocket upgrade handler
 pub async fn ws_handler(State(state): State<AppState>, ws: WebSocketUpgrade) -> impl IntoResponse {
-    ws.on_upgrade(|socket| handle_socket(socket, state))
+    ws.max_message_size(WS_MAX_MESSAGE_SIZE)
+        .max_frame_size(WS_MAX_FRAME_SIZE)
+        .on_upgrade(|socket| handle_socket(socket, state))
 }
 
 async fn handle_socket(socket: WebSocket, state: AppState) {
@@ -239,7 +248,7 @@ fn warn_if_fan_in_near_capacity(fan_in: &Sender<TransactionStatusEvent>, tx_id: 
 mod tests {
     use super::{
         fan_in_warning_threshold, parse_websocket_fan_in_capacity, DEFAULT_WS_FAN_IN_CAPACITY,
-        MAX_SUBSCRIPTIONS_PER_CONNECTION,
+        MAX_SUBSCRIPTIONS_PER_CONNECTION, WS_MAX_FRAME_SIZE, WS_MAX_MESSAGE_SIZE,
     };
 
     #[test]
@@ -272,6 +281,12 @@ mod tests {
     #[test]
     fn max_subscriptions_per_connection_is_set() {
         assert_eq!(MAX_SUBSCRIPTIONS_PER_CONNECTION, 1000);
+    }
+
+    #[test]
+    fn ws_max_message_and_frame_size_constants_are_4kb() {
+        assert_eq!(WS_MAX_MESSAGE_SIZE, 4 * 1024);
+        assert_eq!(WS_MAX_FRAME_SIZE, 4 * 1024);
     }
 
     #[test]

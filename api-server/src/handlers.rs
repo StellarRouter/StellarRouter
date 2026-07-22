@@ -10,7 +10,7 @@ use tracing::{error, info};
 
 use crate::{
     state::AppState,
-    types::{ErrorResponse, FeeEstimate, SimulateRequest, SimulateResponse, SimulationDetail},
+    types::{ErrorResponse, FeeEstimate, SimulateRequest, SimulateResponse, SimulationDetail, StatsResponse},
 };
 
 #[utoipa::path(
@@ -23,6 +23,27 @@ use crate::{
 /// GET /health
 pub async fn health() -> impl IntoResponse {
     (StatusCode::OK, Json(json!({"status": "ok"})))
+}
+
+#[utoipa::path(
+    get,
+    path = "/stats",
+    responses(
+        (status = 200, description = "Server statistics", body = StatsResponse)
+    )
+)]
+/// GET /stats
+///
+/// Returns live WebSocket connection and subscription statistics:
+/// - `active_subscriptions`: total subscription count across all tx IDs
+/// - `unique_tx_ids`: number of distinct tx IDs being tracked
+/// - `broadcast_channel_capacity`: fixed capacity of the broadcast channel
+pub async fn stats(State(state): State<AppState>) -> impl IntoResponse {
+    Json(StatsResponse {
+        active_subscriptions: state.active_subscriptions(),
+        unique_tx_ids: state.unique_tx_ids(),
+        broadcast_channel_capacity: state.broadcast_channel_capacity(),
+    })
 }
 
 #[utoipa::path(

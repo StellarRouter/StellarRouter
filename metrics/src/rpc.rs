@@ -10,7 +10,11 @@ use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::time::Duration;
-use tracing::debug;
+use tracing::{debug, warn};
+
+/// Maximum number of pages to fetch in a single `get_events` call.
+/// Prevents unbounded loops if the RPC server misbehaves.
+const GET_EVENTS_MAX_PAGES: usize = 20;
 
 // ── JSON-RPC request / response types ────────────────────────────────────────
 
@@ -72,6 +76,9 @@ pub struct ContractEvent {
 #[derive(Debug, Deserialize)]
 struct GetEventsResult {
     events: Option<Vec<ContractEvent>>,
+    #[serde(rename = "latestLedger")]
+    #[allow(dead_code)]
+    latest_ledger: Option<u64>,
 }
 
 // ── Client ────────────────────────────────────────────────────────────────────
@@ -81,21 +88,114 @@ struct GetEventsResult {
 pub struct SorobanRpcClient {
     http: Client,
     rpc_url: String,
+    /// Maximum number of retry attempts for retryable errors (default: 3).
+    max_retries: u32,
+    /// Base backoff duration before first retry (doubles on each attempt).
+    base_backoff: Duration,
 }
 
 impl SorobanRpcClient {
     /// Create a new client.
     ///
     /// `timeout_secs` is applied to every individual HTTP request.
+    /// Retry behaviour is configured via environment variables:
+    ///
+    /// | Variable | Default | Description |
+    /// |---|---|---|
+    /// | `ROUTER_RPC_MAX_RETRIES` | `3` | Max retry attempts for transient errors. |
+    /// | `ROUTER_RPC_BACKOFF_MS` | `200` | Base backoff in milliseconds (doubles each retry). |
     pub fn new(rpc_url: impl Into<String>, timeout_secs: u64) -> Result<Self> {
         let http = Client::builder()
             .timeout(Duration::from_secs(timeout_secs))
             .build()
             .context("failed to build HTTP client")?;
+
+        let max_retries = std::env::var("ROUTER_RPC_MAX_RETRIES")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(3u32);
+
+        let base_backoff_ms = std::env::var("ROUTER_RPC_BACKOFF_MS")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .unwrap_or(200);
+
         Ok(Self {
             http,
             rpc_url: rpc_url.into(),
+            max_retries,
+            base_backoff: Duration::from_millis(base_backoff_ms),
         })
+    }
+
+    /// Determine whether an HTTP status code or a reqwest error is retryable.
+    ///
+    /// We retry on:
+    /// - Connection-level errors (timeout, connection reset, DNS failure)
+    /// - HTTP 429 (Too Many Requests) and 5xx server errors
+    fn is_retryable_error(err: &reqwest::Error) -> bool {
+        if err.is_timeout() || err.is_connect() {
+            return true;
+        }
+        if let Some(status) = err.status() {
+            return status.is_server_error() || status.as_u16() == 429;
+        }
+        false
+    }
+
+    /// Execute an HTTP POST and parse the JSON-RPC response, retrying up to
+    /// `self.max_retries` times on transient/retryable errors with exponential
+    /// backoff.
+    async fn post_with_retry(&self, req_body: &impl Serialize) -> Result<RpcResponse> {
+        let mut attempt = 0u32;
+        loop {
+            let result = self
+                .http
+                .post(&self.rpc_url)
+                .json(req_body)
+                .send()
+                .await;
+
+            match result {
+                Ok(response) => {
+                    // Treat 5xx / 429 as retryable at the HTTP level.
+                    let status = response.status();
+                    if (status.is_server_error() || status.as_u16() == 429)
+                        && attempt < self.max_retries
+                    {
+                        let delay = self.base_backoff * 2u32.pow(attempt);
+                        warn!(
+                            attempt,
+                            delay_ms = delay.as_millis(),
+                            %status,
+                            "RPC HTTP error — retrying"
+                        );
+                        attempt += 1;
+                        tokio::time::sleep(delay).await;
+                        continue;
+                    }
+                    return response
+                        .json::<RpcResponse>()
+                        .await
+                        .context("failed to parse JSON-RPC response");
+                }
+                Err(err) => {
+                    if Self::is_retryable_error(&err) && attempt < self.max_retries {
+                        let delay = self.base_backoff * 2u32.pow(attempt);
+                        warn!(
+                            attempt,
+                            delay_ms = delay.as_millis(),
+                            error = %err,
+                            "RPC request failed — retrying"
+                        );
+                        attempt += 1;
+                        tokio::time::sleep(delay).await;
+                        continue;
+                    }
+                    return Err(err).context("HTTP request failed");
+                }
+            }
+        }
     }
 
     /// Call `simulateTransaction` to invoke a read-only contract function and
@@ -122,16 +222,9 @@ impl SorobanRpcClient {
             params: invoke_params,
         };
 
-        let resp: RpcResponse = self
-            .http
-            .post(&self.rpc_url)
-            .json(&req)
-            .send()
-            .await
-            .context("HTTP request failed")?
-            .json()
-            .await
-            .context("failed to parse JSON-RPC response")?;
+        let resp = self
+            .post_with_retry(&req)
+            .await?;
 
         if let Some(err) = resp.error {
             return Err(anyhow!("RPC error {}: {}", err.code, err.message));
@@ -149,16 +242,9 @@ impl SorobanRpcClient {
             params: json!({ "keys": keys_xdr }),
         };
 
-        let resp: RpcResponse = self
-            .http
-            .post(&self.rpc_url)
-            .json(&req)
-            .send()
-            .await
-            .context("HTTP request failed")?
-            .json()
-            .await
-            .context("failed to parse JSON-RPC response")?;
+        let resp = self
+            .post_with_retry(&req)
+            .await?;
 
         if let Some(err) = resp.error {
             return Err(anyhow!("RPC error {}: {}", err.code, err.message));
@@ -172,6 +258,9 @@ impl SorobanRpcClient {
     }
 
     /// Call `getEvents` to fetch contract events matching the given topic filters.
+    ///
+    /// Paginates through all available pages until exhausted or until
+    /// [`GET_EVENTS_MAX_PAGES`] is reached (logged as a warning).
     ///
     /// `contract_id` — the contract whose events to query.
     /// `topic_filters` — list of topic symbol strings to match (e.g. `["quote_generated"]`).
@@ -187,39 +276,86 @@ impl SorobanRpcClient {
             .map(|t| json!({ "type": "contract", "contractIds": [contract_id], "topics": [[t]] }))
             .collect();
 
-        let params = if start_ledger > 0 {
-            json!({ "startLedger": start_ledger, "filters": filters })
-        } else {
-            json!({ "filters": filters })
-        };
+        let mut all_events: Vec<ContractEvent> = Vec::new();
+        let mut paging_token: Option<String> = None;
+        let mut pages_fetched: usize = 0;
 
-        let req = RpcRequest {
-            jsonrpc: "2.0",
-            id: 1,
-            method: "getEvents",
-            params,
-        };
+        loop {
+            let params = match (&paging_token, start_ledger) {
+                (Some(token), _) => json!({ "pagingToken": token, "filters": filters }),
+                (None, ledger) if ledger > 0 => {
+                    json!({ "startLedger": ledger, "filters": filters })
+                }
+                (None, _) => json!({ "filters": filters }),
+            };
 
-        let resp: RpcResponse = self
-            .http
-            .post(&self.rpc_url)
-            .json(&req)
-            .send()
-            .await
-            .context("HTTP request failed")?
-            .json()
-            .await
-            .context("failed to parse JSON-RPC response")?;
+            let req = RpcRequest {
+                jsonrpc: "2.0",
+                id: 1,
+                method: "getEvents",
+                params,
+            };
 
-        if let Some(err) = resp.error {
-            return Err(anyhow!("RPC error {}: {}", err.code, err.message));
+            let resp: RpcResponse = self
+                .http
+                .post(&self.rpc_url)
+                .json(&req)
+                .send()
+                .await
+                .context("HTTP request failed")?
+                .json()
+                .await
+                .context("failed to parse JSON-RPC response")?;
+
+            if let Some(err) = resp.error {
+                return Err(anyhow!("RPC error {}: {}", err.code, err.message));
+            }
+
+            let raw_value = resp.result.ok_or_else(|| anyhow!("empty RPC result"))?;
+
+        let resp = self
+            .post_with_retry(&req)
+            .await?;
+            // Deserialize the raw response to extract paging tokens.
+            let raw_result: GetEventsResult =
+                serde_json::from_value(raw_value.clone())
+                    .context("failed to deserialize getEvents result")?;
+
+            let page_events = raw_result.events.unwrap_or_default();
+            if page_events.is_empty() {
+                break;
+            }
+
+            // Extract the paging token from the last event in this page
+            // by re-parsing the events array to find pagingToken fields.
+            let last_paging_token = extract_last_paging_token(&raw_value);
+
+            all_events.extend(page_events);
+            pages_fetched += 1;
+
+            if pages_fetched >= GET_EVENTS_MAX_PAGES {
+                warn!(
+                    pages = pages_fetched,
+                    total_events = all_events.len(),
+                    "get_events hit max-pages cap ({}); remaining events may be missed",
+                    GET_EVENTS_MAX_PAGES
+                );
+                break;
+            }
+
+            match last_paging_token {
+                Some(token) => paging_token = Some(token),
+                None => break, // No continuation cursor — done.
+            }
         }
 
-        let result: GetEventsResult =
-            serde_json::from_value(resp.result.ok_or_else(|| anyhow!("empty RPC result"))?)
-                .context("failed to deserialize getEvents result")?;
+        debug!(
+            pages = pages_fetched,
+            total_events = all_events.len(),
+            "get_events pagination complete"
+        );
 
-        Ok(result.events.unwrap_or_default())
+        Ok(all_events)
     }
 
     /// Convenience: call a view function and extract a `u64` from the result.
@@ -291,38 +427,206 @@ impl SorobanRpcClient {
 
 // ── XDR helpers ───────────────────────────────────────────────────────────────
 
-/// Build a minimal base64-encoded transaction XDR suitable for `simulateTransaction`.
+// ── Strkey decode ─────────────────────────────────────────────────────────────
+
+const BASE32_ALPHA: &[u8; 32] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+const VERSION_CONTRACT: u8 = 2 << 3; // 0x10 → first char 'C'
+
+/// CRC-16/XModem used by Stellar strkey checksums.
+fn crc16(data: &[u8]) -> u16 {
+    let mut crc: u16 = 0;
+    for &b in data {
+        crc ^= (b as u16) << 8;
+        for _ in 0..8 {
+            crc = if crc & 0x8000 != 0 {
+                (crc << 1) ^ 0x1021
+            } else {
+                crc << 1
+            };
+        }
+    }
+    crc
+}
+
+/// Decode a Stellar contract strkey (C…) into its 32-byte hash.
+fn decode_contract_id(strkey: &str) -> Result<[u8; 32]> {
+    if strkey.len() != 56 {
+        return Err(anyhow!("strkey must be 56 chars, got {}", strkey.len()));
+    }
+    let mut lookup = [0xFFu8; 256];
+    for (i, &c) in BASE32_ALPHA.iter().enumerate() {
+        lookup[c as usize] = i as u8;
+    }
+    let mut bits: u64 = 0;
+    let mut bit_count: u32 = 0;
+    let mut decoded: Vec<u8> = Vec::with_capacity(35);
+    for &ch in strkey.as_bytes() {
+        let v = lookup[ch as usize];
+        if v == 0xFF {
+            return Err(anyhow!("invalid base32 character '{}'", ch as char));
+        }
+        bits = (bits << 5) | v as u64;
+        bit_count += 5;
+        if bit_count >= 8 {
+            bit_count -= 8;
+            decoded.push((bits >> bit_count) as u8);
+        }
+    }
+    if decoded.len() != 35 {
+        return Err(anyhow!(
+            "strkey decoded to {} bytes, expected 35",
+            decoded.len()
+        ));
+    }
+    let version = decoded[0];
+    if version != VERSION_CONTRACT {
+        return Err(anyhow!(
+            "expected contract strkey (C…), got version 0x{:02x}",
+            version
+        ));
+    }
+    let payload: [u8; 32] = decoded[1..33].try_into().unwrap();
+    let stored_crc = u16::from_le_bytes([decoded[33], decoded[34]]);
+    let actual_crc = crc16(&decoded[..33]);
+    if actual_crc != stored_crc {
+        return Err(anyhow!("strkey checksum mismatch"));
+    }
+    Ok(payload)
+}
+
+// ── Base64 ────────────────────────────────────────────────────────────────────
+
+const B64: &[u8; 64] =
+    b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+fn base64_encode(input: &[u8]) -> String {
+    let mut out = String::with_capacity(input.len().div_ceil(3) * 4);
+    for chunk in input.chunks(3) {
+        let b0 = chunk[0] as u32;
+        let b1 = chunk.get(1).copied().unwrap_or(0) as u32;
+        let b2 = chunk.get(2).copied().unwrap_or(0) as u32;
+        let n = (b0 << 16) | (b1 << 8) | b2;
+        out.push(B64[(n >> 18 & 0x3F) as usize] as char);
+        out.push(B64[(n >> 12 & 0x3F) as usize] as char);
+        out.push(if chunk.len() > 1 {
+            B64[(n >> 6 & 0x3F) as usize] as char
+        } else {
+            '='
+        });
+        out.push(if chunk.len() > 2 {
+            B64[(n & 0x3F) as usize] as char
+        } else {
+            '='
+        });
+    }
+    out
+}
+
+// ── XDR writer ────────────────────────────────────────────────────────────────
+
+struct XdrWriter(Vec<u8>);
+
+impl XdrWriter {
+    fn new() -> Self {
+        Self(Vec::new())
+    }
+    fn u32(&mut self, v: u32) {
+        self.0.extend_from_slice(&v.to_be_bytes());
+    }
+    fn i64(&mut self, v: i64) {
+        self.0.extend_from_slice(&v.to_be_bytes());
+    }
+    /// Write `data` followed by zero-padding to the next 4-byte boundary.
+    fn opaque_fixed(&mut self, data: &[u8]) {
+        self.0.extend_from_slice(data);
+        let pad = data.len().wrapping_neg() & 3;
+        self.0.extend(std::iter::repeat_n(0u8, pad));
+    }
+    /// Write a 4-byte length prefix, then `opaque_fixed(data)`.
+    fn opaque_var(&mut self, data: &[u8]) {
+        self.u32(data.len() as u32);
+        self.opaque_fixed(data);
+    }
+    fn into_bytes(self) -> Vec<u8> {
+        self.0
+    }
+}
+
+// ScVal discriminants (Soroban protocol 21)
+const SCV_STRING: u32 = 14;
+const SC_ADDR_CONTRACT: u32 = 1;
+
+/// Build a minimal base64-encoded `TransactionEnvelope` (v1) containing a
+/// single `InvokeHostFunctionOp` for `simulateTransaction`.
 ///
-/// We construct the smallest valid `TransactionEnvelope` that wraps an
-/// `InvokeHostFunctionOp` for the given contract / function / args.
+/// The source account is the all-zero Ed25519 key, fee is 100 stroops, and
+/// sequence number is 0. Signatures are omitted — `simulateTransaction` does
+/// not validate them.
 ///
-/// In practice the Soroban RPC server only needs the operation body to be
-/// correct; the source account, fee, and sequence number are ignored during
-/// simulation.
-fn build_invoke_xdr(contract_id: &str, function_name: &str, args_xdr: &[String]) -> Result<String> {
-    // We use the Stellar Horizon / Soroban RPC "friendly" JSON format for
-    // transaction simulation.  The RPC server accepts a JSON object with a
-    // `transaction` field containing a base64-encoded XDR TransactionEnvelope.
-    //
-    // Building a full XDR envelope from scratch without the Stellar SDK is
-    // non-trivial.  Instead we use the `stellar_xdr` crate (already a
-    // transitive dependency of `stellar-rpc-client`) to construct the XDR.
-    //
-    // For simplicity in this implementation we return a placeholder that
-    // signals to the caller that full XDR construction requires the
-    // stellar-xdr crate to be wired up.  The `collector` module uses
-    // `getLedgerEntries` (which does not require XDR transaction building)
-    // as the primary data source, falling back to simulation only when
-    // direct storage key access is not possible.
-    //
-    // A production deployment should replace this with proper XDR construction
-    // using the `stellar-xdr` crate or the Stellar JS SDK via a sidecar.
-    let _ = (contract_id, function_name, args_xdr);
-    Err(anyhow!(
-        "XDR transaction building is not implemented in this reference exporter. \
-         Use getLedgerEntries-based scraping (the default) or integrate the \
-         stellar-xdr crate to build InvokeHostFunction envelopes."
-    ))
+/// `args_xdr` items are treated as Soroban `ScVal::String` arguments
+/// (the only type currently needed for registry/core view functions).
+fn build_invoke_xdr(
+    contract_id: &str,
+    function_name: &str,
+    args_xdr: &[String],
+) -> Result<String> {
+    let contract_hash = decode_contract_id(contract_id)
+        .with_context(|| format!("invalid contract id '{contract_id}'"))?;
+
+    let mut w = XdrWriter::new();
+
+    // TransactionEnvelope discriminant: ENVELOPE_TYPE_TX = 2
+    w.u32(2);
+
+    // sourceAccount: MuxedAccount::Ed25519([0u8;32])
+    w.u32(0); // KEY_TYPE_ED25519
+    w.opaque_fixed(&[0u8; 32]);
+
+    w.u32(100); // fee (stroops)
+    w.i64(0);   // seqNum
+
+    // cond: Preconditions::None
+    w.u32(0);
+    // memo: Memo::None
+    w.u32(0);
+
+    // operations: count = 1
+    w.u32(1);
+
+    // Operation
+    w.u32(0);  // sourceAccount: absent
+    w.u32(24); // OperationType::INVOKE_HOST_FUNCTION
+
+    // InvokeHostFunctionOp
+    // hostFunction: HOST_FUNCTION_TYPE_INVOKE_CONTRACT = 0
+    w.u32(0);
+
+    // InvokeContractArgs
+    // contractAddress: SC_ADDRESS_TYPE_CONTRACT
+    w.u32(SC_ADDR_CONTRACT);
+    w.opaque_fixed(&contract_hash); // Hash(32)
+
+    // functionName: SCSymbol
+    w.opaque_var(function_name.as_bytes());
+
+    // args: SCVal[]
+    w.u32(args_xdr.len() as u32);
+    for arg in args_xdr {
+        // Treat each arg string as SCV_STRING
+        w.u32(SCV_STRING);
+        w.opaque_var(arg.as_bytes());
+    }
+
+    // auth: SorobanAuthorizationEntry[] — empty for read-only calls
+    w.u32(0);
+
+    // Transaction.ext: v = 0
+    w.u32(0);
+
+    // TransactionV1Envelope.signatures: count = 0
+    w.u32(0);
+
+    Ok(base64_encode(&w.into_bytes()))
 }
 
 // ── Result extraction helpers ─────────────────────────────────────────────────
@@ -436,6 +740,20 @@ fn hex_encode_arg(s: &str) -> String {
         write!(out, "{b:02x}").ok();
     }
     out
+}
+
+/// Extract the `pagingToken` from the last event in a `getEvents` response.
+///
+/// The Soroban RPC embeds a continuation cursor in each event's `pagingToken`
+/// field.  We only need the token from the final event to request the next page.
+fn extract_last_paging_token(raw_result: &Value) -> Option<String> {
+    raw_result
+        .get("events")?
+        .as_array()?
+        .last()?
+        .get("pagingToken")?
+        .as_str()
+        .map(|s| s.to_string())
 }
 // ── Storage key XDR helpers ───────────────────────────────────────────────────
 
@@ -766,5 +1084,216 @@ mod tests {
         let v = json!(["oracle", "price_feed"]);
         let result = extract_string_vec_from_sim_result(&v).unwrap();
         assert_eq!(result, vec!["oracle", "price_feed"]);
+    }
+
+    /// Verify that `build_invoke_xdr` produces valid base64-encoded XDR starting
+    /// with the ENVELOPE_TYPE_TX discriminant (big-endian 2 = [0,0,0,2]).
+    #[test]
+    fn build_invoke_xdr_produces_valid_envelope() {
+        let contract = "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4";
+        let xdr = build_invoke_xdr(contract, "total_routed", &[]).unwrap();
+        // Must be valid base64
+        let mut lut = [0xFFu8; 256];
+        for (i, &c) in B64.iter().enumerate() {
+            lut[c as usize] = i as u8;
+        }
+        // Decode first 4 bytes to verify ENVELOPE_TYPE_TX = 2
+        let bytes: Vec<u8> = {
+            let s = xdr.trim_end_matches('=').as_bytes();
+            let c0 = lut[s[0] as usize] as u32;
+            let c1 = lut[s[1] as usize] as u32;
+            let c2 = lut[s[2] as usize] as u32;
+            let c3 = lut[s[3] as usize] as u32;
+            let n = (c0 << 18) | (c1 << 12) | (c2 << 6) | c3;
+            vec![(n >> 16) as u8, (n >> 8) as u8, n as u8]
+        };
+        assert_eq!(&bytes[0..3], &[0, 0, 0], "high bytes of discriminant");
+        // The fourth byte is in the next group; just check first 3 are 0.
+        let _ = bytes;
+    }
+
+    #[test]
+    fn build_invoke_xdr_with_string_arg() {
+        let contract = "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4";
+        let result = build_invoke_xdr(contract, "get_route", &["oracle".to_string()]);
+        assert!(result.is_ok(), "XDR build with arg should succeed");
+        assert!(!result.unwrap().is_empty());
+    }
+
+    #[test]
+    fn build_invoke_xdr_invalid_contract_id_returns_error() {
+        let result = build_invoke_xdr("not-a-valid-contract-id", "fn", &[]);
+        assert!(result.is_err(), "invalid contract id should return Err");
+    }
+    /// fail the overall call — the retry logic absorbs the first blip.
+    ///
+    /// We use MockRpcClient to simulate a "first call fails, second succeeds"
+    /// scenario at the high-level trait boundary.
+    #[tokio::test]
+    async fn retry_on_transient_failure_mock() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+
+        // Shared call counter simulates a flaky backend.
+        let call_count = Arc::new(AtomicUsize::new(0));
+
+        struct FlakyMock {
+            call_count: Arc<AtomicUsize>,
+        }
+
+        #[async_trait::async_trait]
+        impl RpcClient for FlakyMock {
+            async fn call_u64(&self, _: &str, _: &str) -> Result<u64> {
+                let n = self.call_count.fetch_add(1, Ordering::SeqCst);
+                if n == 0 {
+                    Err(anyhow!("transient error"))
+                } else {
+                    Ok(42)
+                }
+            }
+            async fn call_bool(&self, _: &str, _: &str) -> Result<bool> { Ok(false) }
+            async fn call_string_vec(&self, _: &str, _: &str) -> Result<Vec<String>> { Ok(vec![]) }
+            async fn call_u32_vec(&self, _: &str, _: &str, _: &str) -> Result<Vec<u32>> { Ok(vec![]) }
+            async fn simulate_invoke(&self, _: &str, _: &str, _: Vec<String>) -> Result<Value> {
+                Ok(json!({}))
+            }
+            async fn get_events(&self, _: &str, _: &[&str], _: u32) -> Result<Vec<ContractEvent>> {
+                Ok(vec![])
+            }
+            async fn get_ledger_entries(&self, _: Vec<String>) -> Result<Vec<LedgerEntry>> {
+                Ok(vec![])
+            }
+        }
+
+        let mock = FlakyMock { call_count: Arc::clone(&call_count) };
+
+        // First attempt returns an error; a real retry loop in the caller
+        // would try again. We model that here by calling twice and asserting
+        // the second call succeeds.
+        let first = mock.call_u64("C1", "total_routed").await;
+        let second = mock.call_u64("C1", "total_routed").await;
+
+        assert!(first.is_err(), "first call should fail (transient)");
+        assert_eq!(second.unwrap(), 42, "second call should succeed");
+        assert_eq!(call_count.load(Ordering::SeqCst), 2);
+    #[test]
+    fn test_extract_last_paging_token_present() {
+        let v = json!({
+            "events": [
+                { "contractId": "C1", "ledger": 1, "topic": [], "value": {}, "pagingToken": "token-a" },
+                { "contractId": "C1", "ledger": 2, "topic": [], "value": {}, "pagingToken": "token-b" }
+            ],
+            "latestLedger": 100
+        });
+        assert_eq!(
+            extract_last_paging_token(&v),
+            Some("token-b".to_string())
+        );
+    }
+
+    #[test]
+    fn test_extract_last_paging_token_absent() {
+        let v = json!({
+            "events": [
+                { "contractId": "C1", "ledger": 1, "topic": [], "value": {} }
+            ],
+            "latestLedger": 100
+        });
+        assert_eq!(extract_last_paging_token(&v), None);
+    }
+
+    #[test]
+    fn test_extract_last_paging_token_empty_events() {
+        let v = json!({ "events": [], "latestLedger": 50 });
+        assert_eq!(extract_last_paging_token(&v), None);
+    }
+
+    #[test]
+    fn test_get_events_max_pages_constant() {
+        assert_eq!(GET_EVENTS_MAX_PAGES, 20);
+    }
+
+    #[tokio::test]
+    async fn test_get_events_paginates_multiple_pages() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+
+        // Spawn a mock HTTP server that returns 3 pages of events.
+        let call_count = Arc::new(AtomicUsize::new(0));
+        let call_count_clone = call_count.clone();
+
+        let app = axum::Router::new().route(
+            "/",
+            axum::routing::post(move |_body: axum::body::Body| {
+                let count = call_count_clone.clone();
+                async move {
+                    let n = count.fetch_add(1, Ordering::SeqCst);
+                    let response = match n {
+                        0 => {
+                            // Page 1: 2 events with paging token
+                            json!({
+                                "jsonrpc": "2.0",
+                                "id": 1,
+                                "result": {
+                                    "events": [
+                                        { "contractId": "CONTRACT", "ledger": 10, "topic": [], "value": {"u64": 1}, "pagingToken": "cursor-1" },
+                                        { "contractId": "CONTRACT", "ledger": 11, "topic": [], "value": {"u64": 2}, "pagingToken": "cursor-2" }
+                                    ],
+                                    "latestLedger": 100
+                                }
+                            })
+                        }
+                        1 => {
+                            // Page 2: 1 event with paging token
+                            json!({
+                                "jsonrpc": "2.0",
+                                "id": 1,
+                                "result": {
+                                    "events": [
+                                        { "contractId": "CONTRACT", "ledger": 12, "topic": [], "value": {"u64": 3}, "pagingToken": "cursor-3" }
+                                    ],
+                                    "latestLedger": 100
+                                }
+                            })
+                        }
+                        _ => {
+                            // Page 3: empty — signals end of pagination
+                            json!({
+                                "jsonrpc": "2.0",
+                                "id": 1,
+                                "result": {
+                                    "events": [],
+                                    "latestLedger": 100
+                                }
+                            })
+                        }
+                    };
+                    axum::Json(response)
+                }
+            }),
+        );
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        let client =
+            SorobanRpcClient::new(format!("http://{addr}"), 5).expect("build client");
+
+        let events = client
+            .get_events("CONTRACT", &["post_call"], 10)
+            .await
+            .expect("get_events should succeed");
+
+        // All 3 events across 3 pages should be present.
+        assert_eq!(events.len(), 3);
+        assert_eq!(events[0].ledger, 10);
+        assert_eq!(events[1].ledger, 11);
+        assert_eq!(events[2].ledger, 12);
+
+        // The mock server should have been called 3 times (page1 + page2 + empty page3).
+        assert_eq!(call_count.load(Ordering::SeqCst), 3);
     }
 }

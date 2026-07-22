@@ -1,5 +1,10 @@
 # Transaction Signing Abstraction
 
+> **Status: planned, not yet implemented.** This describes the signing
+> interface for the [stellar-router-sdk](sdk.md), which does not exist in
+> this repository yet. `Signer`, `LocalSigner`, and `FreighterSigner` below
+> are a design proposal, not shipped code.
+
 A flexible signing interface that supports local keypairs, hardware wallets,
 and external signers (e.g. Freighter, WalletConnect).
 

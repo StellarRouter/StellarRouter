@@ -21,6 +21,10 @@ The format is based on Keep a Changelog and this project adheres to Semantic Ver
 - `router-registry`: `ContractEntry` includes an optional `deprecation_reason` and the `deprecate()` API accepts an optional reason which is emitted in the `contract_deprecated` event.
 - `metrics/alerts.yml`: example Prometheus alerting rules for circuit breaker opens, high failure/error rates, and high request volume.
 
+### Fixed
+- `router-quote`: `get_quote` no longer silently defaults the fee/price-impact calculation to `0` when `amount_in * fee_bps` (or `fee_amount * 10_000`) overflows `i128`. Returns the new `QuoteError::AmountOverflow` instead, closing a bypass where an extreme `amount_in` produced a fee-free, zero-impact quote. Closes #90.
+- `Cargo.lock`: removed a duplicate `checksum` key on the `zmij` package entry that made the lockfile unparseable TOML, breaking `cargo build`/`cargo test` for the whole workspace.
+
 ## [0.3.0] - 2024-11-15
 
 ### Added

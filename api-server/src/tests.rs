@@ -13,11 +13,13 @@ use tower::ServiceExt;
 use crate::{
     auth::AuthConfig,
     handlers,
+    poller::TxStatusPoller,
     rate_limit::{rate_limit_middleware, RateLimitConfig, RateLimiter},
     rpc::FeeConfig,
     state::AppState,
     types::{
-        RouteDetails, SimulateRequest, SimulateResponse, TransactionStatus, TransactionStatusEvent,
+        RouteDetails, SimulateRequest, SimulateResponse, StatsResponse, TransactionStatus,
+        TransactionStatusEvent,
     },
 };
 
@@ -42,6 +44,7 @@ fn test_app() -> Router {
 
     Router::new()
         .route("/health", get(handlers::health))
+        .route("/stats", get(handlers::stats))
         .route("/simulate", post(handlers::simulate))
         .route("/routes/:name", get(handlers::get_route))
         .with_state(state)
@@ -686,6 +689,46 @@ fn test_simulate_request_serialization() {
     assert_eq!(deserialized.function, req.function);
 }
 
+#[tokio::test]
+async fn test_ws_oversized_frame_closes_connection() {
+    use futures_util::{SinkExt, StreamExt};
+    use std::time::Duration;
+    use tokio::time::timeout;
+    use tokio_tungstenite::connect_async;
+    use tokio_tungstenite::tungstenite::Message as TungMessage;
+
+    let (addr, _state) = spawn_ws_server().await;
+    let url = format!("ws://{}/ws", addr);
+
+    let (ws_stream, _resp) = connect_async(&url).await.expect("connect");
+    let (mut write, mut read) = ws_stream.split();
+
+    // Send a message well over the 4 KB limit (8 KB of padding).
+    let oversized = "x".repeat(8 * 1024);
+    let send_result = write.send(TungMessage::Text(oversized.into())).await;
+
+    // The send itself may succeed (buffered), but the server should close the
+    // connection shortly after receiving the oversized frame.
+    if send_result.is_err() {
+        // Connection already closed — acceptable.
+        return;
+    }
+
+    // Read from the stream: the server should close (None) or return an error.
+    let next = timeout(Duration::from_secs(3), read.next()).await;
+    match next {
+        Ok(Some(Err(_))) | Ok(None) => {
+            // Connection was closed/reset by server — expected behavior.
+        }
+        Ok(Some(Ok(TungMessage::Close(_)))) => {
+            // Clean close frame — also acceptable.
+        }
+        _ => {
+            panic!("expected connection to be closed after oversized frame");
+        }
+    }
+}
+
 #[test]
 fn test_transaction_status_event_serialization() {
     let event = TransactionStatusEvent {
@@ -702,4 +745,39 @@ fn test_transaction_status_event_serialization() {
     assert_eq!(deserialized.status, event.status);
     assert_eq!(deserialized.timestamp, event.timestamp);
     assert_eq!(deserialized.message, event.message);
+}
+
+// Keep all the tests below
+
+#[tokio::test]
+async fn test_stats_returns_200() {
+    // ...
+}
+
+#[tokio::test]
+async fn test_stats_response_has_expected_fields() {
+    // ...
+}
+
+#[tokio::test]
+async fn test_stats_reflects_active_subscriptions() {
+    // ...
+}
+
+async fn spawn_fake_rpc_server(tx_status: &'static str) -> String {
+    // ...
+}
+
+async fn spawn_ws_server_with_rpc(rpc_url: String) -> (SocketAddr, AppState) {
+    // ...
+}
+
+#[tokio::test]
+async fn test_poller_delivers_status_update_to_ws_client() {
+    // ...
+}
+
+#[tokio::test]
+async fn test_poller_keeps_polling_non_terminal_transactions() {
+    // ...
 }

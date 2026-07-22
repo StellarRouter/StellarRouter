@@ -152,6 +152,35 @@ read-only or fire-and-forget and do not hold signing keys in production.
 
 ---
 
+### 8. Quote Overflow / Fee Bypass
+
+**What can an attacker do?**
+- `router-quote`'s `get_quote` accepts any `amount_in > 0` with no upper
+  bound. Before the fix in Issue #90, an `amount_in` large enough that
+  `amount_in * fee_bps` overflowed `i128` caused the fee calculation to
+  silently fall back to `0` (via `unwrap_or(0)`), returning a **fee-free,
+  zero-price-impact quote** for that amount instead of an error. Any caller
+  trusting `get_quote`/`compare_quotes` output for downstream execution or
+  slippage decisions could be misled by a quote that never should have been
+  produced.
+
+**Mitigations**
+- Fixed: `get_quote` now returns `QuoteError::AmountOverflow` whenever the
+  fee-amount or price-impact computation would overflow `i128`, instead of
+  defaulting to `0`. See `contracts/router-quote/src/lib.rs::get_quote` and
+  `test_get_quote_amount_overflow_fails`.
+- General principle for this codebase: an overflowing `checked_*` arithmetic
+  operation on an economically meaningful value (fees, amounts, balances)
+  must always propagate as an error (`ok_or(...)?`), never fall back to a
+  default via `unwrap_or(...)`. A silent default can change the meaning of
+  the result (here: "no fee" instead of "amount too large to quote"), which
+  an attacker can exploit by choosing inputs that trigger the fallback.
+- If a caller needs to support genuinely large trade sizes, prefer chunking
+  `amount_in` into multiple `get_quote` calls that each stay well under the
+  overflow boundary, rather than relaxing this check.
+
+---
+
 ## Security Checklist for Deployment
 
 Before deploying to mainnet:

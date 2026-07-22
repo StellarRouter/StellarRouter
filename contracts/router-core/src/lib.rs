@@ -56,7 +56,7 @@ pub struct RouteMetadata {
     /// Human-readable description (max 256 chars)
     pub description: String,
     /// Tags for categorization (max 5 tags)
-    pub tags: Vec<String>,
+    pub tags: Vec<Symbol>,
     /// Owner address (use the zero/contract address as sentinel for "no owner")
     pub owner: Address,
 }
@@ -74,12 +74,58 @@ pub struct RouteEntry {
     pub updated_by: Address,
 }
 
-#[contracttype]
 #[derive(Clone, Debug, PartialEq)]
 pub struct RouteRegisterInput {
     pub name: String,
     pub address: Address,
     pub metadata: Option<RouteMetadata>,
+}
+
+impl soroban_sdk::TryFromVal<soroban_sdk::Env, soroban_sdk::Val> for RouteRegisterInput {
+    type Error = soroban_sdk::ConversionError;
+    fn try_from_val(env: &soroban_sdk::Env, val: &soroban_sdk::Val) -> Result<Self, Self::Error> {
+        use soroban_sdk::{EnvBase, TryIntoVal, Val};
+        const KEYS: [&str; 3] = ["address", "metadata", "name"];
+        let mut vals: [Val; 3] = [Val::VOID.to_val(); 3];
+        let map: soroban_sdk::MapObject =
+            val.try_into().map_err(|_| soroban_sdk::ConversionError)?;
+        env.map_unpack_to_slice(map, &KEYS, &mut vals)
+            .map_err(|_| soroban_sdk::ConversionError)?;
+        Ok(Self {
+            address: vals[0]
+                .try_into_val(env)
+                .map_err(|_| soroban_sdk::ConversionError)?,
+            metadata: vals[1]
+                .try_into_val(env)
+                .map_err(|_| soroban_sdk::ConversionError)?,
+            name: vals[2]
+                .try_into_val(env)
+                .map_err(|_| soroban_sdk::ConversionError)?,
+        })
+    }
+}
+
+impl soroban_sdk::TryFromVal<soroban_sdk::Env, RouteRegisterInput> for soroban_sdk::Val {
+    type Error = soroban_sdk::ConversionError;
+    fn try_from_val(env: &soroban_sdk::Env, val: &RouteRegisterInput) -> Result<Self, Self::Error> {
+        use soroban_sdk::{EnvBase, TryIntoVal, Val};
+        const KEYS: [&str; 3] = ["address", "metadata", "name"];
+        let vals: [Val; 3] = [
+            (&val.address)
+                .try_into_val(env)
+                .map_err(|_| soroban_sdk::ConversionError)?,
+            (&val.metadata)
+                .try_into_val(env)
+                .map_err(|_| soroban_sdk::ConversionError)?,
+            (&val.name)
+                .try_into_val(env)
+                .map_err(|_| soroban_sdk::ConversionError)?,
+        ];
+        Ok(env
+            .map_new_from_slices(&KEYS, &vals)
+            .map_err(|_| soroban_sdk::ConversionError)?
+            .into())
+    }
 }
 
 /// Scoring attributes for a route used in path selection.
@@ -557,10 +603,11 @@ impl RouterCore {
     /// total-routed counter, and emits a `routed` event. If `name` is an alias,
     /// resolves to the original route.
     ///
-    /// When multiple scored routes exist, score-based selection is applied:
-    /// all route names are evaluated via `get_best_route` and the highest-scoring
-    /// non-paused route is returned automatically. If no scored routes exist,
-    /// falls back to the direct lookup by `name`.
+    /// When multiple scored routes exist, `get_best_route` can be used by
+    /// clients to choose the best route from arbitrary candidate sets.
+    /// `resolve(name)` always returns the requested route or alias target and is
+    /// not redirected to a different route solely because another route has a
+    /// higher score.
     ///
     /// # Arguments
     /// * `env` - The Soroban environment.
@@ -594,27 +641,7 @@ impl RouterCore {
             name.clone()
         };
 
-        // Score-based selection: if any route has a score, use get_best_route
-        // across all candidates to return the highest-scoring non-paused route.
-        let all_names = Self::get_route_names(&env);
-        let has_any_score = all_names
-            .iter()
-            .any(|n| env.storage().instance().has(&DataKey::Score(n.clone())));
-
-        let final_name = if has_any_score {
-            // Use score-based selection over all routes; fall back to resolved_name
-            match Self::get_best_route(
-                env.clone(),
-                all_names,
-                i64::MIN,
-                Some(resolved_name.clone()),
-            )? {
-                Some(best) => best,
-                None => resolved_name.clone(),
-            }
-        } else {
-            resolved_name.clone()
-        };
+        let final_name = resolved_name.clone();
 
         let entry: RouteEntry = env
             .storage()
@@ -1377,7 +1404,7 @@ mod tests {
         let addr = Address::generate(&env);
         let mut tags = Vec::new(&env);
         for i in 0..6 {
-            tags.push_back(String::from_str(
+            tags.push_back(Symbol::new(
                 &env,
                 &alloc::string::String::from("tag").repeat(i + 1),
             ));
@@ -1893,8 +1920,8 @@ mod tests {
         let description = String::from_str(&env, "Oracle price feed");
         let tags = vec![
             &env,
-            String::from_str(&env, "defi"),
-            String::from_str(&env, "oracle"),
+            Symbol::new(&env, "defi"),
+            Symbol::new(&env, "oracle"),
         ];
         let owner = admin.clone();
 
@@ -1919,7 +1946,7 @@ mod tests {
         client.register_route(&admin, &name, &addr, &None);
 
         let description = String::from_str(&env, "Updated oracle");
-        let tags = vec![&env, String::from_str(&env, "v2")];
+        let tags = vec![&env, Symbol::new(&env, "v2")];
         let metadata = Some(RouteMetadata {
             description,
             tags,
@@ -1942,7 +1969,7 @@ mod tests {
         let name = String::from_str(&env, "oracle");
         let addr = Address::generate(&env);
         let description = String::from_str(&env, "Test metadata");
-        let tags = vec![&env, String::from_str(&env, "test")];
+        let tags = vec![&env, Symbol::new(&env, "test")];
         let metadata = Some(RouteMetadata {
             description,
             tags,
@@ -1971,7 +1998,7 @@ mod tests {
         let addr = Address::generate(&env);
 
         let description = String::from_str(&env, "Initial metadata");
-        let tags = vec![&env, String::from_str(&env, "test")];
+        let tags = vec![&env, Symbol::new(&env, "test")];
         let metadata = Some(RouteMetadata {
             description,
             tags,
@@ -2124,7 +2151,7 @@ mod tests {
         client.register_route(&admin, &name, &addr, &None);
 
         let mut tags = Vec::new(&env);
-        tags.push_back(String::from_str(&env, "defi"));
+        tags.push_back(Symbol::new(&env, "defi"));
         let metadata = Some(RouteMetadata {
             description: String::from_str(&env, "valid description"),
             tags,
@@ -2196,10 +2223,10 @@ mod tests {
         let addr = Address::generate(&env);
         client.register_route(&admin, &name, &addr, &None);
 
-        // Exactly 5 tags — must succeed
+        // 6 tags — must fail
         let mut tags = Vec::new(&env);
-        for i in 0..5u32 {
-            tags.push_back(String::from_str(&env, &i.to_string()));
+        for i in 0..6u32 {
+            tags.push_back(Symbol::new(&env, &i.to_string()));
         }
         let metadata = Some(RouteMetadata {
             description: String::from_str(&env, "valid"),
@@ -2219,7 +2246,7 @@ mod tests {
         // 6 tags — must fail
         let mut tags = Vec::new(&env);
         for i in 0..6u32 {
-            tags.push_back(String::from_str(&env, &i.to_string()));
+            tags.push_back(Symbol::new(&env, &i.to_string()));
         }
         let metadata = Some(RouteMetadata {
             description: String::from_str(&env, "valid"),
@@ -2464,6 +2491,40 @@ mod tests {
         let candidates = vec![&env, r1, r2.clone(), r3];
         let best = client.get_best_route(&candidates, &0, &None);
         assert_eq!(best, Some(r2));
+    }
+
+    #[test]
+    fn test_resolve_returns_requested_route_when_other_route_is_higher_scored() {
+        let (env, admin, client) = setup();
+        let route_a = String::from_str(&env, "route-a");
+        let route_b = String::from_str(&env, "route-b");
+        let addr_a = Address::generate(&env);
+        let addr_b = Address::generate(&env);
+
+        client.register_route(&admin, &route_a, &addr_a, &None);
+        client.register_route(&admin, &route_b, &addr_b, &None);
+
+        client.set_route_score(
+            &admin,
+            &route_b,
+            &RouteScore {
+                liquidity_score: 100,
+                fee_bps: 0,
+                reliability_score: 100,
+            },
+        );
+        client.set_route_score(
+            &admin,
+            &route_a,
+            &RouteScore {
+                liquidity_score: 10,
+                fee_bps: 0,
+                reliability_score: 10,
+            },
+        );
+
+        let resolved = client.resolve(&route_a);
+        assert_eq!(resolved, addr_a);
     }
 
     #[test]
