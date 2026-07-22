@@ -24,6 +24,7 @@ use utoipa::OpenApi;
 use utoipa_swagger_ui::SwaggerUi;
 
 use clap::Parser;
+use router_off_chain_common::logging::init_logging;
 use std::net::SocketAddr;
 use tracing::info;
 
@@ -61,12 +62,12 @@ struct Args {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::from_default_env()
-                .add_directive(tracing::Level::INFO.into()),
-        )
-        .init();
+    // Use the shared structured JSON logger from router-off-chain-common.
+    // JSON output means every field value — including any attacker-controlled
+    // strings that reach a log call — is serialized as a JSON string literal.
+    // A newline inside a field becomes the two-character sequence `\n`, not a
+    // real line break, so it can never start a forged log record.
+    init_logging("router_api_server=info").context("failed to initialise logging")?;
 
     let args = Args::parse();
 

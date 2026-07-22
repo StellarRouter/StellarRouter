@@ -11,6 +11,7 @@ use std::net::{Ipv4Addr, SocketAddr};
 use tower::ServiceExt;
 
 use crate::{
+    auth,
     auth::AuthConfig,
     handlers,
     poller::TxStatusPoller,
@@ -738,20 +739,8 @@ async fn test_stats_response_has_expected_fields() {
     assert_eq!(parsed.broadcast_channel_capacity, crate::state::BROADCAST_CHANNEL_CAPACITY);
 }
 
-#[tokio::test]
-async fn test_stats_reflects_active_subscriptions() {
-    use futures_util::{SinkExt, StreamExt};
-    use serde_json::json;
-    use std::time::Duration;
-    use tokio::time::timeout;
-    use tokio_tungstenite::connect_async;
-    use tokio_tungstenite::tungstenite::Message as TungMessage;
-    use axum::routing::get;
-    use tokio::net::TcpListener;
-
-    // Build a server that exposes both /ws and /stats.
 // ─────────────────────────────────────────────────────────────────────────────
-// Poller integration test
+// Poller integration test helpers
 //
 // Spins up a minimal fake Soroban RPC server (an axum Router) that responds to
 // `getTransaction` with a SUCCESS result, then verifies that a subscribed
@@ -814,32 +803,53 @@ async fn spawn_ws_server_with_rpc(rpc_url: String) -> (SocketAddr, AppState) {
         enabled: false,
         api_key: None,
     };
-    let state = AppState::new(
-        "http://localhost:1".to_string(),
-        "".to_string(),
-        "".to_string(),
-        auth,
-        FeeConfig::default(),
-    );
-    let app = Router::new()
-        .route("/ws", get(crate::websocket::ws_handler))
-        .route("/stats", get(handlers::stats))
-        .with_state(state);
-
-    let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
-    let addr = listener.local_addr().unwrap();
 
     let state = AppState::new(
         rpc_url,
         "".to_string(),
         "".to_string(),
-        auth.clone(),
+        auth,
         FeeConfig::default(),
     );
 
     let app = Router::new()
         .route("/ws", get(crate::websocket::ws_handler))
         .with_state(state.clone());
+
+    let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    let addr = listener.local_addr().unwrap();
+
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+
+    (addr, state)
+}
+
+#[tokio::test]
+async fn test_stats_reflects_active_subscriptions() {
+    use futures_util::{SinkExt, StreamExt};
+    use serde_json::json;
+    use std::time::Duration;
+    use tokio::time::timeout;
+    use tokio_tungstenite::connect_async;
+    use tokio_tungstenite::tungstenite::Message as TungMessage;
+    use axum::routing::get;
+    use tokio::net::TcpListener;
+
+    // Build a server that exposes both /ws and /stats.
+    let state = AppState::new(
+        "http://localhost:1".to_string(),
+        "".to_string(),
+        "".to_string(),
+        AuthConfig { enabled: false, api_key: None },
+        FeeConfig::default(),
+    );
+
+    let app = Router::new()
+        .route("/ws", get(crate::websocket::ws_handler))
+        .route("/stats", get(handlers::stats))
+        .with_state(state);
 
     let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -873,7 +883,6 @@ async fn spawn_ws_server_with_rpc(rpc_url: String) -> (SocketAddr, AppState) {
     assert_eq!(body["active_subscriptions"], 2);
     assert_eq!(body["unique_tx_ids"], 2);
     assert_eq!(body["broadcast_channel_capacity"], crate::state::BROADCAST_CHANNEL_CAPACITY);
-    (addr, state)
 }
 
 #[tokio::test]
@@ -1138,4 +1147,168 @@ async fn test_valid_key_still_works_after_invalid_key_is_rate_limited() {
         StatusCode::OK,
         "valid key should succeed even after wrong-key bucket is exhausted"
     );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Log injection / input sanitization tests
+//
+// These tests confirm that attacker-controlled fields containing newlines,
+// carriage returns, or other ASCII control characters do not reach the log
+// subscriber unescaped.  The handler-level checks are:
+//
+//   • GET /routes/:name — validate_route_name rejects the request (422) before
+//     the route name is ever passed to `info!()`.
+//   • POST /simulate — `function` is sanitized via `sanitize_for_log` before
+//     logging; the request still proceeds normally (function is not shape-
+//     validated beyond non-empty).
+//
+// The unit-level guarantee (that sanitize_for_log itself strips control chars)
+// lives in router-off-chain-common/src/logging.rs.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// A route name containing a newline would let an attacker forge an additional
+/// log line.  The handler must reject it with 422 before reaching `info!()`.
+#[tokio::test]
+async fn test_get_route_with_newline_in_name_is_rejected() {
+    let app = test_app();
+
+    // URL-encode the newline so it arrives as a literal '\n' in the Path extractor.
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri("/routes/oracle%0aINFO%20fake_log_entry")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(
+        resp.status(),
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "route name with embedded newline must be rejected before logging"
+    );
+
+    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let json: Value = serde_json::from_slice(&bytes).unwrap();
+    assert!(
+        json["error"]
+            .as_str()
+            .unwrap_or("")
+            .contains("invalid route name"),
+        "error body should describe the validation failure; got: {}",
+        json["error"]
+    );
+}
+
+/// A route name containing a carriage return must also be rejected.
+#[tokio::test]
+async fn test_get_route_with_carriage_return_in_name_is_rejected() {
+    let app = test_app();
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri("/routes/oracle%0dINFO%20fake")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
+}
+
+/// A route name containing an ASCII ESC (0x1B) — used in ANSI terminal escape
+/// sequences — must be rejected before it reaches the log.
+#[tokio::test]
+async fn test_get_route_with_escape_sequence_in_name_is_rejected() {
+    let app = test_app();
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri("/routes/oracle%1b%5b31mred%1b%5b0m") // ESC[31m … ESC[0m
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
+}
+
+/// Injecting a newline into the `function` field of a simulate request must
+/// not produce a forged log line.  The handler sanitizes the value before
+/// logging and still returns a valid response (function is not shape-validated).
+#[tokio::test]
+async fn test_simulate_with_newline_in_function_does_not_forge_log() {
+    use router_off_chain_common::logging::sanitize_for_log;
+
+    // Confirm at the unit level that the sanitizer strips the newline.
+    let malicious = "transfer\nINFO  forged_log_entry level=ERROR";
+    let sanitized = sanitize_for_log(malicious);
+    assert!(
+        !sanitized.contains('\n'),
+        "sanitize_for_log must remove newlines; got: {:?}",
+        sanitized
+    );
+    // The forged portion is still present as visible text but cannot split into
+    // a new log line.
+    assert!(sanitized.contains('\u{240A}')); // ␊ — LINE FEED symbol
+
+    // Also confirm the HTTP handler accepts (not rejects) the request —
+    // sanitization is applied at the logging site, not as an input gate.
+    let app = test_app();
+    let body = json!({
+        "target": VALID_CONTRACT_ID,
+        "function": malicious,
+        "amount": 0,
+        "fee_bps": 0,
+        "network_load_bps": 0,
+    });
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/simulate")
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&body).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    // The simulate handler doesn't gate on function content — it should still
+    // return 200 (heuristic path) or 500 (RPC unreachable in test).  Either
+    // way it must NOT return 400/422 for this input.
+    assert!(
+        resp.status() == StatusCode::OK || resp.status() == StatusCode::INTERNAL_SERVER_ERROR,
+        "simulate should not reject a request purely because `function` contains control chars; \
+         got {}",
+        resp.status()
+    );
+}
+
+/// A `function` field containing only control characters (e.g. a bare newline)
+/// is still a non-empty string, so it passes the non-empty check.  Verify
+/// sanitize_for_log handles it without panicking.
+#[tokio::test]
+async fn test_simulate_function_all_control_chars_sanitized() {
+    use router_off_chain_common::logging::sanitize_for_log;
+
+    let all_controls: String = (0u8..=0x1Fu8).map(char::from).collect();
+    let sanitized = sanitize_for_log(&all_controls);
+
+    // No original control characters must remain.
+    assert!(
+        !sanitized.chars().any(|c| c.is_ascii_control()),
+        "sanitized output must contain no ASCII control characters; got: {:?}",
+        sanitized
+    );
+    // Every input character should have been replaced by a control-picture glyph.
+    assert_eq!(sanitized.chars().count(), all_controls.chars().count());
 }

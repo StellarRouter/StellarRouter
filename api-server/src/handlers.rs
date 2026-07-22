@@ -4,7 +4,8 @@ use axum::{
     response::IntoResponse,
     Json,
 };
-use router_off_chain_common::validation::validate_contract_id;
+use router_off_chain_common::logging::sanitize_for_log;
+use router_off_chain_common::validation::{validate_contract_id, validate_route_name};
 use serde_json::json;
 use tracing::{error, info};
 
@@ -87,7 +88,11 @@ pub async fn simulate(
         ));
     }
 
-    info!(target = %req.target, function = %req.function, "simulating transaction");
+    info!(
+        target = %req.target,
+        function = %sanitize_for_log(&req.function),
+        "simulating transaction"
+    );
 
     let breakdown = state
         .rpc
@@ -144,6 +149,19 @@ pub async fn get_route(
     State(state): State<AppState>,
     Path(name): Path<String>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<ErrorResponse>)> {
+    // Validate before logging to prevent log injection via a malicious route
+    // name containing newlines or other control characters.
+    if let Err(e) = validate_route_name(&name) {
+        return Err((
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(ErrorResponse {
+                error: format!("invalid route name: {}", e.message),
+            }),
+        ));
+    }
+
+    // `name` is now guaranteed to be alphanumeric/underscore/hyphen only —
+    // safe to log directly.
     info!(route = %name, "fetching route");
 
     match state.rpc.get_route(&name).await {
