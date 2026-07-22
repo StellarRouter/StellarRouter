@@ -131,8 +131,13 @@ async fn main() -> Result<()> {
         .route("/routes", get(handlers::list_routes))
         .route("/routes/:name", get(handlers::get_route))
         .route("/ws", get(websocket::ws_handler))
-        .route_layer(from_fn_with_state(rate_limiter, rate_limit_middleware))
-        .route_layer(from_fn_with_state(auth_config, auth::auth_middleware));
+        // SECURITY: rate_limit_middleware must be the outermost layer (added last)
+        // so that every request — including those with an invalid or missing API key
+        // — is counted and throttled before auth runs.  Reversing this order would
+        // let an attacker brute-force ROUTER_API_KEY with unlimited attempts per
+        // second because failed-auth responses would never reach the rate limiter.
+        .route_layer(from_fn_with_state(auth_config, auth::auth_middleware))
+        .route_layer(from_fn_with_state(rate_limiter, rate_limit_middleware));
 
     let app = Router::new()
         .route(

@@ -1017,3 +1017,125 @@ async fn test_poller_keeps_polling_non_terminal_transactions() {
         "non-terminal tx should still be in tx_subscribers"
     );
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Auth + rate-limit ordering tests
+//
+// Verify that the rate limiter is the outermost middleware layer, so requests
+// with an invalid (or missing) API key are counted against the rate limit
+// before auth rejection.  Without the correct ordering an attacker could
+// brute-force ROUTER_API_KEY with unlimited attempts per second.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Build a minimal router that has both rate limiting (outermost) and API-key
+/// auth (innermost), mirroring the production layer order in main.rs.
+fn auth_and_rate_limited_app(max_requests: u32, valid_key: &'static str) -> Router {
+    use crate::auth::AuthConfig;
+    use axum::middleware::from_fn_with_state;
+
+    let limiter = RateLimiter::new(RateLimitConfig {
+        max_requests,
+        window: std::time::Duration::from_secs(60),
+    });
+    let auth = AuthConfig {
+        enabled: true,
+        api_key: Some(valid_key.to_string()),
+    };
+
+    Router::new()
+        .route("/health", get(handlers::health))
+        // auth is innermost — added first
+        .route_layer(from_fn_with_state(auth, auth::auth_middleware))
+        // rate limiter is outermost — added last, so it runs first
+        .route_layer(from_fn_with_state(limiter, rate_limit_middleware))
+}
+
+#[tokio::test]
+async fn test_rate_limit_applies_to_invalid_api_key_requests() {
+    // Allow only 2 requests before throttling kicks in.
+    let app = auth_and_rate_limited_app(2, "correct-key");
+    let addr = SocketAddr::from((Ipv4Addr::LOCALHOST, 6000));
+
+    // First two requests with a wrong key: rate limiter passes them through,
+    // auth rejects them with 401/403 — but they still consume quota.
+    let r1 = app
+        .clone()
+        .oneshot(request_with_addr_and_api_key("/health", addr, "wrong-key"))
+        .await
+        .unwrap();
+    assert!(
+        r1.status() == StatusCode::UNAUTHORIZED || r1.status() == StatusCode::FORBIDDEN,
+        "expected auth rejection on attempt 1, got {}",
+        r1.status()
+    );
+
+    let r2 = app
+        .clone()
+        .oneshot(request_with_addr_and_api_key("/health", addr, "wrong-key"))
+        .await
+        .unwrap();
+    assert!(
+        r2.status() == StatusCode::UNAUTHORIZED || r2.status() == StatusCode::FORBIDDEN,
+        "expected auth rejection on attempt 2, got {}",
+        r2.status()
+    );
+
+    // Third request must be throttled by the rate limiter before auth runs.
+    let r3 = app
+        .oneshot(request_with_addr_and_api_key("/health", addr, "wrong-key"))
+        .await
+        .unwrap();
+    assert_eq!(
+        r3.status(),
+        StatusCode::TOO_MANY_REQUESTS,
+        "expected 429 after exceeding rate limit with invalid key, got {}",
+        r3.status()
+    );
+    assert!(
+        r3.headers().contains_key("retry-after"),
+        "429 response must include a Retry-After header"
+    );
+
+    let body = axum::body::to_bytes(r3.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let json: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(
+        json["error"], "rate_limit_exceeded",
+        "429 body must carry error=rate_limit_exceeded"
+    );
+}
+
+#[tokio::test]
+async fn test_valid_key_still_works_after_invalid_key_is_rate_limited() {
+    // The rate limiter keys by client identifier (IP or x-api-key header value).
+    // A separate valid key from a different "client" must not be affected by
+    // the wrong-key client exhausting its quota.
+    let app = auth_and_rate_limited_app(1, "correct-key");
+    let addr = SocketAddr::from((Ipv4Addr::LOCALHOST, 6001));
+
+    // Exhaust the wrong-key bucket.
+    let _ = app
+        .clone()
+        .oneshot(request_with_addr_and_api_key("/health", addr, "wrong-key"))
+        .await
+        .unwrap();
+    let throttled = app
+        .clone()
+        .oneshot(request_with_addr_and_api_key("/health", addr, "wrong-key"))
+        .await
+        .unwrap();
+    assert_eq!(throttled.status(), StatusCode::TOO_MANY_REQUESTS);
+
+    // A request with the correct key uses a distinct rate-limit bucket and
+    // should succeed.
+    let ok = app
+        .oneshot(request_with_addr_and_api_key("/health", addr, "correct-key"))
+        .await
+        .unwrap();
+    assert_eq!(
+        ok.status(),
+        StatusCode::OK,
+        "valid key should succeed even after wrong-key bucket is exhausted"
+    );
+}
