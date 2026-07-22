@@ -39,7 +39,10 @@ impl AppState {
         }
     }
 
-    #[cfg(test)]
+    /// Send a [`TransactionStatusEvent`] to all active WebSocket subscribers.
+    ///
+    /// The return value is ignored: a send error simply means no receivers are
+    /// currently listening, which is not a fatal condition.
     pub fn broadcast_status(&self, event: TransactionStatusEvent) {
         let _ = self.tx_status_tx.send(event);
     }
