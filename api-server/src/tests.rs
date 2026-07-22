@@ -18,7 +18,8 @@ use crate::{
     rpc::FeeConfig,
     state::AppState,
     types::{
-        RouteDetails, SimulateRequest, SimulateResponse, TransactionStatus, TransactionStatusEvent,
+        RouteDetails, SimulateRequest, SimulateResponse, StatsResponse, TransactionStatus,
+        TransactionStatusEvent,
     },
 };
 
@@ -43,6 +44,7 @@ fn test_app() -> Router {
 
     Router::new()
         .route("/health", get(handlers::health))
+        .route("/stats", get(handlers::stats))
         .route("/simulate", post(handlers::simulate))
         .route("/routes/:name", get(handlers::get_route))
         .with_state(state)
@@ -698,6 +700,56 @@ fn test_transaction_status_event_serialization() {
     assert_eq!(deserialized.message, event.message);
 }
 
+#[tokio::test]
+async fn test_stats_returns_200() {
+    let app = test_app();
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri("/stats")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn test_stats_response_has_expected_fields() {
+    let app = test_app();
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri("/stats")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let parsed: StatsResponse = serde_json::from_slice(&bytes).unwrap();
+    // No WebSocket connections are active in unit tests, so both counts must be zero.
+    assert_eq!(parsed.active_subscriptions, 0);
+    assert_eq!(parsed.unique_tx_ids, 0);
+    // Capacity is the compile-time constant.
+    assert_eq!(parsed.broadcast_channel_capacity, crate::state::BROADCAST_CHANNEL_CAPACITY);
+}
+
+#[tokio::test]
+async fn test_stats_reflects_active_subscriptions() {
+    use futures_util::{SinkExt, StreamExt};
+    use serde_json::json;
+    use std::time::Duration;
+    use tokio::time::timeout;
+    use tokio_tungstenite::connect_async;
+    use tokio_tungstenite::tungstenite::Message as TungMessage;
+    use axum::routing::get;
+    use tokio::net::TcpListener;
+
+    // Build a server that exposes both /ws and /stats.
 // ─────────────────────────────────────────────────────────────────────────────
 // Poller integration test
 //
@@ -762,6 +814,20 @@ async fn spawn_ws_server_with_rpc(rpc_url: String) -> (SocketAddr, AppState) {
         enabled: false,
         api_key: None,
     };
+    let state = AppState::new(
+        "http://localhost:1".to_string(),
+        "".to_string(),
+        "".to_string(),
+        auth,
+        FeeConfig::default(),
+    );
+    let app = Router::new()
+        .route("/ws", get(crate::websocket::ws_handler))
+        .route("/stats", get(handlers::stats))
+        .with_state(state);
+
+    let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    let addr = listener.local_addr().unwrap();
 
     let state = AppState::new(
         rpc_url,
@@ -782,6 +848,31 @@ async fn spawn_ws_server_with_rpc(rpc_url: String) -> (SocketAddr, AppState) {
         axum::serve(listener, app).await.unwrap();
     });
 
+    // Connect via WebSocket and subscribe to two distinct tx IDs.
+    let (ws_stream, _) = connect_async(format!("ws://{}/ws", addr))
+        .await
+        .expect("connect");
+    let (mut write, mut read) = ws_stream.split();
+
+    for tx_id in &["txAlpha", "txBeta"] {
+        let sub = json!({ "action": "subscribe", "tx_id": tx_id }).to_string();
+        write.send(TungMessage::Text(sub.into())).await.unwrap();
+        // Drain the confirmation message.
+        let _ = timeout(Duration::from_secs(1), read.next()).await;
+    }
+
+    // Poll /stats via a plain HTTP request.
+    let client = reqwest::Client::new();
+    let resp = client
+        .get(format!("http://{}/stats", addr))
+        .send()
+        .await
+        .expect("stats request failed");
+    assert_eq!(resp.status().as_u16(), 200);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(body["active_subscriptions"], 2);
+    assert_eq!(body["unique_tx_ids"], 2);
+    assert_eq!(body["broadcast_channel_capacity"], crate::state::BROADCAST_CHANNEL_CAPACITY);
     (addr, state)
 }
 

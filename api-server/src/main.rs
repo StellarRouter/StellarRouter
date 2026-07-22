@@ -143,6 +143,7 @@ async fn main() -> Result<()> {
             SwaggerUi::new("/swagger-ui").url("/api-docs/openapi.json", openapi::ApiDoc::openapi()),
         )
         .route("/health", get(handlers::health))
+        .route("/stats", get(handlers::stats))
         .nest("/", protected_routes)
         .layer(DefaultBodyLimit::max(1024 * 1024))
         .with_state(state);

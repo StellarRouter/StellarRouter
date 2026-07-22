@@ -92,6 +92,17 @@ pub struct RouteMetadataResponse {
     pub owner: String,
 }
 
+/// Response for GET /stats
+#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
+pub struct StatsResponse {
+    /// Total number of active WebSocket subscriptions (sum of all per-tx counts)
+    pub active_subscriptions: usize,
+    /// Number of distinct transaction IDs currently being tracked
+    pub unique_tx_ids: usize,
+    /// Broadcast channel capacity (fixed at startup)
+    pub broadcast_channel_capacity: usize,
+}
+
 /// Transaction status event (used by WebSocket)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TransactionStatusEvent {
