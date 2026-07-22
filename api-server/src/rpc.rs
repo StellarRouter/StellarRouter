@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use tracing::warn;
 
 use crate::{
-    types::RouteEntryResponse,
+    types::{RouteEntryResponse, TransactionStatus},
     xdr::{self, ScArg},
 };
 
@@ -187,6 +187,21 @@ struct SimulateTransactionResultWithReturnValue {
 struct InvokeResult {
     /// Base64-encoded XDR of the `ScVal` return value.
     pub xdr: String,
+}
+
+/// Raw response from the `getTransaction` RPC method.
+#[derive(Deserialize, Debug)]
+pub struct GetTransactionResult {
+    /// Transaction status: "SUCCESS", "FAILED", "NOT_FOUND", "PENDING"
+    pub status: String,
+    /// Optional envelope XDR (not used for status mapping, but available).
+    #[serde(rename = "envelopeXdr")]
+    pub envelope_xdr: Option<String>,
+    /// Ledger the transaction was included in (present for SUCCESS/FAILED).
+    pub ledger: Option<u32>,
+    /// Unix timestamp of the ledger close time.
+    #[serde(rename = "ledgerCloseTime")]
+    pub ledger_close_time: Option<String>,
 }
 
 #[derive(Debug)]
@@ -410,6 +425,54 @@ impl SorobanRpcClient {
             return Err(anyhow!("RPC error: {}", err.message));
         }
         resp.result.ok_or_else(|| anyhow!("empty RPC result"))
+    }
+
+    /// Query the Soroban RPC for the current status of a submitted transaction.
+    ///
+    /// Maps the RPC `status` string to our [`TransactionStatus`] enum:
+    /// - `"SUCCESS"` → `Confirmed`
+    /// - `"FAILED"` → `Failed`
+    /// - `"NOT_FOUND"` → `Pending` (not yet visible in ledger history)
+    /// - anything else → `Submitted`
+    ///
+    /// Returns an error only if the network request itself fails or the
+    /// response cannot be parsed; unexpected status strings are treated as
+    /// `Submitted` so the poller keeps watching.
+    pub async fn get_transaction_status(&self, tx_id: &str) -> Result<TransactionStatus> {
+        let req = JsonRpcRequest {
+            jsonrpc: "2.0",
+            id: 1,
+            method: "getTransaction",
+            params: serde_json::json!({ "hash": tx_id }),
+        };
+
+        let resp: JsonRpcResponse<GetTransactionResult> = self
+            .http
+            .post(&self.rpc_url)
+            .json(&req)
+            .send()
+            .await
+            .map_err(|e| anyhow!("RPC request failed: {}", e))?
+            .json()
+            .await
+            .map_err(|e| anyhow!("Failed to parse getTransaction response: {}", e))?;
+
+        if let Some(err) = resp.error {
+            return Err(anyhow!("RPC error: {}", err.message));
+        }
+
+        let result = resp
+            .result
+            .ok_or_else(|| anyhow!("empty result for getTransaction"))?;
+
+        let status = match result.status.as_str() {
+            "SUCCESS" => TransactionStatus::Confirmed,
+            "FAILED" => TransactionStatus::Failed,
+            "NOT_FOUND" => TransactionStatus::Pending,
+            _ => TransactionStatus::Submitted,
+        };
+
+        Ok(status)
     }
 
     fn heuristic_estimate(&self, amount: i64, network_load_bps: u32) -> FeeBreakdown {
