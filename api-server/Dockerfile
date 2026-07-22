@@ -16,6 +16,12 @@ RUN apt-get update && \
 
 COPY --from=builder /app/target/release/router-api-server /usr/local/bin/
 
+# Create non-root user
+RUN useradd -m -u 1000 apiserver && \
+    chown -R apiserver:apiserver /usr/local/bin/router-api-server
+
+USER apiserver
+
 EXPOSE 8080
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
