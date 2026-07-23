@@ -19,6 +19,10 @@ path = "tests/cross_contract_tests.rs"
 name = "failure_scenarios"
 path = "tests/failure_scenarios.rs"
 
+[[test]]
+name = "quote_execution_tests"
+path = "tests/quote_execution_tests.rs"
+
 [dependencies]
 
 [dev-dependencies]
