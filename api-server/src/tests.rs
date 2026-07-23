@@ -11,6 +11,7 @@ use std::net::{Ipv4Addr, SocketAddr};
 use tower::ServiceExt;
 
 use crate::{
+    auth,
     auth::AuthConfig,
     handlers,
     poller::TxStatusPoller,
@@ -759,6 +760,18 @@ async fn test_stats_response_has_expected_fields() {
     // ...
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Poller integration test helpers
+//
+// Spins up a minimal fake Soroban RPC server (an axum Router) that responds to
+// `getTransaction` with a SUCCESS result, then verifies that a subscribed
+// WebSocket client receives a real `status_update` event sourced from the
+// poller — not from the test helper `broadcast_status()`.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Spawn a minimal JSON-RPC stub that answers `getTransaction` for any hash
+/// with a configurable status string.  All other methods receive a JSON-RPC
+/// error so that tests that accidentally call them will fail loudly.
 #[tokio::test]
 async fn test_stats_reflects_active_subscriptions() {
     // ...
@@ -769,6 +782,93 @@ async fn spawn_fake_rpc_server(tx_status: &'static str) -> String {
 }
 
 async fn spawn_ws_server_with_rpc(rpc_url: String) -> (SocketAddr, AppState) {
+    use axum::routing::get;
+    use tokio::net::TcpListener;
+
+    let auth = AuthConfig {
+        enabled: false,
+        api_key: None,
+    };
+
+    let state = AppState::new(
+        rpc_url,
+        "".to_string(),
+        "".to_string(),
+        auth,
+        FeeConfig::default(),
+    );
+
+    let app = Router::new()
+        .route("/ws", get(crate::websocket::ws_handler))
+        .with_state(state.clone());
+
+    let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    let addr = listener.local_addr().unwrap();
+
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+
+    (addr, state)
+}
+
+#[tokio::test]
+async fn test_stats_reflects_active_subscriptions() {
+    use futures_util::{SinkExt, StreamExt};
+    use serde_json::json;
+    use std::time::Duration;
+    use tokio::time::timeout;
+    use tokio_tungstenite::connect_async;
+    use tokio_tungstenite::tungstenite::Message as TungMessage;
+    use axum::routing::get;
+    use tokio::net::TcpListener;
+
+    // Build a server that exposes both /ws and /stats.
+    let state = AppState::new(
+        "http://localhost:1".to_string(),
+        "".to_string(),
+        "".to_string(),
+        AuthConfig { enabled: false, api_key: None },
+        FeeConfig::default(),
+    );
+
+    let app = Router::new()
+        .route("/ws", get(crate::websocket::ws_handler))
+        .route("/stats", get(handlers::stats))
+        .with_state(state);
+
+    let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    let addr = listener.local_addr().unwrap();
+
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+
+    // Connect via WebSocket and subscribe to two distinct tx IDs.
+    let (ws_stream, _) = connect_async(format!("ws://{}/ws", addr))
+        .await
+        .expect("connect");
+    let (mut write, mut read) = ws_stream.split();
+
+    for tx_id in &["txAlpha", "txBeta"] {
+        let sub = json!({ "action": "subscribe", "tx_id": tx_id }).to_string();
+        write.send(TungMessage::Text(sub.into())).await.unwrap();
+        // Drain the confirmation message.
+        let _ = timeout(Duration::from_secs(1), read.next()).await;
+    }
+
+    // Poll /stats via a plain HTTP request.
+    let client = reqwest::Client::new();
+    let resp = client
+        .get(format!("http://{}/stats", addr))
+        .send()
+        .await
+        .expect("stats request failed");
+    assert_eq!(resp.status().as_u16(), 200);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(body["active_subscriptions"], 2);
+    assert_eq!(body["unique_tx_ids"], 2);
+    assert_eq!(body["broadcast_channel_capacity"], crate::state::BROADCAST_CHANNEL_CAPACITY);
     // ...
 }
 
@@ -779,5 +879,357 @@ async fn test_poller_delivers_status_update_to_ws_client() {
 
 #[tokio::test]
 async fn test_poller_keeps_polling_non_terminal_transactions() {
+    use std::sync::{
+        atomic::{AtomicU32, Ordering},
+        Arc,
+    };
+    use std::time::Duration;
+
+    // Fake RPC that returns PENDING (non-terminal) and counts calls.
+    let call_count = Arc::new(AtomicU32::new(0));
+    let call_count_clone = call_count.clone();
+
+    use axum::{routing::post, Json as AxumJson, Router};
+    use tokio::net::TcpListener;
+
+    let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    let rpc_addr = listener.local_addr().unwrap();
+
+    let app = Router::new().route(
+        "/",
+        post(move |AxumJson(body): AxumJson<Value>| {
+            let counter = call_count_clone.clone();
+            async move {
+                let id = body.get("id").cloned().unwrap_or(json!(1));
+                counter.fetch_add(1, Ordering::SeqCst);
+                AxumJson(json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "result": { "status": "NOT_FOUND" }
+                }))
+            }
+        }),
+    );
+
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+
+    let rpc_url = format!("http://{}", rpc_addr);
+    let auth = AuthConfig {
+        enabled: false,
+        api_key: None,
+    };
+    let state = AppState::new(rpc_url, "".into(), "".into(), auth, FeeConfig::default());
+
+    // Register one subscription manually (simulates a WS client subscribing).
+    state.add_subscriber("pending_tx".to_string());
+
+    // Spawn poller with a 50 ms interval.
+    let poller = TxStatusPoller::with_interval_ms(state.clone(), 50);
+    tokio::spawn(async move { poller.run().await });
+
+    // Wait ~300 ms — should see at least 3 poll rounds.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    let count = call_count.load(Ordering::SeqCst);
+    assert!(
+        count >= 3,
+        "expected at least 3 poll calls for a non-terminal tx, got {}",
+        count
+    );
+
+    // tx should still be in the subscribers map (not removed for non-terminal).
+    assert!(
+        state.tx_subscribers.get("pending_tx").is_some(),
+        "non-terminal tx should still be in tx_subscribers"
+    );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Auth + rate-limit ordering tests
+//
+// Verify that the rate limiter is the outermost middleware layer, so requests
+// with an invalid (or missing) API key are counted against the rate limit
+// before auth rejection.  Without the correct ordering an attacker could
+// brute-force ROUTER_API_KEY with unlimited attempts per second.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Build a minimal router that has both rate limiting (outermost) and API-key
+/// auth (innermost), mirroring the production layer order in main.rs.
+fn auth_and_rate_limited_app(max_requests: u32, valid_key: &'static str) -> Router {
+    use crate::auth::AuthConfig;
+    use axum::middleware::from_fn_with_state;
+
+    let limiter = RateLimiter::new(RateLimitConfig {
+        max_requests,
+        window: std::time::Duration::from_secs(60),
+    });
+    let auth = AuthConfig {
+        enabled: true,
+        api_key: Some(valid_key.to_string()),
+    };
+
+    Router::new()
+        .route("/health", get(handlers::health))
+        // auth is innermost — added first
+        .route_layer(from_fn_with_state(auth, auth::auth_middleware))
+        // rate limiter is outermost — added last, so it runs first
+        .route_layer(from_fn_with_state(limiter, rate_limit_middleware))
+}
+
+#[tokio::test]
+async fn test_rate_limit_applies_to_invalid_api_key_requests() {
+    // Allow only 2 requests before throttling kicks in.
+    let app = auth_and_rate_limited_app(2, "correct-key");
+    let addr = SocketAddr::from((Ipv4Addr::LOCALHOST, 6000));
+
+    // First two requests with a wrong key: rate limiter passes them through,
+    // auth rejects them with 401/403 — but they still consume quota.
+    let r1 = app
+        .clone()
+        .oneshot(request_with_addr_and_api_key("/health", addr, "wrong-key"))
+        .await
+        .unwrap();
+    assert!(
+        r1.status() == StatusCode::UNAUTHORIZED || r1.status() == StatusCode::FORBIDDEN,
+        "expected auth rejection on attempt 1, got {}",
+        r1.status()
+    );
+
+    let r2 = app
+        .clone()
+        .oneshot(request_with_addr_and_api_key("/health", addr, "wrong-key"))
+        .await
+        .unwrap();
+    assert!(
+        r2.status() == StatusCode::UNAUTHORIZED || r2.status() == StatusCode::FORBIDDEN,
+        "expected auth rejection on attempt 2, got {}",
+        r2.status()
+    );
+
+    // Third request must be throttled by the rate limiter before auth runs.
+    let r3 = app
+        .oneshot(request_with_addr_and_api_key("/health", addr, "wrong-key"))
+        .await
+        .unwrap();
+    assert_eq!(
+        r3.status(),
+        StatusCode::TOO_MANY_REQUESTS,
+        "expected 429 after exceeding rate limit with invalid key, got {}",
+        r3.status()
+    );
+    assert!(
+        r3.headers().contains_key("retry-after"),
+        "429 response must include a Retry-After header"
+    );
+
+    let body = axum::body::to_bytes(r3.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let json: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(
+        json["error"], "rate_limit_exceeded",
+        "429 body must carry error=rate_limit_exceeded"
+    );
+}
+
+#[tokio::test]
+async fn test_valid_key_still_works_after_invalid_key_is_rate_limited() {
+    // The rate limiter keys by client identifier (IP or x-api-key header value).
+    // A separate valid key from a different "client" must not be affected by
+    // the wrong-key client exhausting its quota.
+    let app = auth_and_rate_limited_app(1, "correct-key");
+    let addr = SocketAddr::from((Ipv4Addr::LOCALHOST, 6001));
+
+    // Exhaust the wrong-key bucket.
+    let _ = app
+        .clone()
+        .oneshot(request_with_addr_and_api_key("/health", addr, "wrong-key"))
+        .await
+        .unwrap();
+    let throttled = app
+        .clone()
+        .oneshot(request_with_addr_and_api_key("/health", addr, "wrong-key"))
+        .await
+        .unwrap();
+    assert_eq!(throttled.status(), StatusCode::TOO_MANY_REQUESTS);
+
+    // A request with the correct key uses a distinct rate-limit bucket and
+    // should succeed.
+    let ok = app
+        .oneshot(request_with_addr_and_api_key("/health", addr, "correct-key"))
+        .await
+        .unwrap();
+    assert_eq!(
+        ok.status(),
+        StatusCode::OK,
+        "valid key should succeed even after wrong-key bucket is exhausted"
+    );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Log injection / input sanitization tests
+//
+// These tests confirm that attacker-controlled fields containing newlines,
+// carriage returns, or other ASCII control characters do not reach the log
+// subscriber unescaped.  The handler-level checks are:
+//
+//   • GET /routes/:name — validate_route_name rejects the request (422) before
+//     the route name is ever passed to `info!()`.
+//   • POST /simulate — `function` is sanitized via `sanitize_for_log` before
+//     logging; the request still proceeds normally (function is not shape-
+//     validated beyond non-empty).
+//
+// The unit-level guarantee (that sanitize_for_log itself strips control chars)
+// lives in router-off-chain-common/src/logging.rs.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// A route name containing a newline would let an attacker forge an additional
+/// log line.  The handler must reject it with 422 before reaching `info!()`.
+#[tokio::test]
+async fn test_get_route_with_newline_in_name_is_rejected() {
+    let app = test_app();
+
+    // URL-encode the newline so it arrives as a literal '\n' in the Path extractor.
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri("/routes/oracle%0aINFO%20fake_log_entry")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(
+        resp.status(),
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "route name with embedded newline must be rejected before logging"
+    );
+
+    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let json: Value = serde_json::from_slice(&bytes).unwrap();
+    assert!(
+        json["error"]
+            .as_str()
+            .unwrap_or("")
+            .contains("invalid route name"),
+        "error body should describe the validation failure; got: {}",
+        json["error"]
+    );
+}
+
+/// A route name containing a carriage return must also be rejected.
+#[tokio::test]
+async fn test_get_route_with_carriage_return_in_name_is_rejected() {
+    let app = test_app();
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri("/routes/oracle%0dINFO%20fake")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
+}
+
+/// A route name containing an ASCII ESC (0x1B) — used in ANSI terminal escape
+/// sequences — must be rejected before it reaches the log.
+#[tokio::test]
+async fn test_get_route_with_escape_sequence_in_name_is_rejected() {
+    let app = test_app();
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri("/routes/oracle%1b%5b31mred%1b%5b0m") // ESC[31m … ESC[0m
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
+}
+
+/// Injecting a newline into the `function` field of a simulate request must
+/// not produce a forged log line.  The handler sanitizes the value before
+/// logging and still returns a valid response (function is not shape-validated).
+#[tokio::test]
+async fn test_simulate_with_newline_in_function_does_not_forge_log() {
+    use router_off_chain_common::logging::sanitize_for_log;
+
+    // Confirm at the unit level that the sanitizer strips the newline.
+    let malicious = "transfer\nINFO  forged_log_entry level=ERROR";
+    let sanitized = sanitize_for_log(malicious);
+    assert!(
+        !sanitized.contains('\n'),
+        "sanitize_for_log must remove newlines; got: {:?}",
+        sanitized
+    );
+    // The forged portion is still present as visible text but cannot split into
+    // a new log line.
+    assert!(sanitized.contains('\u{240A}')); // ␊ — LINE FEED symbol
+
+    // Also confirm the HTTP handler accepts (not rejects) the request —
+    // sanitization is applied at the logging site, not as an input gate.
+    let app = test_app();
+    let body = json!({
+        "target": VALID_CONTRACT_ID,
+        "function": malicious,
+        "amount": 0,
+        "fee_bps": 0,
+        "network_load_bps": 0,
+    });
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/simulate")
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&body).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    // The simulate handler doesn't gate on function content — it should still
+    // return 200 (heuristic path) or 500 (RPC unreachable in test).  Either
+    // way it must NOT return 400/422 for this input.
+    assert!(
+        resp.status() == StatusCode::OK || resp.status() == StatusCode::INTERNAL_SERVER_ERROR,
+        "simulate should not reject a request purely because `function` contains control chars; \
+         got {}",
+        resp.status()
+    );
+}
+
+/// A `function` field containing only control characters (e.g. a bare newline)
+/// is still a non-empty string, so it passes the non-empty check.  Verify
+/// sanitize_for_log handles it without panicking.
+#[tokio::test]
+async fn test_simulate_function_all_control_chars_sanitized() {
+    use router_off_chain_common::logging::sanitize_for_log;
+
+    let all_controls: String = (0u8..=0x1Fu8).map(char::from).collect();
+    let sanitized = sanitize_for_log(&all_controls);
+
+    // No original control characters must remain.
+    assert!(
+        !sanitized.chars().any(|c| c.is_ascii_control()),
+        "sanitized output must contain no ASCII control characters; got: {:?}",
+        sanitized
+    );
+    // Every input character should have been replaced by a control-picture glyph.
+    assert_eq!(sanitized.chars().count(), all_controls.chars().count());
+}
     // ...
 }
