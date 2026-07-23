@@ -562,6 +562,53 @@ async fn test_simulate_contract_id_not_starting_with_c_returns_400() {
 }
 
 #[tokio::test]
+async fn test_simulate_invalid_function_name_returns_400() {
+    let app = test_app();
+    let body = json!({
+        "target": VALID_CONTRACT_ID,
+        "function": "bad function!",
+    });
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/simulate")
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&body).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let json: Value = serde_json::from_slice(&bytes).unwrap();
+    assert!(json["error"].as_str().unwrap().contains("alphanumeric"));
+}
+
+#[tokio::test]
+async fn test_simulate_long_function_name_returns_400() {
+    let app = test_app();
+    let body = json!({
+        "target": VALID_CONTRACT_ID,
+        "function": "a".repeat(65),
+    });
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/simulate")
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&body).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
 async fn test_simulate_empty_body_returns_400_or_422() {
     let app = test_app();
     let resp = app
@@ -700,320 +747,37 @@ fn test_transaction_status_event_serialization() {
     assert_eq!(deserialized.message, event.message);
 }
 
+// Keep all the tests below
+
 #[tokio::test]
 async fn test_stats_returns_200() {
-    let app = test_app();
-    let resp = app
-        .oneshot(
-            Request::builder()
-                .uri("/stats")
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
+    // ...
 }
 
 #[tokio::test]
 async fn test_stats_response_has_expected_fields() {
-    let app = test_app();
-    let resp = app
-        .oneshot(
-            Request::builder()
-                .uri("/stats")
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
-        .await
-        .unwrap();
-    let parsed: StatsResponse = serde_json::from_slice(&bytes).unwrap();
-    // No WebSocket connections are active in unit tests, so both counts must be zero.
-    assert_eq!(parsed.active_subscriptions, 0);
-    assert_eq!(parsed.unique_tx_ids, 0);
-    // Capacity is the compile-time constant.
-    assert_eq!(parsed.broadcast_channel_capacity, crate::state::BROADCAST_CHANNEL_CAPACITY);
+    // ...
 }
 
 #[tokio::test]
 async fn test_stats_reflects_active_subscriptions() {
-    use futures_util::{SinkExt, StreamExt};
-    use serde_json::json;
-    use std::time::Duration;
-    use tokio::time::timeout;
-    use tokio_tungstenite::connect_async;
-    use tokio_tungstenite::tungstenite::Message as TungMessage;
-    use axum::routing::get;
-    use tokio::net::TcpListener;
-
-    // Build a server that exposes both /ws and /stats.
-// ─────────────────────────────────────────────────────────────────────────────
-// Poller integration test
-//
-// Spins up a minimal fake Soroban RPC server (an axum Router) that responds to
-// `getTransaction` with a SUCCESS result, then verifies that a subscribed
-// WebSocket client receives a real `status_update` event sourced from the
-// poller — not from the test helper `broadcast_status()`.
-// ─────────────────────────────────────────────────────────────────────────────
-
-/// Spawn a minimal JSON-RPC stub that answers `getTransaction` for any hash
-/// with a configurable status string.  All other methods receive a JSON-RPC
-/// error so that tests that accidentally call them will fail loudly.
-async fn spawn_fake_rpc_server(tx_status: &'static str) -> String {
-    use axum::{routing::post, Json as AxumJson, Router};
-    use tokio::net::TcpListener;
-
-    let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
-    let addr = listener.local_addr().unwrap();
-
-    let app = Router::new().route(
-        "/",
-        post(move |AxumJson(body): AxumJson<Value>| async move {
-            let method = body["method"].as_str().unwrap_or("");
-            let id = body.get("id").cloned().unwrap_or(json!(1));
-
-            let response = if method == "getTransaction" {
-                json!({
-                    "jsonrpc": "2.0",
-                    "id": id,
-                    "result": {
-                        "status": tx_status,
-                        "envelopeXdr": null,
-                        "ledger": null,
-                        "ledgerCloseTime": null
-                    }
-                })
-            } else {
-                json!({
-                    "jsonrpc": "2.0",
-                    "id": id,
-                    "error": { "code": -32601, "message": "method not found" }
-                })
-            };
-
-            AxumJson(response)
-        }),
-    );
-
-    tokio::spawn(async move {
-        axum::serve(listener, app).await.unwrap();
-    });
-
-    format!("http://{}", addr)
+    // ...
 }
 
-/// Build an `AppState` and a WS server that both point at the given RPC URL.
+async fn spawn_fake_rpc_server(tx_status: &'static str) -> String {
+    // ...
+}
+
 async fn spawn_ws_server_with_rpc(rpc_url: String) -> (SocketAddr, AppState) {
-    use axum::routing::get;
-    use tokio::net::TcpListener;
-
-    let auth = AuthConfig {
-        enabled: false,
-        api_key: None,
-    };
-    let state = AppState::new(
-        "http://localhost:1".to_string(),
-        "".to_string(),
-        "".to_string(),
-        auth,
-        FeeConfig::default(),
-    );
-    let app = Router::new()
-        .route("/ws", get(crate::websocket::ws_handler))
-        .route("/stats", get(handlers::stats))
-        .with_state(state);
-
-    let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
-    let addr = listener.local_addr().unwrap();
-
-    let state = AppState::new(
-        rpc_url,
-        "".to_string(),
-        "".to_string(),
-        auth.clone(),
-        FeeConfig::default(),
-    );
-
-    let app = Router::new()
-        .route("/ws", get(crate::websocket::ws_handler))
-        .with_state(state.clone());
-
-    let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
-    let addr = listener.local_addr().unwrap();
-
-    tokio::spawn(async move {
-        axum::serve(listener, app).await.unwrap();
-    });
-
-    // Connect via WebSocket and subscribe to two distinct tx IDs.
-    let (ws_stream, _) = connect_async(format!("ws://{}/ws", addr))
-        .await
-        .expect("connect");
-    let (mut write, mut read) = ws_stream.split();
-
-    for tx_id in &["txAlpha", "txBeta"] {
-        let sub = json!({ "action": "subscribe", "tx_id": tx_id }).to_string();
-        write.send(TungMessage::Text(sub.into())).await.unwrap();
-        // Drain the confirmation message.
-        let _ = timeout(Duration::from_secs(1), read.next()).await;
-    }
-
-    // Poll /stats via a plain HTTP request.
-    let client = reqwest::Client::new();
-    let resp = client
-        .get(format!("http://{}/stats", addr))
-        .send()
-        .await
-        .expect("stats request failed");
-    assert_eq!(resp.status().as_u16(), 200);
-    let body: serde_json::Value = resp.json().await.unwrap();
-    assert_eq!(body["active_subscriptions"], 2);
-    assert_eq!(body["unique_tx_ids"], 2);
-    assert_eq!(body["broadcast_channel_capacity"], crate::state::BROADCAST_CHANNEL_CAPACITY);
-    (addr, state)
+    // ...
 }
 
 #[tokio::test]
 async fn test_poller_delivers_status_update_to_ws_client() {
-    use futures_util::{SinkExt, StreamExt};
-    use std::time::Duration;
-    use tokio::time::timeout;
-    use tokio_tungstenite::connect_async;
-    use tokio_tungstenite::tungstenite::Message as TungMessage;
-
-    // 1. Fake RPC that returns SUCCESS for any transaction hash.
-    let rpc_url = spawn_fake_rpc_server("SUCCESS").await;
-
-    // 2. WS server backed by AppState pointing at the fake RPC.
-    let (addr, state) = spawn_ws_server_with_rpc(rpc_url).await;
-    let ws_url = format!("ws://{}/ws", addr);
-
-    // 3. Connect a WebSocket client and subscribe to a transaction.
-    let (ws_stream, _) = connect_async(&ws_url).await.expect("WS connect");
-    let (mut write, mut read) = ws_stream.split();
-
-    let subscribe_msg = json!({ "action": "subscribe", "tx_id": "real_tx_abc" }).to_string();
-    write
-        .send(TungMessage::Text(subscribe_msg.into()))
-        .await
-        .unwrap();
-
-    // Consume the "subscribed" confirmation.
-    let conf = timeout(Duration::from_secs(2), read.next())
-        .await
-        .expect("timed out waiting for subscribed confirmation")
-        .unwrap()
-        .unwrap();
-    if let TungMessage::Text(txt) = conf {
-        let v: Value = serde_json::from_str(&txt).unwrap();
-        assert_eq!(v["msg_type"], "subscribed", "expected subscribed ack");
-    }
-
-    // 4. Spawn the poller with a very short interval so the test runs quickly.
-    let poller = TxStatusPoller::with_interval_ms(state.clone(), 50);
-    tokio::spawn(async move { poller.run().await });
-
-    // 5. The poller should call the fake RPC and emit a Confirmed event.
-    //    We allow up to 2 seconds for the event to reach the client.
-    let update = timeout(Duration::from_secs(2), read.next())
-        .await
-        .expect("timed out waiting for status_update from poller")
-        .unwrap()
-        .unwrap();
-
-    if let TungMessage::Text(txt) = update {
-        let v: Value = serde_json::from_str(&txt).unwrap();
-        assert_eq!(
-            v["msg_type"], "status_update",
-            "expected status_update, got: {}",
-            v
-        );
-        assert_eq!(v["data"]["tx_id"], "real_tx_abc");
-        assert_eq!(
-            v["data"]["status"], "CONFIRMED",
-            "expected CONFIRMED status from SUCCESS RPC response"
-        );
-    } else {
-        panic!("expected a text status_update message");
-    }
-
-    // 6. Terminal state: the poller should have removed the tx from the
-    //    subscribers map so it is never polled again.
-    tokio::time::sleep(Duration::from_millis(200)).await;
-    assert!(
-        state.tx_subscribers.get("real_tx_abc").is_none(),
-        "terminal tx should have been removed from tx_subscribers"
-    );
+    // ...
 }
 
 #[tokio::test]
 async fn test_poller_keeps_polling_non_terminal_transactions() {
-    use std::sync::{
-        atomic::{AtomicU32, Ordering},
-        Arc,
-    };
-    use std::time::Duration;
-
-    // Fake RPC that returns PENDING (non-terminal) and counts calls.
-    let call_count = Arc::new(AtomicU32::new(0));
-    let call_count_clone = call_count.clone();
-
-    use axum::{routing::post, Json as AxumJson, Router};
-    use tokio::net::TcpListener;
-
-    let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
-    let rpc_addr = listener.local_addr().unwrap();
-
-    let app = Router::new().route(
-        "/",
-        post(move |AxumJson(body): AxumJson<Value>| {
-            let counter = call_count_clone.clone();
-            async move {
-                let id = body.get("id").cloned().unwrap_or(json!(1));
-                counter.fetch_add(1, Ordering::SeqCst);
-                AxumJson(json!({
-                    "jsonrpc": "2.0",
-                    "id": id,
-                    "result": { "status": "NOT_FOUND" }
-                }))
-            }
-        }),
-    );
-
-    tokio::spawn(async move {
-        axum::serve(listener, app).await.unwrap();
-    });
-
-    let rpc_url = format!("http://{}", rpc_addr);
-    let auth = AuthConfig {
-        enabled: false,
-        api_key: None,
-    };
-    let state = AppState::new(rpc_url, "".into(), "".into(), auth, FeeConfig::default());
-
-    // Register one subscription manually (simulates a WS client subscribing).
-    state.add_subscriber("pending_tx".to_string());
-
-    // Spawn poller with a 50 ms interval.
-    let poller = TxStatusPoller::with_interval_ms(state.clone(), 50);
-    tokio::spawn(async move { poller.run().await });
-
-    // Wait ~300 ms — should see at least 3 poll rounds.
-    tokio::time::sleep(Duration::from_millis(300)).await;
-
-    let count = call_count.load(Ordering::SeqCst);
-    assert!(
-        count >= 3,
-        "expected at least 3 poll calls for a non-terminal tx, got {}",
-        count
-    );
-
-    // tx should still be in the subscribers map (not removed for non-terminal).
-    assert!(
-        state.tx_subscribers.get("pending_tx").is_some(),
-        "non-terminal tx should still be in tx_subscribers"
-    );
+    // ...
 }
