@@ -668,6 +668,67 @@ async fn test_get_route_error_response_is_json() {
     assert!(json.get("error").is_some());
 }
 
+#[tokio::test]
+async fn test_get_route_over_length_name_returns_400() {
+    let app = test_app();
+    let long_name = "a".repeat(65);
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri(&format!("/routes/{}", long_name))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let json: Value = serde_json::from_slice(&bytes).unwrap();
+    assert!(json["error"].as_str().unwrap().contains("64 characters"));
+}
+
+#[tokio::test]
+async fn test_get_route_invalid_characters_returns_400() {
+    let app = test_app();
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri("/routes/invalid name")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let json: Value = serde_json::from_slice(&bytes).unwrap();
+    assert!(json["error"].as_str().unwrap().contains("alphanumeric"));
+}
+
+#[tokio::test]
+async fn test_get_route_empty_name_returns_400() {
+    let app = test_app();
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri("/routes/")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let json: Value = serde_json::from_slice(&bytes).unwrap();
+    assert!(json["error"].as_str().unwrap().contains("empty"));
+}
+
 #[test]
 fn test_simulate_request_serialization() {
     let req = SimulateRequest {

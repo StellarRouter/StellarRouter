@@ -4,6 +4,7 @@ use axum::{
     response::IntoResponse,
     Json,
 };
+use router_off_chain_common::validation::{validate_contract_id, validate_route_name};
 use router_off_chain_common::logging::sanitize_for_log;
 use router_off_chain_common::validation::{validate_contract_id, validate_route_name};
 use router_off_chain_common::validation::{validate_contract_id, validate_function_name};
@@ -164,6 +165,16 @@ pub async fn get_route(
     // `name` is now guaranteed to be alphanumeric/underscore/hyphen only —
     // safe to log directly.
     info!(route = %name, "fetching route");
+
+    // Use shared validation from router-off-chain-common
+    if let Err(e) = validate_route_name(&name) {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: format!("invalid route name: {}", e.message),
+            }),
+        ));
+    }
 
     match state.rpc.get_route(&name).await {
         Ok(Some(entry)) => Ok((StatusCode::OK, Json(entry))),
