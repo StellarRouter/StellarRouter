@@ -6,6 +6,7 @@ use axum::{
 };
 use router_off_chain_common::logging::sanitize_for_log;
 use router_off_chain_common::validation::{validate_contract_id, validate_route_name};
+use router_off_chain_common::validation::{validate_contract_id, validate_function_name};
 use serde_json::json;
 use tracing::{error, info};
 
@@ -66,15 +67,6 @@ pub async fn simulate(
     State(state): State<AppState>,
     Json(req): Json<SimulateRequest>,
 ) -> Result<Json<SimulateResponse>, (StatusCode, Json<ErrorResponse>)> {
-    if req.target.is_empty() || req.function.is_empty() {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            Json(ErrorResponse {
-                error: "target and function are required".to_string(),
-            }),
-        ));
-    }
-
     // Use shared validation from router-off-chain-common
     if let Err(e) = validate_contract_id(&req.target) {
         return Err((
@@ -84,6 +76,15 @@ pub async fn simulate(
                     "target must be a 56-character Stellar contract ID starting with C: {}",
                     e.message
                 ),
+            }),
+        ));
+    }
+
+    if let Err(e) = validate_function_name(&req.function) {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: e.message,
             }),
         ));
     }
