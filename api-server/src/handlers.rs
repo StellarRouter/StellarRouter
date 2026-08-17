@@ -4,10 +4,8 @@ use axum::{
     response::IntoResponse,
     Json,
 };
-use router_off_chain_common::validation::{validate_contract_id, validate_route_name};
 use router_off_chain_common::logging::sanitize_for_log;
-use router_off_chain_common::validation::{validate_contract_id, validate_route_name};
-use router_off_chain_common::validation::{validate_contract_id, validate_function_name};
+use router_off_chain_common::validation::{validate_contract_id, validate_function_name, validate_route_name};
 use serde_json::json;
 use tracing::{error, info};
 
