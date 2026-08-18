@@ -765,8 +765,26 @@ fn extract_last_paging_token(raw_result: &Value) -> Option<String> {
 /// `DataKey::Paused`) the `key` ScVal is a `ScVal::LedgerKeyContractInstance`
 /// for instance storage.
 ///
-/// Full XDR construction is left as an integration point; the collector uses
-/// the simulation path as a fallback.
+/// # Stub — not yet implemented
+///
+/// This function is an **intentional stub**. Direct XDR construction requires the
+/// [`stellar-xdr`](https://crates.io/crates/stellar-xdr) crate (or equivalent
+/// hand-rolled encoding), which has not been integrated yet. Until that work is
+/// complete the metrics collector falls back to the simulation path
+/// (`simulateTransaction`) instead of calling `getLedgerEntries` directly.
+///
+/// This is tracked as a known limitation in `metrics/CHANGELOG.md`
+/// ("XDR transaction building not implemented, uses simulation-based scraping
+/// instead") and is planned for a future release once `stellar-xdr` encoding is
+/// integrated (see issue #183).
+///
+/// **Do not remove `#[allow(dead_code)]`** until the stub is replaced with a
+/// real implementation — the attribute documents the deliberate incompleteness.
+///
+/// # Errors
+///
+/// Always returns `Err` with the message:
+/// `"Direct XDR key construction not implemented. Use the simulation path or integrate stellar-xdr."`
 #[allow(dead_code)]
 pub fn instance_storage_key_xdr(_contract_id: &str) -> Result<String> {
     Err(anyhow!(
@@ -1287,5 +1305,22 @@ mod tests {
 
         // The mock server should have been called 3 times (page1 + page2 + empty page3).
         assert_eq!(call_count.load(Ordering::SeqCst), 3);
+    }
+
+    /// Verify that `instance_storage_key_xdr` is a stub that always returns an
+    /// error. This test intentionally locks in the *current* (error) behavior so
+    /// that a future implementer gets an immediate signal when the function starts
+    /// returning a real value instead.
+    ///
+    /// When the stub is replaced with a working XDR implementation, remove this
+    /// test and replace it with one that asserts the correct base64-encoded output.
+    #[test]
+    fn instance_storage_key_xdr_is_unimplemented_stub() {
+        let err = instance_storage_key_xdr("CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4")
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("not implemented"),
+            "expected stub error message, got: {err}"
+        );
     }
 }
