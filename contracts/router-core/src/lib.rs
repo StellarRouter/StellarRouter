@@ -292,7 +292,7 @@ impl RouterCore {
             .set(&DataKey::RouteCount, &(count + 1));
 
         env.events().publish(
-            (Symbol::new(&env, "route_registered"),),
+            (Symbol::new(&env, router_common::EVENT_ROUTE_REGISTERED),),
             (name.clone(), entry.address.clone()),
         );
 
@@ -342,10 +342,10 @@ impl RouterCore {
             .set(&DataKey::Route(name.clone()), &entry);
 
         env.events()
-            .publish((Symbol::new(&env, "route_updated"),), name.clone());
+            .publish((Symbol::new(&env, router_common::EVENT_ROUTE_UPDATED),), name.clone());
 
         env.events().publish(
-            (Symbol::new(&env, "route_overwritten"),),
+            (Symbol::new(&env, router_common::EVENT_ROUTE_OVERWRITTEN),),
             (name.clone(), old_address, new_address),
         );
 
@@ -502,7 +502,7 @@ impl RouterCore {
             route_names.push_back(route.name.clone());
 
             env.events().publish(
-                (Symbol::new(&env, "route_registered"),),
+                (Symbol::new(&env, router_common::EVENT_ROUTE_REGISTERED),),
                 (route.name.clone(), entry.address.clone()),
             );
         }
@@ -651,7 +651,7 @@ impl RouterCore {
 
         if entry.paused {
             env.events().publish(
-                (Symbol::new(&env, "route_resolve_paused"),),
+                (Symbol::new(&env, router_common::EVENT_ROUTE_RESOLVE_PAUSED),),
                 (final_name.clone(),),
             );
             return Err(RouterError::RoutePaused);
@@ -668,7 +668,7 @@ impl RouterCore {
             .set(&DataKey::TotalRouted, &(total + 1));
 
         env.events().publish(
-            (Symbol::new(&env, "routed"),),
+            (Symbol::new(&env, router_common::EVENT_ROUTED),),
             (name.clone(), entry.address.clone()),
         );
 
@@ -815,7 +815,7 @@ impl RouterCore {
         }
 
         env.events().publish(
-            (Symbol::new(&env, "metadata_updated"),),
+            (Symbol::new(&env, router_common::EVENT_METADATA_UPDATED),),
             (name.clone(), metadata.is_some()),
         );
 
@@ -924,7 +924,7 @@ impl RouterCore {
         }
 
         env.events().publish(
-            (Symbol::new(&env, "alias_added"),),
+            (Symbol::new(&env, router_common::EVENT_ALIAS_ADDED),),
             (existing_name, alias_name),
         );
 
@@ -1090,7 +1090,7 @@ impl RouterCore {
             .set(&DataKey::Score(name.clone()), &score);
 
         env.events().publish(
-            (Symbol::new(&env, "route_scored"),),
+            (Symbol::new(&env, router_common::EVENT_ROUTE_SCORED),),
             (
                 name,
                 score.liquidity_score,
@@ -1179,7 +1179,7 @@ impl RouterCore {
         let result = if best_score >= min_score {
             if let Some(ref name) = best_name {
                 env.events().publish(
-                    (Symbol::new(&env, "best_route_selected"),),
+                    (Symbol::new(&env, router_common::EVENT_BEST_ROUTE_SELECTED),),
                     (name.clone(), best_score),
                 );
             }
@@ -1339,7 +1339,7 @@ mod tests {
                 e.1.get(0)
                     .map(|v| {
                         let s: Symbol = v.into_val(&env);
-                        s == Symbol::new(&env, "route_registered")
+                        s == Symbol::new(&env, router_common::EVENT_ROUTE_REGISTERED)
                     })
                     .unwrap_or(false)
             })
@@ -1477,7 +1477,7 @@ mod tests {
             event.1,
             vec![
                 &env,
-                Symbol::new(&env, "route_resolve_paused").into_val(&env)
+                Symbol::new(&env, router_common::EVENT_ROUTE_RESOLVE_PAUSED).into_val(&env)
             ]
         );
         let (emitted_name,): (String,) = event.2.into_val(&env);
@@ -1557,7 +1557,7 @@ mod tests {
         assert_eq!(event.0, client.address);
         assert_eq!(
             event.1,
-            vec![&env, Symbol::new(&env, "admin_transferred").into_val(&env)]
+            vec![&env, Symbol::new(&env, router_common::EVENT_ADMIN_TRANSFERRED).into_val(&env)]
         );
     }
 
@@ -1671,7 +1671,7 @@ mod tests {
         assert_eq!(overwrite_event.0, client.address);
         assert_eq!(
             overwrite_event.1,
-            vec![&env, Symbol::new(&env, "route_overwritten").into_val(&env)]
+            vec![&env, Symbol::new(&env, router_common::EVENT_ROUTE_OVERWRITTEN).into_val(&env)]
         );
     }
 
@@ -1983,7 +1983,7 @@ mod tests {
         assert_eq!(event.0, client.address);
         assert_eq!(
             event.1,
-            vec![&env, Symbol::new(&env, "metadata_updated").into_val(&env)]
+            vec![&env, Symbol::new(&env, router_common::EVENT_METADATA_UPDATED).into_val(&env)]
         );
 
         let (emitted_name, has_metadata): (String, bool) = event.2.into_val(&env);
@@ -2016,7 +2016,7 @@ mod tests {
                 e.1.get(0)
                     .map(|v| {
                         let s: Symbol = v.into_val(&env);
-                        s == Symbol::new(&env, "metadata_updated")
+                        s == Symbol::new(&env, router_common::EVENT_METADATA_UPDATED)
                     })
                     .unwrap_or(false)
             })
@@ -2135,7 +2135,7 @@ mod tests {
             event.1,
             vec![
                 &env,
-                Symbol::new(&env, "route_resolve_paused").into_val(&env)
+                Symbol::new(&env, router_common::EVENT_ROUTE_RESOLVE_PAUSED).into_val(&env)
             ]
         );
         let (emitted_name,): (String,) = event.2.into_val(&env);
