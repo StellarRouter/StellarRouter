@@ -296,16 +296,9 @@ impl SorobanRpcClient {
                 params,
             };
 
-            let resp: RpcResponse = self
-                .http
-                .post(&self.rpc_url)
-                .json(&req)
-                .send()
-                .await
-                .context("HTTP request failed")?
-                .json()
-                .await
-                .context("failed to parse JSON-RPC response")?;
+            let resp = self
+                .post_with_retry(&req)
+                .await?;
 
             if let Some(err) = resp.error {
                 return Err(anyhow!("RPC error {}: {}", err.code, err.message));
@@ -313,9 +306,6 @@ impl SorobanRpcClient {
 
             let raw_value = resp.result.ok_or_else(|| anyhow!("empty RPC result"))?;
 
-        let resp = self
-            .post_with_retry(&req)
-            .await?;
             // Deserialize the raw response to extract paging tokens.
             let raw_result: GetEventsResult =
                 serde_json::from_value(raw_value.clone())

@@ -35,6 +35,9 @@ Soroban smart contracts run inside the Stellar network as WASM and cannot open s
 | `router_scrape_duration_seconds` | Histogram | `contract` | Time spent scraping each contract |
 | `router_scrape_errors_total` | Counter | `contract` | Number of failed scrape attempts |
 | `router_up` | Gauge | — | 1 if the last scrape cycle succeeded |
+| `router_sse_connected` | Gauge | `contract` | 1 if the SSE stream is active (SSE mode only) |
+| `router_sse_reconnects_total` | Counter | `contract` | Total SSE reconnect attempts (SSE mode only) |
+| `router_sse_events_total` | Counter | `contract` | Total SSE events received (SSE mode only) |
 
 ## Installation
 
@@ -126,11 +129,91 @@ Options:
       [env: ROUTER_RPC_TIMEOUT_SECS]
       [default: 10]
 
+  --event-mode <MODE>
+      Event ingestion mode: poll (default) or sse
+      [env: ROUTER_EVENT_MODE]
+      [default: poll]
+      [possible values: poll, sse]
+
+  --horizon-url <URL>
+      Stellar Horizon base URL for SSE subscriptions (sse mode only)
+      [env: ROUTER_HORIZON_URL]
+      [default: https://horizon-testnet.stellar.org]
+
+  --sse-max-reconnects <N>
+      Maximum SSE reconnect attempts before giving up (0 = unlimited)
+      [env: ROUTER_SSE_MAX_RECONNECTS]
+      [default: 10]
+
+  --sse-reconnect-delay-ms <MS>
+      Base reconnect back-off delay in milliseconds (doubles each attempt)
+      [env: ROUTER_SSE_RECONNECT_DELAY_MS]
+      [default: 1000]
+
+  --sse-reconnect-max-delay-ms <MS>
+      Maximum reconnect back-off delay in milliseconds
+      [env: ROUTER_SSE_RECONNECT_MAX_DELAY_MS]
+      [default: 30000]
+
   -h, --help
       Print help
 
   -V, --version
       Print version
+```
+
+## Event Modes
+
+The exporter supports two event ingestion modes, selectable via `--event-mode` or
+`ROUTER_EVENT_MODE`.
+
+### Poll mode (default)
+
+```bash
+export ROUTER_EVENT_MODE=poll          # or omit — poll is the default
+export ROUTER_SCRAPE_INTERVAL_SECS=15  # how often to scrape
+```
+
+The exporter calls `simulateTransaction` / `getEvents` on the Soroban RPC every
+`scrape_interval_secs` seconds. This is the original behaviour and works with any
+Soroban RPC endpoint without needing a Horizon server.
+
+### SSE mode
+
+```bash
+export ROUTER_EVENT_MODE=sse
+export ROUTER_HORIZON_URL=https://horizon-testnet.stellar.org
+export ROUTER_SSE_MAX_RECONNECTS=10       # 0 = unlimited
+export ROUTER_SSE_RECONNECT_DELAY_MS=1000
+export ROUTER_SSE_RECONNECT_MAX_DELAY_MS=30000
+```
+
+In SSE mode the exporter:
+
+1. Performs a **bootstrap poll** at startup (same as poll mode) so all state-based
+   metrics (total_routed, circuit breaker state, etc.) are populated immediately.
+2. Spawns one SSE subscriber per configured contract that connects to the
+   `GET /events?contractId={id}&cursor=now` Horizon endpoint.
+3. Updates event-based metrics (quote_generated, post_call, execution_result, …)
+   in near-real-time as events arrive — no waiting for the next scrape interval.
+4. **Automatically reconnects** with exponential back-off if the stream drops.
+
+The reconnect back-off follows `delay = min(base * 2^attempt, max_delay)`.
+After `sse_max_reconnects` failed attempts (when > 0), the subscriber exits and
+`router_sse_connected` stays at 0 — state-based metrics (populated by the
+bootstrap poll) remain visible.
+
+#### SSE health Prometheus queries
+
+```promql
+# Is the SSE stream connected?
+router_sse_connected{contract="CBGTG..."}
+
+# Reconnect rate (spikes indicate network instability)
+rate(router_sse_reconnects_total{contract="CBGTG..."}[5m])
+
+# Event throughput
+rate(router_sse_events_total{contract="CBGTG..."}[1m])
 ```
 
 ### Example: Testnet deployment
@@ -234,8 +317,9 @@ Each contract scrape is timed and any error increments the `router_scrape_errors
 ### Limitations
 
 - **No transaction-level latency**: The exporter tracks scrape latency (off-chain polling time), not on-chain transaction latency. For transaction-level metrics, use Stellar Horizon's transaction history API.
-- **No real-time events**: Metrics are updated on the scrape interval (default 15s), not in real-time. For real-time monitoring, consider streaming Stellar ledger events via Horizon.
+- **Poll mode latency**: In poll mode, metrics are updated on the scrape interval (default 15s). Enable SSE mode (`ROUTER_EVENT_MODE=sse`) for near-real-time event updates.
 - **XDR encoding**: The current implementation uses JSON-RPC simulation results. For production deployments with complex data types, integrate the `stellar-xdr` crate for proper XDR encoding/decoding.
+- **SSE state-based metrics**: In SSE mode, state-based metrics (total_routed, circuit breaker state) are only updated during the bootstrap poll and on reconnect — not continuously like event-based metrics. Run both modes simultaneously (poll for state, SSE for events) if you need continuous state freshness.
 
 ## OpenTelemetry Support
 

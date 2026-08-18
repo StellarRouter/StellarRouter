@@ -41,11 +41,13 @@ use std::time::Instant;
 
 use anyhow::Result;
 use tokio::sync::Mutex;
+use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
 
 use crate::cli::Args;
 use crate::metrics::RouterMetrics;
 use crate::rpc::{RpcClient, SorobanRpcClient};
+use crate::sse::{sse_config_from_args, SseSubscriber};
 
 /// Drives the periodic scrape loop.
 #[derive(Clone)]
@@ -104,6 +106,84 @@ impl Collector {
 
             tokio::time::sleep(interval).await;
         }
+    }
+
+    /// Run in SSE mode.
+    ///
+    /// Performs a one-shot bootstrap poll first (so state-based metrics like
+    /// `core_total_routed` and circuit-breaker state are populated immediately),
+    /// then spawns one [`SseSubscriber`] task per configured contract to receive
+    /// near-real-time event updates.
+    ///
+    /// The poll-based scrape loop is not started; `router_up` is set to 1 after
+    /// the bootstrap poll succeeds.
+    ///
+    /// Subscribers run until `cancel` is triggered or max reconnects is exceeded.
+    /// If a subscriber exits due to exhausted reconnects, its `sse_connected`
+    /// gauge is left at 0 (the metric reflects the live state).
+    pub async fn run_sse(self, cancel: CancellationToken) {
+        info!("SSE mode: performing bootstrap poll");
+
+        let client = match SorobanRpcClient::new(&self.args.rpc_url, self.args.rpc_timeout_secs) {
+            Ok(c) => c,
+            Err(e) => {
+                error!("SSE mode: failed to create RPC client for bootstrap: {e:#}");
+                self.metrics.up.set(0.0);
+                return;
+            }
+        };
+
+        // Bootstrap poll — populates state-based metrics before SSE takes over.
+        let bootstrap_ok = self.scrape_all(&client).await;
+        self.metrics.up.set(if bootstrap_ok { 1.0 } else { 0.0 });
+
+        if bootstrap_ok {
+            info!("SSE mode: bootstrap poll succeeded — starting SSE subscribers");
+        } else {
+            warn!("SSE mode: bootstrap poll had errors — SSE subscribers will still start");
+        }
+
+        let sse_cfg = sse_config_from_args(&self.args);
+
+        // Collect all non-empty contract IDs to subscribe to.
+        let contracts: Vec<String> = [
+            &self.args.core_contract_id,
+            &self.args.middleware_contract_id,
+            &self.args.registry_contract_id,
+            &self.args.quote_contract_id,
+            &self.args.execution_contract_id,
+        ]
+        .iter()
+        .filter(|id| !id.is_empty())
+        .map(|id| id.to_string())
+        .collect();
+
+        let mut handles = Vec::new();
+
+        for contract_id in contracts {
+            let cfg = sse_cfg.clone();
+            let metrics = self.metrics.clone();
+            let cancel_child = cancel.child_token();
+
+            match SseSubscriber::new(cfg, contract_id.clone(), metrics, cancel_child) {
+                Ok(sub) => {
+                    info!(contract_id, "SSE subscriber spawned");
+                    handles.push(tokio::spawn(async move { sub.run().await }));
+                }
+                Err(e) => {
+                    error!(contract_id, "failed to create SSE subscriber: {e:#}");
+                }
+            }
+        }
+
+        // Wait for all subscribers to finish (they exit on cancel or max reconnects).
+        for handle in handles {
+            if let Err(e) = handle.await {
+                error!("SSE subscriber task panicked: {e}");
+            }
+        }
+
+        info!("SSE mode: all subscribers have terminated");
     }
 
     /// Scrape all configured contracts.  Returns `true` if every scrape
@@ -855,6 +935,11 @@ mod tests {
             scrape_interval_secs: 15,
             listen: "0.0.0.0:9090".to_string(),
             rpc_timeout_secs: 10,
+            event_mode: crate::cli::EventMode::Poll,
+            horizon_url: "https://horizon-testnet.stellar.org".to_string(),
+            sse_max_reconnects: 10,
+            sse_reconnect_delay_ms: 1000,
+            sse_reconnect_max_delay_ms: 30_000,
         };
         let collector = Collector::new(args, metrics.clone());
         (collector, metrics)
