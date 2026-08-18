@@ -395,6 +395,9 @@ No. `router-core` is the only required contract — it handles route registratio
 resolution. The others are optional enhancements:
 - `router-registry` — only needed if you want versioned contract address management
 - `router-access` — only needed if you want role-based access control
+  (three-tier role model: super admin, role admins, and role members;
+  supports blacklisting and batch/bulk grant/revoke of roles —
+  see `contracts/router-access/README.md`)
 - `router-middleware` — only needed if you want rate limiting or call hooks
 - `router-timelock` — only needed if you want delayed execution of config changes
 - `router-multicall` — only needed if you want to batch multiple calls in one transaction
