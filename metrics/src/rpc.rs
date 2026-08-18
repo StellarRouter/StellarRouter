@@ -1176,6 +1176,8 @@ mod tests {
         assert!(first.is_err(), "first call should fail (transient)");
         assert_eq!(second.unwrap(), 42, "second call should succeed");
         assert_eq!(call_count.load(Ordering::SeqCst), 2);
+    }
+
     #[test]
     fn test_extract_last_paging_token_present() {
         let v = json!({

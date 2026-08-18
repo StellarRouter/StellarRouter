@@ -21,6 +21,17 @@ Soroban smart contracts run inside the Stellar network as WASM and cannot open s
 | `router_middleware_circuit_open` | Gauge | `contract`, `route` | 1 if the circuit breaker is open |
 | `router_middleware_failure_count` | Gauge | `contract`, `route` | Consecutive failure count |
 | `router_registry_total_names` | Gauge | `contract` | Total contract names registered |
+| `router_quote_total_generated` | Counter | `contract` | Cumulative `quote_generated` events |
+| `router_quote_total_fee_estimated` | Counter | `contract` | Cumulative `fee_estimated` events |
+| `router_execution_total_executions` | Counter | `contract` | Cumulative executions recorded |
+| `router_execution_total_errors` | Counter | `contract` | Cumulative execution errors recorded |
+| `router_execution_max_retries` | Gauge | `contract` | Configured max retries |
+| `router_access_role_member_count` | Gauge | `contract`, `role` | Indexed members ever added per role (`get_role_count`) |
+| `router_access_blacklist_size` | Gauge | `contract` | Distinct addresses on the blacklist (`get_blacklist_count`) |
+| `router_timelock_pending_operations` | Gauge | `contract` | Pending time-locked operations (`get_pending_op_count`) |
+| `router_multicall_total_batches` | Gauge | `contract` | Total batches submitted (`total_batches`) |
+| `router_multicall_batch_success_total` | Counter | `contract` | Cumulative successful calls (`call_result` events) |
+| `router_multicall_batch_failure_total` | Counter | `contract` | Cumulative failed calls (`call_result` events) |
 | `router_scrape_duration_seconds` | Histogram | `contract` | Time spent scraping each contract |
 | `router_scrape_errors_total` | Counter | `contract` | Number of failed scrape attempts |
 | `router_up` | Gauge | — | 1 if the last scrape cycle succeeded |
@@ -85,6 +96,21 @@ Options:
       [env: ROUTER_REGISTRY_CONTRACT_ID]
       [default: ]
 
+  --access-contract-id <CONTRACT_ID>
+      Contract ID of the deployed router-access contract
+      [env: ROUTER_ACCESS_CONTRACT_ID]
+      [default: ]
+
+  --timelock-contract-id <CONTRACT_ID>
+      Contract ID of the deployed router-timelock contract
+      [env: ROUTER_TIMELOCK_CONTRACT_ID]
+      [default: ]
+
+  --multicall-contract-id <CONTRACT_ID>
+      Contract ID of the deployed router-multicall contract
+      [env: ROUTER_MULTICALL_CONTRACT_ID]
+      [default: ]
+
   --scrape-interval-secs <SECONDS>
       How often (in seconds) to poll the Soroban RPC for fresh data
       [env: ROUTER_SCRAPE_INTERVAL_SECS]
@@ -114,6 +140,9 @@ export ROUTER_RPC_URL="https://soroban-testnet.stellar.org"
 export ROUTER_CORE_CONTRACT_ID="CBGTG...YOUR_CONTRACT_ID"
 export ROUTER_MIDDLEWARE_CONTRACT_ID="CBGTG...YOUR_CONTRACT_ID"
 export ROUTER_REGISTRY_CONTRACT_ID="CBGTG...YOUR_CONTRACT_ID"
+export ROUTER_ACCESS_CONTRACT_ID="CBGTG...YOUR_CONTRACT_ID"
+export ROUTER_TIMELOCK_CONTRACT_ID="CBGTG...YOUR_CONTRACT_ID"
+export ROUTER_MULTICALL_CONTRACT_ID="CBGTG...YOUR_CONTRACT_ID"
 export ROUTER_SCRAPE_INTERVAL_SECS=30
 export ROUTER_LISTEN="0.0.0.0:9090"
 
@@ -127,6 +156,9 @@ export ROUTER_RPC_URL="https://soroban-mainnet.stellar.org"
 export ROUTER_NETWORK_PASSPHRASE="Public Global Stellar Network ; September 2015"
 export ROUTER_CORE_CONTRACT_ID="CBGTG...YOUR_CONTRACT_ID"
 export ROUTER_MIDDLEWARE_CONTRACT_ID="CBGTG...YOUR_CONTRACT_ID"
+export ROUTER_ACCESS_CONTRACT_ID="CBGTG...YOUR_CONTRACT_ID"
+export ROUTER_TIMELOCK_CONTRACT_ID="CBGTG...YOUR_CONTRACT_ID"
+export ROUTER_MULTICALL_CONTRACT_ID="CBGTG...YOUR_CONTRACT_ID"
 export ROUTER_SCRAPE_INTERVAL_SECS=60
 
 ./target/release/router-metrics-exporter
