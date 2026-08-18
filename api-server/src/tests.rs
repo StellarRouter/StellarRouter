@@ -875,21 +875,24 @@ async fn spawn_ws_server_with_rpc(rpc_url: String) -> (SocketAddr, AppState) {
 
 #[tokio::test]
 async fn test_stats_reflects_active_subscriptions() {
+    use axum::routing::get;
     use futures_util::{SinkExt, StreamExt};
     use serde_json::json;
     use std::time::Duration;
+    use tokio::net::TcpListener;
     use tokio::time::timeout;
     use tokio_tungstenite::connect_async;
     use tokio_tungstenite::tungstenite::Message as TungMessage;
-    use axum::routing::get;
-    use tokio::net::TcpListener;
 
     // Build a server that exposes both /ws and /stats.
     let state = AppState::new(
         "http://localhost:1".to_string(),
         "".to_string(),
         "".to_string(),
-        AuthConfig { enabled: false, api_key: None },
+        AuthConfig {
+            enabled: false,
+            api_key: None,
+        },
         FeeConfig::default(),
     );
 
@@ -929,7 +932,10 @@ async fn test_stats_reflects_active_subscriptions() {
     let body: serde_json::Value = resp.json().await.unwrap();
     assert_eq!(body["active_subscriptions"], 2);
     assert_eq!(body["unique_tx_ids"], 2);
-    assert_eq!(body["broadcast_channel_capacity"], crate::state::BROADCAST_CHANNEL_CAPACITY);
+    assert_eq!(
+        body["broadcast_channel_capacity"],
+        crate::state::BROADCAST_CHANNEL_CAPACITY
+    );
     // ...
 }
 
@@ -1119,7 +1125,11 @@ async fn test_valid_key_still_works_after_invalid_key_is_rate_limited() {
     // A request with the correct key uses a distinct rate-limit bucket and
     // should succeed.
     let ok = app
-        .oneshot(request_with_addr_and_api_key("/health", addr, "correct-key"))
+        .oneshot(request_with_addr_and_api_key(
+            "/health",
+            addr,
+            "correct-key",
+        ))
         .await
         .unwrap();
     assert_eq!(
@@ -1291,6 +1301,4 @@ async fn test_simulate_function_all_control_chars_sanitized() {
     );
     // Every input character should have been replaced by a control-picture glyph.
     assert_eq!(sanitized.chars().count(), all_controls.chars().count());
-}
-    // ...
 }

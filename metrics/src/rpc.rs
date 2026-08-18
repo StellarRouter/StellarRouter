@@ -149,12 +149,7 @@ impl SorobanRpcClient {
     async fn post_with_retry(&self, req_body: &impl Serialize) -> Result<RpcResponse> {
         let mut attempt = 0u32;
         loop {
-            let result = self
-                .http
-                .post(&self.rpc_url)
-                .json(req_body)
-                .send()
-                .await;
+            let result = self.http.post(&self.rpc_url).json(req_body).send().await;
 
             match result {
                 Ok(response) => {
@@ -222,9 +217,7 @@ impl SorobanRpcClient {
             params: invoke_params,
         };
 
-        let resp = self
-            .post_with_retry(&req)
-            .await?;
+        let resp = self.post_with_retry(&req).await?;
 
         if let Some(err) = resp.error {
             return Err(anyhow!("RPC error {}: {}", err.code, err.message));
@@ -242,9 +235,7 @@ impl SorobanRpcClient {
             params: json!({ "keys": keys_xdr }),
         };
 
-        let resp = self
-            .post_with_retry(&req)
-            .await?;
+        let resp = self.post_with_retry(&req).await?;
 
         if let Some(err) = resp.error {
             return Err(anyhow!("RPC error {}: {}", err.code, err.message));
@@ -296,30 +287,16 @@ impl SorobanRpcClient {
                 params,
             };
 
-            let resp: RpcResponse = self
-                .http
-                .post(&self.rpc_url)
-                .json(&req)
-                .send()
-                .await
-                .context("HTTP request failed")?
-                .json()
-                .await
-                .context("failed to parse JSON-RPC response")?;
+            let resp: RpcResponse = self.post_with_retry(&req).await?;
 
             if let Some(err) = resp.error {
                 return Err(anyhow!("RPC error {}: {}", err.code, err.message));
             }
 
             let raw_value = resp.result.ok_or_else(|| anyhow!("empty RPC result"))?;
-
-        let resp = self
-            .post_with_retry(&req)
-            .await?;
             // Deserialize the raw response to extract paging tokens.
-            let raw_result: GetEventsResult =
-                serde_json::from_value(raw_value.clone())
-                    .context("failed to deserialize getEvents result")?;
+            let raw_result: GetEventsResult = serde_json::from_value(raw_value.clone())
+                .context("failed to deserialize getEvents result")?;
 
             let page_events = raw_result.events.unwrap_or_default();
             if page_events.is_empty() {
@@ -481,8 +458,7 @@ fn decode_contract_id(strkey: &str) -> Result<[u8; 32]> {
     let version = decoded[0];
     if version != VERSION_CONTRACT {
         return Err(anyhow!(
-            "expected contract strkey (C…), got version 0x{:02x}",
-            version
+            "expected contract strkey (C…), got version 0x{version:02x}"
         ));
     }
     let payload: [u8; 32] = decoded[1..33].try_into().unwrap();
@@ -496,8 +472,7 @@ fn decode_contract_id(strkey: &str) -> Result<[u8; 32]> {
 
 // ── Base64 ────────────────────────────────────────────────────────────────────
 
-const B64: &[u8; 64] =
-    b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+const B64: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
 fn base64_encode(input: &[u8]) -> String {
     let mut out = String::with_capacity(input.len().div_ceil(3) * 4);
@@ -520,6 +495,34 @@ fn base64_encode(input: &[u8]) -> String {
         });
     }
     out
+}
+
+/// Decode a standard base64 string (with `=` padding) into bytes.
+///
+/// Used in tests to verify the XDR byte layout produced by the encoder functions.
+#[cfg(test)]
+fn base64_decode(input: &str) -> Result<Vec<u8>> {
+    let mut lut = [0xFFu8; 256];
+    for (i, &c) in B64.iter().enumerate() {
+        lut[c as usize] = i as u8;
+    }
+    let input = input.trim_end_matches('=');
+    let mut bits: u32 = 0;
+    let mut bit_count: u32 = 0;
+    let mut out = Vec::with_capacity(input.len() * 3 / 4);
+    for &ch in input.as_bytes() {
+        let v = lut[ch as usize];
+        if v == 0xFF {
+            return Err(anyhow!("invalid base64 char '{}'", ch as char));
+        }
+        bits = (bits << 6) | v as u32;
+        bit_count += 6;
+        if bit_count >= 8 {
+            bit_count -= 8;
+            out.push((bits >> bit_count) as u8);
+        }
+    }
+    Ok(out)
 }
 
 // ── XDR writer ────────────────────────────────────────────────────────────────
@@ -554,7 +557,15 @@ impl XdrWriter {
 
 // ScVal discriminants (Soroban protocol 21)
 const SCV_STRING: u32 = 14;
+const SCV_SYMBOL: u32 = 15;
+const SCV_LEDGER_KEY_CONTRACT_INSTANCE: u32 = 20;
 const SC_ADDR_CONTRACT: u32 = 1;
+
+// LedgerEntryType discriminant
+const LEDGER_ENTRY_TYPE_CONTRACT_DATA: u32 = 6;
+
+// ContractDataDurability discriminants
+const CONTRACT_DATA_DURABILITY_PERSISTENT: u32 = 1;
 
 /// Build a minimal base64-encoded `TransactionEnvelope` (v1) containing a
 /// single `InvokeHostFunctionOp` for `simulateTransaction`.
@@ -565,11 +576,7 @@ const SC_ADDR_CONTRACT: u32 = 1;
 ///
 /// `args_xdr` items are treated as Soroban `ScVal::String` arguments
 /// (the only type currently needed for registry/core view functions).
-fn build_invoke_xdr(
-    contract_id: &str,
-    function_name: &str,
-    args_xdr: &[String],
-) -> Result<String> {
+fn build_invoke_xdr(contract_id: &str, function_name: &str, args_xdr: &[String]) -> Result<String> {
     let contract_hash = decode_contract_id(contract_id)
         .with_context(|| format!("invalid contract id '{contract_id}'"))?;
 
@@ -583,7 +590,7 @@ fn build_invoke_xdr(
     w.opaque_fixed(&[0u8; 32]);
 
     w.u32(100); // fee (stroops)
-    w.i64(0);   // seqNum
+    w.i64(0); // seqNum
 
     // cond: Preconditions::None
     w.u32(0);
@@ -594,7 +601,7 @@ fn build_invoke_xdr(
     w.u32(1);
 
     // Operation
-    w.u32(0);  // sourceAccount: absent
+    w.u32(0); // sourceAccount: absent
     w.u32(24); // OperationType::INVOKE_HOST_FUNCTION
 
     // InvokeHostFunctionOp
@@ -775,14 +782,83 @@ fn extract_last_paging_token(raw_result: &Value) -> Option<String> {
 /// `DataKey::Paused`) the `key` ScVal is a `ScVal::LedgerKeyContractInstance`
 /// for instance storage.
 ///
-/// Full XDR construction is left as an integration point; the collector uses
-/// the simulation path as a fallback.
+/// # XDR layout
+/// ```text
+/// LedgerKey::ContractData
+///   u32(6)  — LEDGER_ENTRY_TYPE_CONTRACT_DATA
+///   SCAddress::Contract
+///     u32(1)   — SC_ADDRESS_TYPE_CONTRACT
+///     Hash[32] — contract id bytes
+///   ScVal::LedgerKeyContractInstance
+///     u32(20)  — SCV_LEDGER_KEY_CONTRACT_INSTANCE  (void — no payload)
+///   ContractDataDurability::Persistent
+///     u32(1)   — PERSISTENT
+/// ```
 #[allow(dead_code)]
-pub fn instance_storage_key_xdr(_contract_id: &str) -> Result<String> {
-    Err(anyhow!(
-        "Direct XDR key construction not implemented. \
-         Use the simulation path or integrate stellar-xdr."
-    ))
+pub fn instance_storage_key_xdr(contract_id: &str) -> Result<String> {
+    let hash = decode_contract_id(contract_id)
+        .with_context(|| format!("invalid contract id '{contract_id}'"))?;
+
+    let mut w = XdrWriter::new();
+
+    // LedgerKey discriminant: CONTRACT_DATA = 6
+    w.u32(LEDGER_ENTRY_TYPE_CONTRACT_DATA);
+
+    // SCAddress::Contract
+    w.u32(SC_ADDR_CONTRACT);
+    w.opaque_fixed(&hash);
+
+    // ScVal::LedgerKeyContractInstance  (void – no payload)
+    w.u32(SCV_LEDGER_KEY_CONTRACT_INSTANCE);
+
+    // ContractDataDurability::Persistent
+    w.u32(CONTRACT_DATA_DURABILITY_PERSISTENT);
+
+    Ok(base64_encode(&w.into_bytes()))
+}
+
+/// Build the base64-encoded XDR [`LedgerKey::ContractData`] for a **named**
+/// persistent storage entry.
+///
+/// Router contracts store per-route configuration and counters as individual
+/// `Persistent` entries whose key is an `ScVal::Symbol` (e.g. `"MaxRetries"`,
+/// `"TotalRouted"`).  This function encodes such a key so that it can be
+/// passed directly to `getLedgerEntries`.
+///
+/// # XDR layout
+/// ```text
+/// LedgerKey::ContractData
+///   u32(6)  — LEDGER_ENTRY_TYPE_CONTRACT_DATA
+///   SCAddress::Contract
+///     u32(1)   — SC_ADDRESS_TYPE_CONTRACT
+///     Hash[32] — contract id bytes
+///   ScVal::Symbol
+///     u32(15)  — SCV_SYMBOL
+///     opaque_var(name bytes)   — 4-byte length + utf-8 bytes padded to 4-byte boundary
+///   ContractDataDurability::Persistent
+///     u32(1)   — PERSISTENT
+/// ```
+pub fn named_storage_key_xdr(contract_id: &str, storage_key: &str) -> Result<String> {
+    let hash = decode_contract_id(contract_id)
+        .with_context(|| format!("invalid contract id '{contract_id}'"))?;
+
+    let mut w = XdrWriter::new();
+
+    // LedgerKey discriminant: CONTRACT_DATA = 6
+    w.u32(LEDGER_ENTRY_TYPE_CONTRACT_DATA);
+
+    // SCAddress::Contract
+    w.u32(SC_ADDR_CONTRACT);
+    w.opaque_fixed(&hash);
+
+    // ScVal::Symbol
+    w.u32(SCV_SYMBOL);
+    w.opaque_var(storage_key.as_bytes());
+
+    // ContractDataDurability::Persistent
+    w.u32(CONTRACT_DATA_DURABILITY_PERSISTENT);
+
+    Ok(base64_encode(&w.into_bytes()))
 }
 
 // ── RpcClient trait ───────────────────────────────────────────────────────────
@@ -1151,9 +1227,15 @@ mod tests {
                     Ok(42)
                 }
             }
-            async fn call_bool(&self, _: &str, _: &str) -> Result<bool> { Ok(false) }
-            async fn call_string_vec(&self, _: &str, _: &str) -> Result<Vec<String>> { Ok(vec![]) }
-            async fn call_u32_vec(&self, _: &str, _: &str, _: &str) -> Result<Vec<u32>> { Ok(vec![]) }
+            async fn call_bool(&self, _: &str, _: &str) -> Result<bool> {
+                Ok(false)
+            }
+            async fn call_string_vec(&self, _: &str, _: &str) -> Result<Vec<String>> {
+                Ok(vec![])
+            }
+            async fn call_u32_vec(&self, _: &str, _: &str, _: &str) -> Result<Vec<u32>> {
+                Ok(vec![])
+            }
             async fn simulate_invoke(&self, _: &str, _: &str, _: Vec<String>) -> Result<Value> {
                 Ok(json!({}))
             }
@@ -1165,7 +1247,9 @@ mod tests {
             }
         }
 
-        let mock = FlakyMock { call_count: Arc::clone(&call_count) };
+        let mock = FlakyMock {
+            call_count: Arc::clone(&call_count),
+        };
 
         // First attempt returns an error; a real retry loop in the caller
         // would try again. We model that here by calling twice and asserting
@@ -1176,6 +1260,8 @@ mod tests {
         assert!(first.is_err(), "first call should fail (transient)");
         assert_eq!(second.unwrap(), 42, "second call should succeed");
         assert_eq!(call_count.load(Ordering::SeqCst), 2);
+    }
+
     #[test]
     fn test_extract_last_paging_token_present() {
         let v = json!({
@@ -1185,10 +1271,7 @@ mod tests {
             ],
             "latestLedger": 100
         });
-        assert_eq!(
-            extract_last_paging_token(&v),
-            Some("token-b".to_string())
-        );
+        assert_eq!(extract_last_paging_token(&v), Some("token-b".to_string()));
     }
 
     #[test]
@@ -1279,8 +1362,7 @@ mod tests {
             axum::serve(listener, app).await.unwrap();
         });
 
-        let client =
-            SorobanRpcClient::new(format!("http://{addr}"), 5).expect("build client");
+        let client = SorobanRpcClient::new(format!("http://{addr}"), 5).expect("build client");
 
         let events = client
             .get_events("CONTRACT", &["post_call"], 10)
@@ -1295,5 +1377,166 @@ mod tests {
 
         // The mock server should have been called 3 times (page1 + page2 + empty page3).
         assert_eq!(call_count.load(Ordering::SeqCst), 3);
+    }
+
+    // ── XDR key encoding tests ────────────────────────────────────────────────
+
+    /// A known-good Stellar contract strkey (all-zero hash; char C + 54 A's + 4).
+    /// strkey = VERSION_CONTRACT(0x10) + [0u8; 32] + CRC16([0x10, 0..32])
+    ///
+    /// Pre-computed: the "all-zeros" contract key is this specific 56-char string.
+    const ALL_ZEROS_CONTRACT: &str = "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4";
+
+    /// Decode the base64 output from `instance_storage_key_xdr` and verify
+    /// the byte layout matches the expected XDR for `LedgerKey::ContractData`
+    /// with a `SCV_LEDGER_KEY_CONTRACT_INSTANCE` key.
+    #[test]
+    fn instance_storage_key_xdr_produces_correct_bytes() {
+        let b64 = instance_storage_key_xdr(ALL_ZEROS_CONTRACT)
+            .expect("should not error on valid contract id");
+
+        // Must be non-empty valid base64.
+        assert!(!b64.is_empty());
+
+        let bytes = base64_decode(&b64).expect("must be valid base64");
+
+        // Expected layout (big-endian u32s):
+        //   [0..4]   = 6  (LEDGER_ENTRY_TYPE_CONTRACT_DATA)
+        //   [4..8]   = 1  (SC_ADDRESS_TYPE_CONTRACT)
+        //   [8..40]  = [0u8; 32]  (all-zeros hash)
+        //   [40..44] = 20 (SCV_LEDGER_KEY_CONTRACT_INSTANCE)
+        //   [44..48] = 1  (PERSISTENT)
+        assert_eq!(bytes.len(), 48, "unexpected total XDR byte count");
+
+        let read_u32 = |b: &[u8], off: usize| -> u32 {
+            u32::from_be_bytes([b[off], b[off + 1], b[off + 2], b[off + 3]])
+        };
+
+        assert_eq!(read_u32(&bytes, 0), 6, "LEDGER_ENTRY_TYPE_CONTRACT_DATA");
+        assert_eq!(read_u32(&bytes, 4), 1, "SC_ADDRESS_TYPE_CONTRACT");
+        assert_eq!(&bytes[8..40], &[0u8; 32], "contract hash (all zeros)");
+        assert_eq!(read_u32(&bytes, 40), 20, "SCV_LEDGER_KEY_CONTRACT_INSTANCE");
+        assert_eq!(
+            read_u32(&bytes, 44),
+            1,
+            "ContractDataDurability::PERSISTENT"
+        );
+    }
+
+    #[test]
+    fn instance_storage_key_xdr_rejects_invalid_contract_id() {
+        let result = instance_storage_key_xdr("not-a-valid-contract-id");
+        assert!(result.is_err(), "invalid contract id should return Err");
+    }
+
+    #[test]
+    fn instance_storage_key_xdr_rejects_empty_string() {
+        assert!(instance_storage_key_xdr("").is_err());
+    }
+
+    /// Verify `named_storage_key_xdr` for the key `"MaxRetries"` (10 bytes).
+    /// Padded to 12 bytes (next multiple of 4).
+    #[test]
+    fn named_storage_key_xdr_produces_correct_bytes() {
+        let key = "MaxRetries"; // 10 bytes → 2 padding bytes → 12 bytes on wire
+        let b64 = named_storage_key_xdr(ALL_ZEROS_CONTRACT, key)
+            .expect("should not error on valid contract id");
+
+        assert!(!b64.is_empty());
+
+        let bytes = base64_decode(&b64).expect("must be valid base64");
+
+        // Expected layout:
+        //   [0..4]   = 6  (LEDGER_ENTRY_TYPE_CONTRACT_DATA)
+        //   [4..8]   = 1  (SC_ADDRESS_TYPE_CONTRACT)
+        //   [8..40]  = [0u8; 32]
+        //   [40..44] = 15 (SCV_SYMBOL)
+        //   [44..48] = 10 (length of "MaxRetries")
+        //   [48..58] = b"MaxRetries"
+        //   [58..60] = 0, 0  (2 bytes padding to 4-byte boundary)
+        //   [60..64] = 1  (PERSISTENT)
+        assert_eq!(
+            bytes.len(),
+            64,
+            "unexpected total XDR byte count for 10-byte symbol"
+        );
+
+        let read_u32 = |b: &[u8], off: usize| -> u32 {
+            u32::from_be_bytes([b[off], b[off + 1], b[off + 2], b[off + 3]])
+        };
+
+        assert_eq!(read_u32(&bytes, 0), 6, "LEDGER_ENTRY_TYPE_CONTRACT_DATA");
+        assert_eq!(read_u32(&bytes, 4), 1, "SC_ADDRESS_TYPE_CONTRACT");
+        assert_eq!(&bytes[8..40], &[0u8; 32], "contract hash");
+        assert_eq!(read_u32(&bytes, 40), 15, "SCV_SYMBOL");
+        assert_eq!(read_u32(&bytes, 44), 10, "symbol length");
+        assert_eq!(&bytes[48..58], b"MaxRetries", "symbol bytes");
+        assert_eq!(&bytes[58..60], &[0u8, 0u8], "padding bytes");
+        assert_eq!(read_u32(&bytes, 60), 1, "PERSISTENT");
+    }
+
+    /// Verify that a 4-byte-aligned key (e.g. `"Paused"`, 6 bytes → 8 bytes padded) works.
+    #[test]
+    fn named_storage_key_xdr_6_byte_symbol() {
+        let key = "Paused"; // 6 bytes → 2 padding → 8 bytes
+        let b64 = named_storage_key_xdr(ALL_ZEROS_CONTRACT, key).unwrap();
+        let bytes = base64_decode(&b64).unwrap();
+
+        let read_u32 = |b: &[u8], off: usize| -> u32 {
+            u32::from_be_bytes([b[off], b[off + 1], b[off + 2], b[off + 3]])
+        };
+
+        // 4 (type) + 4 (addr type) + 32 (hash) + 4 (ScVal type) + 4 (len) + 8 (padded) + 4 (durability) = 60
+        assert_eq!(bytes.len(), 60);
+        assert_eq!(read_u32(&bytes, 40), 15, "SCV_SYMBOL");
+        assert_eq!(read_u32(&bytes, 44), 6, "symbol length");
+        assert_eq!(&bytes[48..54], b"Paused", "symbol bytes");
+        assert_eq!(&bytes[54..56], &[0u8, 0u8], "padding");
+        assert_eq!(read_u32(&bytes, 56), 1, "PERSISTENT");
+    }
+
+    /// Verify that a 4-byte exactly-aligned key (e.g. `"Name"`, 4 bytes → 0 padding) works.
+    #[test]
+    fn named_storage_key_xdr_exact_4_byte_symbol() {
+        let key = "Name"; // 4 bytes → 0 padding
+        let b64 = named_storage_key_xdr(ALL_ZEROS_CONTRACT, key).unwrap();
+        let bytes = base64_decode(&b64).unwrap();
+
+        // 4 + 4 + 32 + 4 + 4 + 4 + 4 = 56
+        assert_eq!(bytes.len(), 56);
+
+        let read_u32 = |b: &[u8], off: usize| -> u32 {
+            u32::from_be_bytes([b[off], b[off + 1], b[off + 2], b[off + 3]])
+        };
+
+        assert_eq!(read_u32(&bytes, 44), 4, "symbol length");
+        assert_eq!(&bytes[48..52], b"Name", "symbol bytes");
+        assert_eq!(read_u32(&bytes, 52), 1, "PERSISTENT");
+    }
+
+    /// Two calls for the same contract + key must return identical bytes.
+    #[test]
+    fn storage_key_xdr_is_deterministic() {
+        let a = instance_storage_key_xdr(ALL_ZEROS_CONTRACT).unwrap();
+        let b = instance_storage_key_xdr(ALL_ZEROS_CONTRACT).unwrap();
+        assert_eq!(a, b);
+
+        let c = named_storage_key_xdr(ALL_ZEROS_CONTRACT, "Foo").unwrap();
+        let d = named_storage_key_xdr(ALL_ZEROS_CONTRACT, "Foo").unwrap();
+        assert_eq!(c, d);
+    }
+
+    /// Instance key and named key for the same contract must differ.
+    #[test]
+    fn instance_key_and_named_key_are_different() {
+        let inst = instance_storage_key_xdr(ALL_ZEROS_CONTRACT).unwrap();
+        let named = named_storage_key_xdr(ALL_ZEROS_CONTRACT, "Foo").unwrap();
+        assert_ne!(inst, named);
+    }
+
+    /// `named_storage_key_xdr` rejects invalid contract ids.
+    #[test]
+    fn named_storage_key_xdr_rejects_invalid_contract_id() {
+        assert!(named_storage_key_xdr("INVALID", "Key").is_err());
     }
 }

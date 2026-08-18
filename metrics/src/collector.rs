@@ -578,9 +578,18 @@ impl Collector {
 /// Encode a `ContractData` ledger key for a named instance-storage entry.
 ///
 /// Produces a string key that the mock client can match on. In production
-/// this should be replaced with proper XDR encoding via the `stellar-xdr` crate.
+/// Build the base64-encoded XDR `LedgerKey::ContractData` for a named persistent
+/// storage entry belonging to `contract_id`.
+///
+/// The key is an `ScVal::Symbol` containing `storage_key`.  This is the format
+/// expected by `getLedgerEntries` when reading individual persistent storage
+/// slots directly (without simulation).
+///
+/// Falls back to a plain `"<contract_id>:<storage_key>"` string if the
+/// contract id cannot be decoded (e.g., in unit tests that use synthetic ids).
 fn encode_contract_data_key(contract_id: &str, storage_key: &str) -> String {
-    format!("{}:{}", contract_id, storage_key)
+    crate::rpc::named_storage_key_xdr(contract_id, storage_key)
+        .unwrap_or_else(|_| format!("{contract_id}:{storage_key}"))
 }
 
 /// Extract a `u64` value from a `getLedgerEntries` response for the given key name.
