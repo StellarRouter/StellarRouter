@@ -6,7 +6,7 @@ description = "Shared off-chain utilities for the stellar-router suite (auth, ra
 
 [dependencies]
 # HTTP server / middleware
-axum = { version = "0.7.9", features = ["tokio"] }
+axum = { version = "0.8.9", features = ["tokio"] }
 tokio = { version = "1.44.2", features = ["full"] }
 
 # Concurrent data structures
