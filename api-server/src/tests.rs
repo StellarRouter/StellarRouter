@@ -809,16 +809,42 @@ fn test_transaction_status_event_serialization() {
     assert_eq!(deserialized.message, event.message);
 }
 
-// Keep all the tests below
-
 #[tokio::test]
 async fn test_stats_returns_200() {
-    // ...
+    let app = test_app();
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri("/stats")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
 }
 
 #[tokio::test]
 async fn test_stats_response_has_expected_fields() {
-    // ...
+    let app = test_app();
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri("/stats")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let parsed: StatsResponse = serde_json::from_slice(&bytes).unwrap();
+    // No WebSocket connections are active in unit tests, so both counts must be zero.
+    assert_eq!(parsed.active_subscriptions, 0);
+    assert_eq!(parsed.unique_tx_ids, 0);
+    // Capacity is the compile-time constant.
+    assert_eq!(parsed.broadcast_channel_capacity, crate::state::BROADCAST_CHANNEL_CAPACITY);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -833,13 +859,47 @@ async fn test_stats_response_has_expected_fields() {
 /// Spawn a minimal JSON-RPC stub that answers `getTransaction` for any hash
 /// with a configurable status string.  All other methods receive a JSON-RPC
 /// error so that tests that accidentally call them will fail loudly.
-#[tokio::test]
-async fn test_stats_reflects_active_subscriptions() {
-    // ...
-}
-
 async fn spawn_fake_rpc_server(tx_status: &'static str) -> String {
-    // ...
+    use axum::{routing::post, Json as AxumJson, Router};
+    use tokio::net::TcpListener;
+
+    let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    let addr = listener.local_addr().unwrap();
+
+    let app = Router::new().route(
+        "/",
+        post(move |AxumJson(body): AxumJson<Value>| async move {
+            let method = body["method"].as_str().unwrap_or("");
+            let id = body.get("id").cloned().unwrap_or(json!(1));
+
+            let response = if method == "getTransaction" {
+                json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "result": {
+                        "status": tx_status,
+                        "envelopeXdr": null,
+                        "ledger": null,
+                        "ledgerCloseTime": null
+                    }
+                })
+            } else {
+                json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "error": { "code": -32601, "message": "method not found" }
+                })
+            };
+
+            AxumJson(response)
+        }),
+    );
+
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+
+    format!("http://{}", addr)
 }
 
 async fn spawn_ws_server_with_rpc(rpc_url: String) -> (SocketAddr, AppState) {
@@ -930,12 +990,79 @@ async fn test_stats_reflects_active_subscriptions() {
     assert_eq!(body["active_subscriptions"], 2);
     assert_eq!(body["unique_tx_ids"], 2);
     assert_eq!(body["broadcast_channel_capacity"], crate::state::BROADCAST_CHANNEL_CAPACITY);
-    // ...
 }
 
 #[tokio::test]
 async fn test_poller_delivers_status_update_to_ws_client() {
-    // ...
+    use futures_util::{SinkExt, StreamExt};
+    use std::time::Duration;
+    use tokio::time::timeout;
+    use tokio_tungstenite::connect_async;
+    use tokio_tungstenite::tungstenite::Message as TungMessage;
+
+    // 1. Fake RPC that returns SUCCESS for any transaction hash.
+    let rpc_url = spawn_fake_rpc_server("SUCCESS").await;
+
+    // 2. WS server backed by AppState pointing at the fake RPC.
+    let (addr, state) = spawn_ws_server_with_rpc(rpc_url).await;
+    let ws_url = format!("ws://{}/ws", addr);
+
+    // 3. Connect a WebSocket client and subscribe to a transaction.
+    let (ws_stream, _) = connect_async(&ws_url).await.expect("WS connect");
+    let (mut write, mut read) = ws_stream.split();
+
+    let subscribe_msg = json!({ "action": "subscribe", "tx_id": "real_tx_abc" }).to_string();
+    write
+        .send(TungMessage::Text(subscribe_msg.into()))
+        .await
+        .unwrap();
+
+    // Consume the "subscribed" confirmation.
+    let conf = timeout(Duration::from_secs(2), read.next())
+        .await
+        .expect("timed out waiting for subscribed confirmation")
+        .unwrap()
+        .unwrap();
+    if let TungMessage::Text(txt) = conf {
+        let v: Value = serde_json::from_str(&txt).unwrap();
+        assert_eq!(v["msg_type"], "subscribed", "expected subscribed ack");
+    }
+
+    // 4. Spawn the poller with a very short interval so the test runs quickly.
+    let poller = TxStatusPoller::with_interval_ms(state.clone(), 50);
+    tokio::spawn(async move { poller.run().await });
+
+    // 5. The poller should call the fake RPC and emit a Confirmed event.
+    //    We allow up to 2 seconds for the event to reach the client.
+    let update = timeout(Duration::from_secs(2), read.next())
+        .await
+        .expect("timed out waiting for status_update from poller")
+        .unwrap()
+        .unwrap();
+
+    if let TungMessage::Text(txt) = update {
+        let v: Value = serde_json::from_str(&txt).unwrap();
+        assert_eq!(
+            v["msg_type"], "status_update",
+            "expected status_update, got: {}",
+            v
+        );
+        assert_eq!(v["data"]["tx_id"], "real_tx_abc");
+        assert_eq!(
+            v["data"]["status"], "CONFIRMED",
+            "expected CONFIRMED status from SUCCESS RPC response"
+        );
+    } else {
+        panic!("expected a text status_update message");
+    }
+
+    // 6. Terminal state: the poller should have removed the tx from the
+    //    subscribers map so it is never polled again.
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert!(
+        state.tx_subscribers.get("real_tx_abc").is_none(),
+        "terminal tx should have been removed from tx_subscribers"
+    );
 }
 
 #[tokio::test]
@@ -1136,7 +1263,7 @@ async fn test_valid_key_still_works_after_invalid_key_is_rate_limited() {
 // carriage returns, or other ASCII control characters do not reach the log
 // subscriber unescaped.  The handler-level checks are:
 //
-//   • GET /routes/:name — validate_route_name rejects the request (422) before
+//   • GET /routes/:name — validate_route_name rejects the request (400) before
 //     the route name is ever passed to `info!()`.
 //   • POST /simulate — `function` is sanitized via `sanitize_for_log` before
 //     logging; the request still proceeds normally (function is not shape-
@@ -1147,7 +1274,7 @@ async fn test_valid_key_still_works_after_invalid_key_is_rate_limited() {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// A route name containing a newline would let an attacker forge an additional
-/// log line.  The handler must reject it with 422 before reaching `info!()`.
+/// log line.  The handler must reject it with 400 before reaching `info!()`.
 #[tokio::test]
 async fn test_get_route_with_newline_in_name_is_rejected() {
     let app = test_app();
@@ -1165,7 +1292,7 @@ async fn test_get_route_with_newline_in_name_is_rejected() {
 
     assert_eq!(
         resp.status(),
-        StatusCode::UNPROCESSABLE_ENTITY,
+        StatusCode::BAD_REQUEST,
         "route name with embedded newline must be rejected before logging"
     );
 
@@ -1198,7 +1325,7 @@ async fn test_get_route_with_carriage_return_in_name_is_rejected() {
         .await
         .unwrap();
 
-    assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
 }
 
 /// A route name containing an ASCII ESC (0x1B) — used in ANSI terminal escape
@@ -1217,7 +1344,7 @@ async fn test_get_route_with_escape_sequence_in_name_is_rejected() {
         .await
         .unwrap();
 
-    assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
 }
 
 /// Injecting a newline into the `function` field of a simulate request must
@@ -1291,6 +1418,4 @@ async fn test_simulate_function_all_control_chars_sanitized() {
     );
     // Every input character should have been replaced by a control-picture glyph.
     assert_eq!(sanitized.chars().count(), all_controls.chars().count());
-}
-    // ...
 }
