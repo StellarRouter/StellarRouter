@@ -248,7 +248,7 @@ impl RouterMulticall {
             }
 
             env.events().publish(
-                (Symbol::new(&env, "call_result"),),
+                (Symbol::new(&env, router_common::EVENT_CALL_RESULT),),
                 (&caller, &call.target, &call.function, success),
             );
 
@@ -312,7 +312,7 @@ impl RouterMulticall {
             .instance()
             .set(&DataKey::MaxBatchSize, &max_batch_size);
         env.events().publish(
-            (Symbol::new(&env, "max_batch_size_updated"),),
+            (Symbol::new(&env, router_common::EVENT_MAX_BATCH_SIZE_UPDATED),),
             (old_max, max_batch_size),
         );
         Ok(())
@@ -480,7 +480,7 @@ mod tests {
         let events = env.events().all();
         let last = events.last().unwrap();
         let topic: Symbol = last.1.get(0).unwrap().into_val(&env);
-        assert_eq!(topic, Symbol::new(&env, "max_batch_size_updated"));
+        assert_eq!(topic, Symbol::new(&env, router_common::EVENT_MAX_BATCH_SIZE_UPDATED));
         let (old, new): (u32, u32) = last.2.into_val(&env);
         assert_eq!(old, 10);
         assert_eq!(new, 5);
@@ -812,7 +812,7 @@ mod tests {
             .find(|(_, topics, _)| {
                 topics
                     .get(0)
-                    .map(|v| Symbol::from_val(&env, &v) == Symbol::new(&env, "call_result"))
+                    .map(|v| Symbol::from_val(&env, &v) == Symbol::new(&env, router_common::EVENT_CALL_RESULT))
                     .unwrap_or(false)
             })
             .expect("call_result event not found");
