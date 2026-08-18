@@ -9,6 +9,11 @@ A modular cross-contract routing infrastructure suite for Stellar/Soroban.
 `stellar-router` provides a complete set of infrastructure primitives for building
 composable, upgradeable, and access-controlled multi-contract systems on Soroban.
 
+> **`router-common`** is the shared foundation crate: it exposes the event-topic
+> constants, declarative macros, and common types reused across every contract in
+> this suite. See its own `contracts/router-common/README.md` for details, or the
+> [System Architecture](#system-architecture) section below for how it fits in.
+
 ### System Architecture
 
 ```mermaid
