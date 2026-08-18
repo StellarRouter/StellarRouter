@@ -81,6 +81,16 @@ pub struct RouterMetrics {
 
     /// 1 if the most recent full scrape cycle completed without errors.
     pub up: Gauge,
+
+    // ── SSE health ────────────────────────────────────────────────────────────
+    /// 1 if the SSE connection for a contract is currently established, 0 otherwise.
+    pub sse_connected: GaugeVec,
+
+    /// Total number of SSE reconnect attempts per contract since process start.
+    pub sse_reconnects_total: CounterVec,
+
+    /// Total number of SSE events received per contract since process start.
+    pub sse_events_total: CounterVec,
 }
 
 impl RouterMetrics {
@@ -212,6 +222,27 @@ impl RouterMetrics {
             registry
         )?;
 
+        let sse_connected = register_gauge_vec_with_registry!(
+            "router_sse_connected",
+            "1 if the SSE connection for a contract is currently established, 0 otherwise",
+            &["contract"],
+            registry
+        )?;
+
+        let sse_reconnects_total = register_counter_vec_with_registry!(
+            "router_sse_reconnects_total",
+            "Total number of SSE reconnect attempts per contract since process start",
+            &["contract"],
+            registry
+        )?;
+
+        let sse_events_total = register_counter_vec_with_registry!(
+            "router_sse_events_total",
+            "Total number of SSE events received per contract since process start",
+            &["contract"],
+            registry
+        )?;
+
         Ok(Self {
             core_total_routed,
             core_paused,
@@ -231,6 +262,9 @@ impl RouterMetrics {
             scrape_duration_seconds,
             scrape_errors_total,
             up,
+            sse_connected,
+            sse_reconnects_total,
+            sse_events_total,
         })
     }
 }
