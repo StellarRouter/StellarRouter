@@ -222,7 +222,7 @@ impl RouterQuote {
             price_impact_bps,
         };
         env.events().publish(
-            (Symbol::new(&env, "quote_calculated"),),
+            (Symbol::new(&env, router_common::EVENT_QUOTE_GENERATED),),
             (request.route, amount_out, fee_amount, price_impact_bps),
         );
         Ok(response)
@@ -440,7 +440,7 @@ impl RouterQuote {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use soroban_sdk::{testutils::Address as _, Env, String};
+    use soroban_sdk::{testutils::Address as _, testutils::Events, Env, IntoVal, String, Symbol};
 
     fn setup() -> (Env, Address, RouterQuoteClient<'static>) {
         let env = Env::default();
@@ -560,6 +560,29 @@ mod tests {
         };
         let response = client.get_quote(&request);
         assert_eq!(response.price_impact_bps, response.fee_bps as i128);
+    }
+
+    #[test]
+    fn test_get_quote_emits_quote_generated_event() {
+        // Regression test for Issue #193: the event emitted by `get_quote` must
+        // use the canonical topic `router_common::EVENT_QUOTE_GENERATED` — this
+        // fails if the emitted name ever drifts from the shared constant.
+        let (env, _admin, client) = setup();
+        let request = QuoteRequest {
+            route: String::from_str(&env, "uniswap"),
+            token_in: Address::generate(&env),
+            token_out: Address::generate(&env),
+            amount_in: 10000,
+        };
+        client.get_quote(&request);
+
+        let events = env.events().all();
+        let last = events.last().unwrap();
+        let topic: Symbol = last.1.get(0).unwrap().into_val(&env);
+        assert_eq!(
+            topic,
+            Symbol::new(&env, router_common::EVENT_QUOTE_GENERATED)
+        );
     }
 
     #[test]
