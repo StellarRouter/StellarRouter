@@ -6,7 +6,6 @@
 //!
 //! ## Macros
 //! - [`require_admin!`] — inline admin check used across router contracts
-//! - [`require_admin_simple!`] — convenience version with standard error variants
 //! - [`require_admin_simple!`] — convenience macro for standard DataKey::Admin and error variants
 //! - [`admin_transfer_complete!`] — shared admin transfer pattern (storage set + event emit)
 //!
