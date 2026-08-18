@@ -68,29 +68,29 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
 
                                     let already = subscriptions.iter().any(|(id, _)| id == &sub_msg.tx_id);
                                     if !already {
-                    if subscriptions.len() >= MAX_SUBSCRIPTIONS_PER_CONNECTION {
-                           warn!(
-                                "WebSocket subscription limit reached ({})",
-                                 MAX_SUBSCRIPTIONS_PER_CONNECTION
-                            );
+                                        if subscriptions.len() >= MAX_SUBSCRIPTIONS_PER_CONNECTION {
+                                            warn!(
+                                                "WebSocket subscription limit reached ({})",
+                                                MAX_SUBSCRIPTIONS_PER_CONNECTION
+                                            );
 
-                            let response = json!({
-                                    "msg_type": "error",
-                                    "data": {
-                                    "message": "Maximum subscription limit reached"
-                                    }
-                            });
+                                            let response = json!({
+                                                "msg_type": "error",
+                                                "data": {
+                                                    "message": "Maximum subscription limit reached"
+                                                }
+                                            });
 
-                            if let Err(e) = sender
-                                    .send(Message::Text(response.to_string()))
-                                 .await
-                            {
-                                     error!("Failed to send subscription limit error: {}", e);
-                                     break;
-                            }
+                                            if let Err(e) = sender
+                                                .send(Message::Text(response.to_string()))
+                                                .await
+                                            {
+                                                error!("Failed to send subscription limit error: {}", e);
+                                                break;
+                                            }
 
-                            continue;
-                    }
+                                            continue;
+                                        }
                                         let cancel = tokio_util::sync::CancellationToken::new();
                                         subscriptions.push((sub_msg.tx_id.clone(), cancel.clone()));
                                         state.add_subscriber(sub_msg.tx_id.clone());

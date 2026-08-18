@@ -137,6 +137,7 @@ pub async fn simulate(
     ),
     responses(
         (status = 200, description = "Route entry", body = RouteEntryResponse),
+        (status = 400, description = "Bad request", body = ErrorResponse),
         (status = 404, description = "Route not found", body = ErrorResponse),
         (status = 500, description = "Internal server error", body = ErrorResponse)
     )
@@ -153,7 +154,7 @@ pub async fn get_route(
     // name containing newlines or other control characters.
     if let Err(e) = validate_route_name(&name) {
         return Err((
-            StatusCode::UNPROCESSABLE_ENTITY,
+            StatusCode::BAD_REQUEST,
             Json(ErrorResponse {
                 error: format!("invalid route name: {}", e.message),
             }),
@@ -163,16 +164,6 @@ pub async fn get_route(
     // `name` is now guaranteed to be alphanumeric/underscore/hyphen only —
     // safe to log directly.
     info!(route = %name, "fetching route");
-
-    // Use shared validation from router-off-chain-common
-    if let Err(e) = validate_route_name(&name) {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            Json(ErrorResponse {
-                error: format!("invalid route name: {}", e.message),
-            }),
-        ));
-    }
 
     match state.rpc.get_route(&name).await {
         Ok(Some(entry)) => Ok((StatusCode::OK, Json(entry))),

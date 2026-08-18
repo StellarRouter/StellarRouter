@@ -20,8 +20,14 @@ prometheus = { version = "0.14.0", features = ["process"] }
 serde = { version = "1.0.219", features = ["derive"] }
 serde_json = { version = "1.0.140" }
 
-# HTTP client (for RPC calls)
-reqwest = { version = "0.12.15", features = ["json", "rustls-tls"], default-features = false }
+# HTTP client (for RPC calls and SSE streaming)
+reqwest = { version = "0.12.15", features = ["json", "rustls-tls", "stream"], default-features = false }
+
+# Async stream utilities (SSE byte-stream processing)
+tokio-stream = { version = "0.1.17" }
+
+# Byte-stream utilities for SSE chunked reads
+futures-util = { version = "0.3.31" }
 
 # Logging
 tracing = { version = "0.1.41" }

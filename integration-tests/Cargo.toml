@@ -23,6 +23,10 @@ path = "tests/failure_scenarios.rs"
 name = "quote_execution_tests"
 path = "tests/quote_execution_tests.rs"
 
+[[test]]
+name = "liquidity_plugin_tests"
+path = "tests/liquidity_plugin_tests.rs"
+
 [dependencies]
 
 [dev-dependencies]
@@ -37,3 +41,5 @@ router-timelock  = { path = "../contracts/router-timelock" }
 router-multicall = { path = "../contracts/router-multicall" }
 router-execution = { path = "../contracts/router-execution" }
 router-quote     = { path = "../contracts/router-quote" }
+router-common    = { path = "../contracts/router-common" }
+liquidity-plugin-example-fixed-rate = { path = "../contracts/liquidity-plugin-example-fixed-rate" }

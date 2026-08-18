@@ -19,7 +19,9 @@
 extern crate std;
 
 use soroban_sdk::{
-    contract, contractimpl, testutils::Address as _, Address, Env, String, Symbol, TryFromVal,
+    contract, contractimpl,
+    testutils::{Address as _, Events, Ledger},
+    Address, Env, String, Symbol, TryFromVal,
 };
 
 use router_core::{RouterCore, RouterCoreClient, RouterError};
@@ -123,24 +125,22 @@ fn test_full_quote_execution_pipeline() {
         amount_in: 10_000,
     });
 
-    // fee_amount = 10_000 * 30 / 10_000 = 3
+    // fee_amount = 10_000 * 30 / 10_000 = 30
     assert_eq!(quote_resp.fee_bps, 30);
-    assert_eq!(quote_resp.fee_amount, 3);
-    assert_eq!(quote_resp.amount_out, 9_997);
-    assert_eq!(quote_resp.price_impact_bps, 3); // 3 * 10_000 / 10_000 = 3
+    assert_eq!(quote_resp.fee_amount, 30);
+    assert_eq!(quote_resp.amount_out, 9_970);
+    assert_eq!(quote_resp.price_impact_bps, 30); // 30 * 10_000 / 10_000 = 30
     assert_eq!(quote_resp.route, route_name);
 
-    // Verify quote_calculated event was emitted by the quote contract.
+    // Verify the quote_generated event was emitted by the quote contract,
+    // using the canonical topic from router_common::EVENT_QUOTE_GENERATED.
     let quote_event_emitted = s.env.events().all().iter().any(|e| {
         e.1.get(0)
             .and_then(|v| Symbol::try_from_val(&s.env, &v).ok())
-            .map(|sym| sym == Symbol::new(&s.env, "quote_calculated"))
+            .map(|sym| sym == Symbol::new(&s.env, router_common::EVENT_QUOTE_GENERATED))
             .unwrap_or(false)
     });
-    assert!(
-        quote_event_emitted,
-        "quote_calculated event must be emitted"
-    );
+    assert!(quote_event_emitted, "quote_generated event must be emitted");
 
     // Step 4 — execute
     let exec_result = s.execution.execute(
@@ -265,10 +265,10 @@ fn test_best_quote_then_execute() {
 
     let best = s.quote.get_best_quote(&requests);
 
-    // route-b: fee_amount = 10_000 * 20 / 10_000 = 2 → amount_out = 9_998
+    // route-b: fee_amount = 10_000 * 20 / 10_000 = 20 → amount_out = 9_980
     assert_eq!(best.route, route_b, "route-b must win as best quote");
     assert_eq!(best.fee_bps, 20);
-    assert_eq!(best.amount_out, 9_998);
+    assert_eq!(best.amount_out, 9_980);
 
     let resolved = s.core.resolve(&best.route);
     assert_eq!(resolved, s.target_addr);
@@ -579,8 +579,8 @@ fn test_compare_quotes_filter_then_execute() {
         "cheap route must be first (best amount_out)"
     );
     assert_eq!(winner.fee_bps, 10);
-    // cheap: fee_amount = 10_000 * 10 / 10_000 = 1 → amount_out = 9_999
-    assert_eq!(winner.amount_out, 9_999);
+    // cheap: fee_amount = 10_000 * 10 / 10_000 = 10 → amount_out = 9_990
+    assert_eq!(winner.amount_out, 9_990);
 
     let resolved = s.core.resolve(&winner.route);
     assert_eq!(resolved, s.target_addr);
