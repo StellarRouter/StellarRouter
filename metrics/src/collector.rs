@@ -15,6 +15,11 @@
 //!   events emitted by the contract.
 //! - `router-execution`: `getEvents` — counts `execution_result` and `execution_error`
 //!   events; reads `MaxRetries` config via `getLedgerEntries`.
+//! - `router-access`: `simulateTransaction` — `get_blacklist_count()`,
+//!   `get_all_roles()` + `get_role_count(role)` per role.
+//! - `router-timelock`: `simulateTransaction` — `get_pending_op_count()`.
+//! - `router-multicall`: `simulateTransaction` — `total_batches()`;
+//!   `getEvents` — counts successful/failed calls from `call_result` events.
 //!
 //! ## Ledger cursor (quote + execution)
 //!
@@ -253,7 +258,209 @@ impl Collector {
             }
         }
 
+        if !self.args.access_contract_id.is_empty() {
+            if let Err(e) = self
+                .scrape_access(client, &self.args.access_contract_id)
+                .await
+            {
+                warn!(contract = %self.args.access_contract_id, "access scrape failed: {e:#}");
+                self.metrics
+                    .scrape_errors_total
+                    .with_label_values(&[&self.args.access_contract_id])
+                    .inc();
+                all_ok = false;
+            }
+        }
+
+        if !self.args.timelock_contract_id.is_empty() {
+            if let Err(e) = self
+                .scrape_timelock(client, &self.args.timelock_contract_id)
+                .await
+            {
+                warn!(contract = %self.args.timelock_contract_id, "timelock scrape failed: {e:#}");
+                self.metrics
+                    .scrape_errors_total
+                    .with_label_values(&[&self.args.timelock_contract_id])
+                    .inc();
+                all_ok = false;
+            }
+        }
+
+        if !self.args.multicall_contract_id.is_empty() {
+            if let Err(e) = self
+                .scrape_multicall(client, &self.args.multicall_contract_id)
+                .await
+            {
+                warn!(contract = %self.args.multicall_contract_id, "multicall scrape failed: {e:#}");
+                self.metrics
+                    .scrape_errors_total
+                    .with_label_values(&[&self.args.multicall_contract_id])
+                    .inc();
+                all_ok = false;
+            }
+        }
+
         all_ok
+    }
+
+    // ── router-access ─────────────────────────────────────────────────────────
+
+    async fn scrape_access(&self, client: &dyn RpcClient, contract_id: &str) -> Result<()> {
+        let start = Instant::now();
+        info!(contract_id, "scraping router-access");
+
+        // 1. Blacklist size (no arg view).
+        let blacklist_size = client.call_u64(contract_id, "get_blacklist_count").await?;
+        self.metrics
+            .access_blacklist_size
+            .with_label_values(&[contract_id])
+            .set(blacklist_size as f64);
+
+        // 2. Per-role member counts. Enumerate roles via `get_all_roles`, then
+        //    fetch `get_role_count(role)` for each.
+        let roles = client
+            .call_string_vec(contract_id, "get_all_roles")
+            .await
+            .unwrap_or_default();
+
+        for role in &roles {
+            match client.call_u32_vec(contract_id, "get_role_count", role).await {
+                Ok(counts) => {
+                    let count = counts.first().copied().unwrap_or(0);
+                    self.metrics
+                        .access_role_member_count
+                        .with_label_values(&[contract_id, role])
+                        .set(count as f64);
+                }
+                Err(e) => {
+                    warn!(contract_id, role, "failed to get role count: {e:#}");
+                }
+            }
+        }
+
+        let elapsed = start.elapsed().as_secs_f64();
+        self.metrics
+            .scrape_duration_seconds
+            .with_label_values(&[contract_id])
+            .observe(elapsed);
+
+        info!(
+            contract_id,
+            elapsed_secs = elapsed,
+            roles = roles.len(),
+            blacklist_size,
+            "access scrape done"
+        );
+        Ok(())
+    }
+
+    // ── router-timelock ───────────────────────────────────────────────────────
+
+    async fn scrape_timelock(&self, client: &dyn RpcClient, contract_id: &str) -> Result<()> {
+        let start = Instant::now();
+        info!(contract_id, "scraping router-timelock");
+
+        let pending = client
+            .call_u64(contract_id, "get_pending_op_count")
+            .await?;
+        self.metrics
+            .timelock_pending_operations
+            .with_label_values(&[contract_id])
+            .set(pending as f64);
+
+        let elapsed = start.elapsed().as_secs_f64();
+        self.metrics
+            .scrape_duration_seconds
+            .with_label_values(&[contract_id])
+            .observe(elapsed);
+
+        info!(
+            contract_id,
+            elapsed_secs = elapsed,
+            pending_operations = pending,
+            "timelock scrape done"
+        );
+        Ok(())
+    }
+
+    // ── router-multicall ──────────────────────────────────────────────────────
+
+    /// Scrape `router-multicall` via `total_batches()` for the cumulative batch
+    /// count (gauge) and `getEvents` for `call_result` events to track
+    /// cumulative successful / failed calls within batches.
+    ///
+    /// Uses the same in-memory ledger cursor pattern as the quote / execution
+    /// scrapers (see module-level docs for restart semantics).
+    async fn scrape_multicall(&self, client: &dyn RpcClient, contract_id: &str) -> Result<()> {
+        let start = Instant::now();
+        info!(contract_id, "scraping router-multicall");
+
+        let total_batches = client.call_u64(contract_id, "total_batches").await?;
+        self.metrics
+            .multicall_total_batches
+            .with_label_values(&[contract_id])
+            .set(total_batches as f64);
+
+        let start_ledger = {
+            let map = self.last_ledger.lock().await;
+            map.get(&format!("multicall:{contract_id}"))
+                .copied()
+                .unwrap_or(0)
+        };
+
+        let call_events = client
+            .get_events(contract_id, &["call_result"], start_ledger)
+            .await?;
+
+        let max_ledger = call_events
+            .iter()
+            .map(|e| e.ledger)
+            .max()
+            .unwrap_or(start_ledger);
+
+        let mut success = 0u64;
+        let mut failure = 0u64;
+        for event in &call_events {
+            match extract_call_result_success(event) {
+                Some(true) => success += 1,
+                Some(false) => failure += 1,
+                None => {}
+            }
+        }
+
+        self.metrics
+            .multicall_batch_success_total
+            .with_label_values(&[contract_id])
+            .inc_by(success as f64);
+        self.metrics
+            .multicall_batch_failure_total
+            .with_label_values(&[contract_id])
+            .inc_by(failure as f64);
+
+        if max_ledger > start_ledger {
+            self.last_ledger
+                .lock()
+                .await
+                .insert(format!("multicall:{contract_id}"), max_ledger);
+        }
+
+        let elapsed = start.elapsed().as_secs_f64();
+        self.metrics
+            .scrape_duration_seconds
+            .with_label_values(&[contract_id])
+            .observe(elapsed);
+
+        info!(
+            contract_id,
+            elapsed_secs = elapsed,
+            total_batches,
+            batch_success = success,
+            batch_failure = failure,
+            start_ledger,
+            max_ledger,
+            "multicall scrape done"
+        );
+        Ok(())
     }
 
     // ── router-core ───────────────────────────────────────────────────────────
@@ -722,6 +929,9 @@ mod tests {
             registry_contract_id: registry_id.to_string(),
             quote_contract_id: quote_id.to_string(),
             execution_contract_id: execution_id.to_string(),
+            access_contract_id: String::new(),
+            timelock_contract_id: String::new(),
+            multicall_contract_id: String::new(),
             scrape_interval_secs: 15,
             listen: "0.0.0.0:9090".to_string(),
             rpc_timeout_secs: 10,
@@ -1125,6 +1335,200 @@ mod tests {
             1.0
         );
     }
+
+    #[tokio::test]
+    async fn test_scrape_access_updates_metrics() {
+        let (collector, metrics) = make_collector("", "", "");
+
+        let mut args = collector.args.clone();
+        args.access_contract_id = "ACCESS_ID".to_string();
+        let collector = Collector::new(args, metrics.clone());
+
+        let mock = MockRpcClient::new()
+            .with_u64("ACCESS_ID", "get_blacklist_count", 4)
+            .with_string_vec(
+                "ACCESS_ID",
+                "get_all_roles",
+                vec!["admin".to_string(), "trader".to_string()],
+            )
+            .with_u32_vec("ACCESS_ID", "get_role_count", "admin", vec![3])
+            .with_u32_vec("ACCESS_ID", "get_role_count", "trader", vec![7]);
+
+        let ok = collector.scrape_all(&mock).await;
+        assert!(ok);
+
+        assert_eq!(
+            metrics
+                .access_blacklist_size
+                .with_label_values(&["ACCESS_ID"])
+                .get(),
+            4.0
+        );
+        assert_eq!(
+            metrics
+                .access_role_member_count
+                .with_label_values(&["ACCESS_ID", "admin"])
+                .get(),
+            3.0
+        );
+        assert_eq!(
+            metrics
+                .access_role_member_count
+                .with_label_values(&["ACCESS_ID", "trader"])
+                .get(),
+            7.0
+        );
+    }
+
+    #[tokio::test]
+    async fn test_scrape_timelock_updates_metrics() {
+        let (collector, metrics) = make_collector("", "", "");
+
+        let mut args = collector.args.clone();
+        args.timelock_contract_id = "TIMELOCK_ID".to_string();
+        let collector = Collector::new(args, metrics.clone());
+
+        let mock = MockRpcClient::new().with_u64("TIMELOCK_ID", "get_pending_op_count", 12);
+
+        let ok = collector.scrape_all(&mock).await;
+        assert!(ok);
+
+        assert_eq!(
+            metrics
+                .timelock_pending_operations
+                .with_label_values(&["TIMELOCK_ID"])
+                .get(),
+            12.0
+        );
+    }
+
+    #[tokio::test]
+    async fn test_scrape_multicall_updates_metrics() {
+        use crate::rpc::ContractEvent;
+        let (collector, metrics) = make_collector("", "", "");
+
+        let mut args = collector.args.clone();
+        args.multicall_contract_id = "MULTI_ID".to_string();
+        let collector = Collector::new(args, metrics.clone());
+
+        let make_event = |success: bool, ledger: u32| ContractEvent {
+            contract_id: "MULTI_ID".to_string(),
+            ledger,
+            topic: vec![serde_json::json!("call_result")],
+            value: json!([{"address": "CALLER"}, {"address": "TARGET"}, "fn", success]),
+        };
+
+        let mock = MockRpcClient::new()
+            .with_u64("MULTI_ID", "total_batches", 5)
+            .with_events(
+                "MULTI_ID",
+                "call_result",
+                vec![
+                    make_event(true, 100),
+                    make_event(true, 101),
+                    make_event(false, 102),
+                ],
+            );
+
+        let ok = collector.scrape_all(&mock).await;
+        assert!(ok);
+
+        assert_eq!(
+            metrics
+                .multicall_total_batches
+                .with_label_values(&["MULTI_ID"])
+                .get(),
+            5.0
+        );
+        assert_eq!(
+            metrics
+                .multicall_batch_success_total
+                .with_label_values(&["MULTI_ID"])
+                .get(),
+            2.0
+        );
+        assert_eq!(
+            metrics
+                .multicall_batch_failure_total
+                .with_label_values(&["MULTI_ID"])
+                .get(),
+            1.0
+        );
+    }
+
+    #[tokio::test]
+    async fn test_scrape_multicall_increments_on_second_scrape() {
+        use crate::rpc::ContractEvent;
+        let (collector, metrics) = make_collector("", "", "");
+
+        let mut args = collector.args.clone();
+        args.multicall_contract_id = "MULTI_ID".to_string();
+        let collector = Collector::new(args, metrics.clone());
+
+        let make_event = |success: bool, ledger: u32| ContractEvent {
+            contract_id: "MULTI_ID".to_string(),
+            ledger,
+            topic: vec![serde_json::json!("call_result")],
+            value: json!([{"address": "CALLER"}, {"address": "TARGET"}, "fn", success]),
+        };
+
+        let mock1 = MockRpcClient::new()
+            .with_u64("MULTI_ID", "total_batches", 1)
+            .with_events(
+                "MULTI_ID",
+                "call_result",
+                vec![make_event(true, 100), make_event(false, 100)],
+            );
+        collector.scrape_all(&mock1).await;
+
+        let mock2 = MockRpcClient::new()
+            .with_u64("MULTI_ID", "total_batches", 2)
+            .with_events(
+                "MULTI_ID",
+                "call_result",
+                vec![make_event(true, 101), make_event(true, 101)],
+            );
+        let ok = collector.scrape_all(&mock2).await;
+        assert!(ok);
+
+        // 1 (baseline success) + 2 (new) = 3
+        assert_eq!(
+            metrics
+                .multicall_batch_success_total
+                .with_label_values(&["MULTI_ID"])
+                .get(),
+            3.0
+        );
+        // 1 (baseline failure) + 0 (new) = 1
+        assert_eq!(
+            metrics
+                .multicall_batch_failure_total
+                .with_label_values(&["MULTI_ID"])
+                .get(),
+            1.0
+        );
+    }
+
+    #[test]
+    fn test_extract_call_result_success() {
+        use crate::rpc::ContractEvent;
+        let ev = ContractEvent {
+            contract_id: "MULTI_ID".to_string(),
+            ledger: 100,
+            topic: vec![serde_json::json!("call_result")],
+            value: json!([{"address": "C"}, {"address": "T"}, "fn", true]),
+        };
+        assert_eq!(extract_call_result_success(&ev), Some(true));
+
+        let ev2 = ContractEvent {
+            contract_id: "MULTI_ID".to_string(),
+            ledger: 101,
+            topic: vec![serde_json::json!("call_result")],
+            value: json!({ "success": false }),
+        };
+        assert_eq!(extract_call_result_success(&ev2), Some(false));
+    }
+
     #[test]
     fn test_extract_route_paused_true() {
         let val = json!({
@@ -1423,4 +1827,26 @@ fn extract_post_call_data(event: &crate::rpc::ContractEvent) -> Option<(String, 
         (Some(r), Some(s)) => Some((r, s)),
         _ => None,
     }
+}
+
+/// Extract the `success` boolean from a `call_result` event emitted by
+/// `router-multicall`'s `execute_batch`.
+///
+/// The event value is a tuple `(caller, target, function, success)`. We accept
+/// either a JSON object with a `success` field or a JSON array whose last
+/// element is the boolean success flag.
+fn extract_call_result_success(event: &crate::rpc::ContractEvent) -> Option<bool> {
+    let value = &event.value;
+
+    if let Some(s) = value.get("success").and_then(|v| v.as_bool()) {
+        return Some(s);
+    }
+
+    if let Some(arr) = value.as_array() {
+        if let Some(last) = arr.last().and_then(|v| v.as_bool()) {
+            return Some(last);
+        }
+    }
+
+    None
 }

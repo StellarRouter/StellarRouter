@@ -54,6 +54,8 @@ pub enum DataKey {
     RoleExpiry(String, Address),
     BlacklistReason(Address),
     BlacklistExpiry(Address),
+    BlacklistCount,   // instance -> total distinct blacklisted addresses
+    AllRoles,         // instance -> Vec<String> of every role name ever granted
 }
 
 // ── Errors ────────────────────────────────────────────────────────────────────
@@ -129,6 +131,8 @@ impl RouterAccess {
         env.storage()
             .instance()
             .set(&DataKey::HasRole(role.clone(), account.clone()), &true);
+
+        Self::record_role_name(&env, &role);
 
         // Add to indexed member storage (append-only; stale entries filtered at read time)
         if !env
@@ -385,6 +389,21 @@ impl RouterAccess {
             return Err(AccessError::CannotBlacklistAdmin);
         }
 
+        if !env
+            .storage()
+            .instance()
+            .has(&DataKey::Blacklisted(target.clone()))
+        {
+            let c: u32 = env
+                .storage()
+                .instance()
+                .get(&DataKey::BlacklistCount)
+                .unwrap_or(0);
+            env.storage()
+                .instance()
+                .set(&DataKey::BlacklistCount, &(c + 1));
+        }
+
         env.storage()
             .instance()
             .set(&DataKey::Blacklisted(target.clone()), &true);
@@ -416,6 +435,20 @@ impl RouterAccess {
     pub fn unblacklist(env: Env, caller: Address, target: Address) -> Result<(), AccessError> {
         caller.require_auth();
         Self::require_super_admin(&env, &caller)?;
+        if env
+            .storage()
+            .instance()
+            .has(&DataKey::Blacklisted(target.clone()))
+        {
+            let c: u32 = env
+                .storage()
+                .instance()
+                .get(&DataKey::BlacklistCount)
+                .unwrap_or(1);
+            env.storage()
+                .instance()
+                .set(&DataKey::BlacklistCount, &(c.saturating_sub(1)));
+        }
         env.storage()
             .instance()
             .remove(&DataKey::Blacklisted(target.clone()));
@@ -473,6 +506,47 @@ impl RouterAccess {
         env.storage()
             .instance()
             .get(&DataKey::AddressRoles(addr))
+            .unwrap_or_else(|| Vec::new(&env))
+    }
+
+    /// Record a role name so it can be enumerated later via [`get_all_roles`].
+    fn record_role_name(env: &Env, role: &String) {
+        let key = DataKey::AllRoles;
+        let mut roles: Vec<String> = env.storage().instance().get(&key).unwrap_or_else(|| Vec::new(env));
+        if !roles.iter().any(|r| &r == role) {
+            roles.push_back(role.clone());
+            env.storage().instance().set(&key, &roles);
+        }
+    }
+
+    /// Return the number of indexed members ever added for `role`.
+    ///
+    /// This is the storage-level member count (`RoleMemberCount`) and may
+    /// include entries that have since been revoked or expired; it is intended
+    /// for operational monitoring rather than exact active membership.
+    pub fn get_role_count(env: Env, role: String) -> u32 {
+        env.storage()
+            .instance()
+            .get(&DataKey::RoleMemberCount(role))
+            .unwrap_or(0)
+    }
+
+    /// Return the total number of distinct addresses currently stored on the
+    /// blacklist (including any entries whose expiry has not been garbage
+    /// collected).
+    pub fn get_blacklist_count(env: Env) -> u32 {
+        env.storage()
+            .instance()
+            .get(&DataKey::BlacklistCount)
+            .unwrap_or(0)
+    }
+
+    /// Return every role name that has ever been granted, for enumeration by
+    /// off-chain tooling (e.g. the metrics exporter).
+    pub fn get_all_roles(env: Env) -> Vec<String> {
+        env.storage()
+            .instance()
+            .get(&DataKey::AllRoles)
             .unwrap_or_else(|| Vec::new(&env))
     }
 
@@ -771,6 +845,8 @@ impl RouterAccess {
         env.storage()
             .instance()
             .set(&DataKey::HasRole(role.clone(), account.clone()), &true);
+
+        Self::record_role_name(env, role);
 
         // Add to indexed member storage
         if !env

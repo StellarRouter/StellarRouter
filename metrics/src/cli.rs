@@ -92,6 +92,24 @@ pub struct Args {
     #[arg(long, env = "ROUTER_EXECUTION_CONTRACT_ID", default_value = "")]
     pub execution_contract_id: String,
 
+    /// Contract ID of the deployed `router-access` contract.
+    ///
+    /// Leave empty to skip scraping role/blacklist metrics from this contract.
+    #[arg(long, env = "ROUTER_ACCESS_CONTRACT_ID", default_value = "")]
+    pub access_contract_id: String,
+
+    /// Contract ID of the deployed `router-timelock` contract.
+    ///
+    /// Leave empty to skip scraping timelock metrics from this contract.
+    #[arg(long, env = "ROUTER_TIMELOCK_CONTRACT_ID", default_value = "")]
+    pub timelock_contract_id: String,
+
+    /// Contract ID of the deployed `router-multicall` contract.
+    ///
+    /// Leave empty to skip scraping multicall metrics from this contract.
+    #[arg(long, env = "ROUTER_MULTICALL_CONTRACT_ID", default_value = "")]
+    pub multicall_contract_id: String,
+
     /// How often (in seconds) to poll the Soroban RPC for fresh data.
     ///
     /// Used in `poll` mode. In `sse` mode this value is also used for the
