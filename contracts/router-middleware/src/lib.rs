@@ -432,7 +432,7 @@ impl RouterMiddleware {
 
         // Emit call event
         env.events().publish(
-            (Symbol::new(&env, "pre_call"),),
+            (Symbol::new(&env, router_common::EVENT_PRE_CALL),),
             (caller.clone(), route.clone()),
         );
 
@@ -453,7 +453,7 @@ impl RouterMiddleware {
     /// * `success` - `true` if the call succeeded, `false` if it failed.
     pub fn post_call(env: Env, caller: Address, route: String, success: bool) {
         env.events().publish(
-            (Symbol::new(&env, "post_call"),),
+            (Symbol::new(&env, router_common::EVENT_POST_CALL),),
             (caller.clone(), route.clone(), success),
         );
 
@@ -545,7 +545,7 @@ impl RouterMiddleware {
                         route_call_state.circuit_breaker.opened_at = env.ledger().timestamp();
                         route_call_state.circuit_breaker.failure_count = 1;
                         env.events().publish(
-                            (Symbol::new(&env, "circuit_opened"),),
+                            (Symbol::new(&env, router_common::EVENT_CIRCUIT_OPENED),),
                             (
                                 route.clone(),
                                 route_call_state.circuit_breaker.failure_count,
@@ -561,7 +561,7 @@ impl RouterMiddleware {
                             route_call_state.circuit_breaker.is_open = true;
                             route_call_state.circuit_breaker.opened_at = env.ledger().timestamp();
                             env.events().publish(
-                                (Symbol::new(&env, "circuit_opened"),),
+                                (Symbol::new(&env, router_common::EVENT_CIRCUIT_OPENED),),
                                 (
                                     route.clone(),
                                     route_call_state.circuit_breaker.failure_count,
@@ -813,7 +813,7 @@ impl RouterMiddleware {
             .instance()
             .remove(&DataKey::CallLog(route.clone()));
         env.events()
-            .publish((Symbol::new(&env, "call_log_cleared"),), route);
+            .publish((Symbol::new(&env, router_common::EVENT_CALL_LOG_CLEARED),), route);
         Ok(())
     }
 
@@ -1548,7 +1548,7 @@ mod tests {
 
         // Topic should be "admin_transferred"
         let topic: Symbol = last_event.1.get(0).unwrap().into_val(&env);
-        assert_eq!(topic, Symbol::new(&env, "admin_transferred"));
+        assert_eq!(topic, Symbol::new(&env, router_common::EVENT_ADMIN_TRANSFERRED));
 
         // Data should contain (old_admin, new_admin)
         let (emitted_old, emitted_new): (Address, Address) = last_event.2.into_val(&env);
