@@ -200,7 +200,7 @@ impl RouterRegistry {
             .set(&DataKey::LatestVersion(name.clone()), &version);
 
         env.events().publish(
-            (Symbol::new(&env, "contract_registered"),),
+            (Symbol::new(&env, router_common::EVENT_CONTRACT_REGISTERED),),
             (name, version, None::<String>),
         );
 
@@ -290,7 +290,7 @@ impl RouterRegistry {
             }
 
             env.events().publish(
-                (Symbol::new(&env, "contract_registered"),),
+                (Symbol::new(&env, router_common::EVENT_CONTRACT_REGISTERED),),
                 (name.clone(), version, None::<String>),
             );
         }
@@ -524,7 +524,7 @@ impl RouterRegistry {
         }
 
         env.events().publish(
-            (Symbol::new(&env, "contract_deprecated"),),
+            (Symbol::new(&env, router_common::EVENT_CONTRACT_DEPRECATED),),
             (name, version, reason),
         );
         Ok(())
@@ -949,7 +949,7 @@ mod tests {
             event.1,
             vec![
                 &env,
-                Symbol::new(&env, "contract_registered").into_val(&env)
+                Symbol::new(&env, router_common::EVENT_CONTRACT_REGISTERED).into_val(&env)
             ]
         );
         let (n, v, r): (String, u32, Option<String>) = event.2.into_val(&env);
@@ -972,7 +972,7 @@ mod tests {
             event.1,
             vec![
                 &env,
-                Symbol::new(&env, "contract_deprecated").into_val(&env)
+                Symbol::new(&env, router_common::EVENT_CONTRACT_DEPRECATED).into_val(&env)
             ]
         );
         let (n, v, r): (String, u32, Option<String>) = event.2.into_val(&env);
@@ -992,7 +992,10 @@ mod tests {
         assert_eq!(event.0, client.address);
         assert_eq!(
             event.1,
-            vec![&env, Symbol::new(&env, "admin_transferred").into_val(&env)]
+            vec![
+                &env,
+                Symbol::new(&env, router_common::EVENT_ADMIN_TRANSFERRED).into_val(&env)
+            ]
         );
         let (old, new): (Address, Address) = event.2.into_val(&env);
         assert_eq!(old, admin);
