@@ -1421,6 +1421,7 @@ checksum = "8e04e2fd2b8188ea827b32ef11de88377086d690286ab35747ef7f9bf3ccb590"
 name = "integration-tests"
 version = "0.1.0"
 dependencies = [
+ "liquidity-plugin-example-fixed-rate",
  "router-access",
  "router-common",
  "router-core",
@@ -1524,6 +1525,14 @@ name = "linux-raw-sys"
 version = "0.4.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d26c52dbd32dccf2d10cac7725f8eae5296885fb5703b261f7d0a0739ec807ab"
+
+[[package]]
+name = "liquidity-plugin-example-fixed-rate"
+version = "0.1.0"
+dependencies = [
+ "router-common",
+ "soroban-sdk",
+]
 
 [[package]]
 name = "litemap"
