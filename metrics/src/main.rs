@@ -39,10 +39,11 @@ mod metrics;
 mod openapi;
 mod rate_limit;
 mod replay_protection;
-mod rpc;
 mod server;
 mod sse;
 mod validation;
+
+use router_metrics_exporter::rpc;
 
 use anyhow::Result;
 use clap::Parser;

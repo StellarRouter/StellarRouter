@@ -439,7 +439,7 @@ fn crc16(data: &[u8]) -> u16 {
 }
 
 /// Decode a Stellar contract strkey (C…) into its 32-byte hash.
-fn decode_contract_id(strkey: &str) -> Result<[u8; 32]> {
+pub fn decode_contract_id(strkey: &str) -> Result<[u8; 32]> {
     if strkey.len() != 56 {
         return Err(anyhow!("strkey must be 56 chars, got {}", strkey.len()));
     }
@@ -626,7 +626,7 @@ fn build_invoke_xdr(
 /// The Soroban RPC returns the return value as a base64-encoded `ScVal` XDR
 /// in `result.results[0].xdr`.  The RPC server also provides a JSON-decoded
 /// representation in some versions.  We try both paths.
-fn extract_u64_from_sim_result(result: &Value) -> Result<u64> {
+pub fn extract_u64_from_sim_result(result: &Value) -> Result<u64> {
     // Path 1: JSON-decoded ScVal in `results[0].retval` (newer RPC versions)
     if let Some(v) = result
         .get("results")
@@ -652,7 +652,7 @@ fn extract_u64_from_sim_result(result: &Value) -> Result<u64> {
 
 /// Extract a `bool` from a `simulateTransaction` result JSON value.
 #[allow(dead_code)]
-fn extract_bool_from_sim_result(result: &Value) -> Result<bool> {
+pub fn extract_bool_from_sim_result(result: &Value) -> Result<bool> {
     if let Some(v) = result
         .get("results")
         .and_then(|r| r.get(0))
@@ -674,7 +674,7 @@ fn extract_bool_from_sim_result(result: &Value) -> Result<bool> {
 }
 
 /// Extract a `Vec<String>` from a `simulateTransaction` result JSON value.
-fn extract_string_vec_from_sim_result(result: &Value) -> Result<Vec<String>> {
+pub fn extract_string_vec_from_sim_result(result: &Value) -> Result<Vec<String>> {
     let retval = result
         .get("results")
         .and_then(|r| r.get(0))
@@ -700,7 +700,7 @@ fn extract_string_vec_from_sim_result(result: &Value) -> Result<Vec<String>> {
 /// Extract a `Vec<u32>` from a `simulateTransaction` result JSON value.
 ///
 /// Used to parse the return value of `versions(name) -> Vec<u32>`.
-fn extract_u32_vec_from_sim_result(result: &Value) -> Result<Vec<u32>> {
+pub fn extract_u32_vec_from_sim_result(result: &Value) -> Result<Vec<u32>> {
     let retval = result
         .get("results")
         .and_then(|r| r.get(0))
@@ -736,7 +736,7 @@ fn hex_encode_arg(s: &str) -> String {
 ///
 /// The Soroban RPC embeds a continuation cursor in each event's `pagingToken`
 /// field.  We only need the token from the final event to request the next page.
-fn extract_last_paging_token(raw_result: &Value) -> Option<String> {
+pub fn extract_last_paging_token(raw_result: &Value) -> Option<String> {
     raw_result
         .get("events")?
         .as_array()?
