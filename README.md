@@ -394,6 +394,9 @@ predictable performance and low fees. See the [official docs](https://developers
 No. `router-core` is the only required contract — it handles route registration and
 resolution. The others are optional enhancements:
 - `router-registry` — only needed if you want versioned contract address management
+  (a versioned address-book contract keyed by `(name, version)` with monotonically
+  increasing version requirements, deprecation support, and `get_latest` /
+  `get_latest_with_constraint` lookups; see `contracts/router-registry/README.md`)
 - `router-access` — only needed if you want role-based access control
   (three-tier role model: super admin, role admins, and role members;
   supports blacklisting and batch/bulk grant/revoke of roles —
