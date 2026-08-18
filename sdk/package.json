@@ -39,6 +39,7 @@
     "lint": "eslint .",
     "test": "vitest run",
     "test:watch": "vitest",
+    "test:integration": "vitest run test/integration",
     "prepack": "npm run build"
   },
   "dependencies": {

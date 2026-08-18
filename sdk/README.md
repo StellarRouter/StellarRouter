@@ -83,4 +83,7 @@ npm run build
 ```
 
 Tests run against an in-memory RPC harness (`test/helpers/fake-rpc.ts`); no
-network access needed.
+network access needed. For live-network smoke checks (skipped by default), see
+`test/integration/integration.test.ts` — set `STELLAR_RPC_URL`,
+`ROUTER_CORE_CONTRACT_ID`, and `ROUTER_TEST_ROUTE` and run
+`npm run test:integration`.
