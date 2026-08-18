@@ -7,6 +7,7 @@ The format is based on Keep a Changelog and this project adheres to Semantic Ver
 ## [Unreleased]
 
 ### Added
+- `sdk`: new `stellar-router-sdk` npm package — TypeScript/JavaScript client for `router-core` and `router-quote` with `RouterClient`, `RouterCoreClient`, `RouterQuoteClient`, `Signer`/`LocalSigner`/`FreighterSigner`, RPC + transaction handling, and full test suite. Closes #192.
 - `router-registry`: `versions(name) -> Vec<u32>` — enumerate all registered version numbers for a name, sorted ascending. Returns an empty vec for unknown names. Closes #19.
 - `router-registry`: `deprecate_all_versions(caller, name, reason)` — batch-deprecate every version under a name in one call.
 - `metrics/collector`: `scrape_registry` now calls `versions(name)` for each registered name and exposes `router_registry_version_count{contract, name}` gauge.
