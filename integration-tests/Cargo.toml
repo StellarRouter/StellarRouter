@@ -37,3 +37,4 @@ router-timelock  = { path = "../contracts/router-timelock" }
 router-multicall = { path = "../contracts/router-multicall" }
 router-execution = { path = "../contracts/router-execution" }
 router-quote     = { path = "../contracts/router-quote" }
+router-common    = { path = "../contracts/router-common" }
