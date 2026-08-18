@@ -262,8 +262,8 @@ mod tests {
 
     #[test]
     fn iso8601_known_timestamp_formats_correctly() {
-        // 2026-07-22T00:00:00Z = 1753142400 seconds since epoch
-        assert_eq!(seconds_to_iso8601(1_753_142_400), "2026-07-22T00:00:00Z");
+        // 2025-07-22T00:00:00Z = 1753142400 seconds since epoch
+        assert_eq!(seconds_to_iso8601(1_753_142_400), "2025-07-22T00:00:00Z");
     }
 
     #[test]

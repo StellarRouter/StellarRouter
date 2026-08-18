@@ -16,6 +16,7 @@
 //! | [`validation`] | `validate_contract_id`, `validate_route_name`, etc. — input validation helpers |
 //! | [`error`] | `ErrorResponse`, `ValidationError` — shared HTTP error response types |
 //! | [`logging`] | `init_logging`, `new_request_id` — structured JSON logging setup |
+//! | [`xdr`] | strkey/base64 decode, XDR encode/decode, transaction-envelope builder, ScVal parsing |
 
 pub mod auth;
 pub mod error;
@@ -23,3 +24,4 @@ pub mod logging;
 pub mod rate_limit;
 pub mod replay_protection;
 pub mod validation;
+pub mod xdr;
