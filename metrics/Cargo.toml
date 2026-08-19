@@ -14,14 +14,20 @@ axum = { version = "0.7.9", features = ["tokio"] }
 tokio = { version = "1.44.2", features = ["full"] }
 
 # Prometheus metrics
-prometheus = { version = "0.13.4", features = ["process"] }
+prometheus = { version = "0.14.0", features = ["process"] }
 
 # Serialization
 serde = { version = "1.0.219", features = ["derive"] }
 serde_json = { version = "1.0.140" }
 
-# HTTP client (for RPC calls)
-reqwest = { version = "0.12.15", features = ["json", "rustls-tls"], default-features = false }
+# HTTP client (for RPC calls and SSE streaming)
+reqwest = { version = "0.12.15", features = ["json", "rustls-tls", "stream"], default-features = false }
+
+# Async stream utilities (SSE byte-stream processing)
+tokio-stream = { version = "0.1.17" }
+
+# Byte-stream utilities for SSE chunked reads
+futures-util = { version = "0.3.31" }
 
 # Logging
 tracing = { version = "0.1.41" }
@@ -38,16 +44,19 @@ anyhow = { version = "1.0.98" }
 async-trait = { version = "0.1.88" }
 
 # Validation
-validator = { version = "0.19.0", features = ["derive"] }
+validator = { version = "0.20.0", features = ["derive"] }
 # Rate limiting
 dashmap = { version = "6.1.0" }
+
+# Shared off-chain utilities
+router-off-chain-common = { path = "../router-off-chain-common" }
 
 # Time
 tokio-util = { version = "0.7.15" }
 
 # OpenAPI/Swagger
-utoipa = { version = "5.5.0" }
-utoipa-swagger-ui = { version = "9.0.2", features = ["axum"] }
+utoipa = { version = "4.2.3", features = ["axum_extras"] }
+utoipa-swagger-ui = { version = "7", features = ["axum"] }
 
 [dev-dependencies]
 tower = { version = "0.5.3" }
