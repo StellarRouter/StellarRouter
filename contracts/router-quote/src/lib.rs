@@ -381,7 +381,7 @@ impl RouterQuote {
         Self::require_admin(&env, &current)?;
         env.storage().instance().set(&DataKey::Admin, &new_admin);
         env.events().publish(
-            (Symbol::new(&env, "admin_transferred"),),
+            (Symbol::new(&env, router_common::EVENT_ADMIN_TRANSFERRED),),
             (current, new_admin),
         );
         Ok(())
@@ -914,6 +914,24 @@ mod tests {
         let new_admin = Address::generate(&env);
         client.transfer_admin(&admin, &new_admin);
         assert_eq!(client.admin(), new_admin);
+    }
+
+    #[test]
+    fn test_transfer_admin_emits_admin_transferred_event() {
+        // Regression test for Issue #189: the event emitted by `transfer_admin`
+        // must use the canonical topic `router_common::EVENT_ADMIN_TRANSFERRED`
+        // — this fails if the emitted name ever drifts from the shared constant.
+        let (env, admin, client) = setup();
+        let new_admin = Address::generate(&env);
+        client.transfer_admin(&admin, &new_admin);
+
+        let events = env.events().all();
+        let last = events.last().unwrap();
+        let topic: Symbol = last.1.get(0).unwrap().into_val(&env);
+        assert_eq!(
+            topic,
+            Symbol::new(&env, router_common::EVENT_ADMIN_TRANSFERRED)
+        );
     }
 
     #[test]
