@@ -1,7 +1,0 @@
-[package]
-name = "router-common"
-version = "0.1.0"
-edition = "2021"
-
-[dependencies]
-soroban-sdk = { version = "22", default-features = false }  # Match your other contracts' version

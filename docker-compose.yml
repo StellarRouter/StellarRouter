@@ -45,8 +45,6 @@ services:
       ROUTER_SCRAPE_INTERVAL_SECS: ${ROUTER_SCRAPE_INTERVAL_SECS:-15}
     ports:
       - "9090:9090"
-    depends_on:
-      - prometheus
 
   # ── Prometheus ───────────────────────────────────────────────────────────────
   prometheus:
@@ -59,6 +57,9 @@ services:
     command:
       - "--config.file=/etc/prometheus/prometheus.yml"
       - "--storage.tsdb.path=/prometheus"
+    depends_on:
+      metrics-exporter:
+        condition: service_healthy
 
   # ── Grafana ──────────────────────────────────────────────────────────────────
   grafana:

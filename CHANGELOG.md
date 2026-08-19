@@ -1,0 +1,75 @@
+# Changelog
+
+All notable changes to this project will be documented in this file.
+
+The format is based on Keep a Changelog and this project adheres to Semantic Versioning.
+
+## [Unreleased]
+
+### Added
+- `sdk`: new `stellar-router-sdk` npm package — TypeScript/JavaScript client for `router-core` and `router-quote` with `RouterClient`, `RouterCoreClient`, `RouterQuoteClient`, `Signer`/`LocalSigner`/`FreighterSigner`, RPC + transaction handling, and full test suite. Closes #192.
+- `router-registry`: `versions(name) -> Vec<u32>` — enumerate all registered version numbers for a name, sorted ascending. Returns an empty vec for unknown names. Closes #19.
+- `router-registry`: `deprecate_all_versions(caller, name, reason)` — batch-deprecate every version under a name in one call.
+- `metrics/collector`: `scrape_registry` now calls `versions(name)` for each registered name and exposes `router_registry_version_count{contract, name}` gauge.
+- `metrics/metrics`: `registry_version_count` Prometheus gauge with `contract` and `name` labels.
+- `docs/api-reference.md`: added `versions(name)` return-empty behaviour note and missing `deprecate_all_versions` entry to the router-registry function table.
+- `router-registry`: fixed broken `get_entry_by_address` implementation (was reading `ContractNames` into a `(String, u32)` tuple instead of using `AddressIndex`).
+- `router-registry`: fixed all pre-existing compile errors: duplicate `get_all_names`, missing `require_admin` helper, `address` move-after-use in `register`, and missing `Ok` wrapper in `deprecate_many`.
+- `router-registry`: fixed `get_latest` to return `AllVersionsDeprecated` (not `NotFound`) when a name exists but all versions are deprecated.
+
+### Changed
+- `router-access`: blacklist entries can now include an optional `reason` and an `expires_at` timestamp. Expired blacklist entries are treated as not blacklisted.
+- `router-registry`: `ContractEntry` includes an optional `deprecation_reason` and the `deprecate()` API accepts an optional reason which is emitted in the `contract_deprecated` event.
+- `metrics/alerts.yml`: example Prometheus alerting rules for circuit breaker opens, high failure/error rates, and high request volume.
+
+### Fixed
+- `router-quote`: `get_quote` no longer silently defaults the fee/price-impact calculation to `0` when `amount_in * fee_bps` (or `fee_amount * 10_000`) overflows `i128`. Returns the new `QuoteError::AmountOverflow` instead, closing a bypass where an extreme `amount_in` produced a fee-free, zero-impact quote. Closes #90.
+- `Cargo.lock`: removed a duplicate `checksum` key on the `zmij` package entry that made the lockfile unparseable TOML, breaking `cargo build`/`cargo test` for the whole workspace.
+
+## [0.3.0] - 2024-11-15
+
+### Added
+- `router-execution`: execution pipeline with simulation, retries, and fee estimation
+- `router-quote`: read-only quote preview contract for expected output, fees, and route details
+- `router-middleware`: circuit breaker functionality with auto-recovery
+- `router-middleware`: call logging with configurable retention
+- `router-core`: route metadata support (description, tags, owner)
+- `router-core`: route aliasing system
+- `router-core`: route scoring and best route selection
+- `metrics`: Prometheus/OpenTelemetry metrics exporter
+
+### Changed
+- `router-core`: admin() now panics on uninitialized contract instead of returning Result
+- `router-middleware`: admin() now panics on uninitialized contract instead of returning Result
+
+### Fixed
+- `router-middleware`: rate limit state no longer written when route is disabled before commit
+- `router-middleware`: call log retention now correctly enforces maximum entries
+
+## [0.2.0] - 2024-09-20
+
+### Added
+- `router-middleware`: rate limiting per route with configurable windows
+- `router-middleware`: global and per-route enable/disable controls
+- `router-middleware`: pre_call and post_call hooks
+- `router-timelock`: delayed execution queue for sensitive operations
+- `router-multicall`: batch multiple cross-contract calls in one transaction
+- `router-core`: pause/unpause controls at global and per-route level
+- `router-core`: total_routed counter
+- Integration tests for cross-contract interactions
+
+### Changed
+- `router-core`: route removal now cleans up dangling aliases
+- Event naming convention: all events now use past tense verbs in snake_case
+
+## [0.1.0] - 2024-07-10
+
+### Added
+- `router-core`: central dispatcher with route registration and resolution
+- `router-registry`: versioned contract address registry with deprecation support
+- `router-access`: role-based access control with blacklisting
+- Basic event emission for all route operations
+- Docker Compose setup for local development
+- Comprehensive unit test suite for all contracts
+- README with architecture diagrams and usage examples
+

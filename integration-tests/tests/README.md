@@ -51,6 +51,7 @@ integration-tests/
 - `test_router_access_control` - Role-based access control
 - `test_router_middleware_rate_limiting` - Rate limiting
 - `test_router_timelock_operations` - Delayed execution
+- `test_timelock_guarded_route_update` - End-to-end timelock-guarded route update security pattern
 - `test_router_multicall_batching` - Batch operations
 - `test_admin_transfer` - Admin management
 

@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
 members = [
+    "api-server",
     "contracts/router-common",
     "contracts/router-core",
     "contracts/router-registry",
@@ -10,13 +11,15 @@ members = [
     "contracts/router-multicall",
     "contracts/router-quote",
     "contracts/router-execution",
+    "contracts/liquidity-plugin-example-fixed-rate",
     "metrics",
+    "router-off-chain-common",
     "integration-tests",
-    "api-server",
 ]
 
 [workspace.dependencies]
-soroban-sdk = { version = "21.7.6" }
+soroban-sdk = { version = "21.7.6", features = ["alloc"] }
+ed25519-dalek = ">=2.0.0, <3"
 
 [profile.release]
 opt-level = "z"

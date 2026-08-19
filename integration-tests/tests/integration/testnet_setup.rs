@@ -18,8 +18,7 @@ pub struct TestnetConfig {
 impl Default for TestnetConfig {
     fn default() -> Self {
         Self {
-            network: env::var("STELLAR_NETWORK")
-                .unwrap_or_else(|_| "testnet".to_string()),
+            network: env::var("STELLAR_NETWORK").unwrap_or_else(|_| "testnet".to_string()),
             rpc_url: env::var("STELLAR_RPC_URL")
                 .unwrap_or_else(|_| "https://soroban-testnet.stellar.org".to_string()),
             network_passphrase: env::var("STELLAR_NETWORK_PASSPHRASE")
@@ -73,7 +72,10 @@ impl TestAccount {
 
     /// Fund this account using Friendbot
     pub fn fund(&self, network: &str) -> Result<(), String> {
-        println!("Funding account {} via Friendbot on {}...", self.address, network);
+        println!(
+            "Funding account {} via Friendbot on {}...",
+            self.address, network
+        );
 
         let output = Command::new("stellar")
             .args(["keys", "fund", &self.address, "--network", network])
@@ -343,13 +345,23 @@ impl TestFixture {
 
         // Initialize router-core
         if let Some(ref core) = self.router_core {
-            core.invoke("initialize", &["--admin", &self.admin.address], &self.admin, network)?;
+            core.invoke(
+                "initialize",
+                &["--admin", &self.admin.address],
+                &self.admin,
+                network,
+            )?;
             println!("✓ router-core initialized");
         }
 
         // Initialize router-registry
         if let Some(ref registry) = self.router_registry {
-            registry.invoke("initialize", &["--admin", &self.admin.address], &self.admin, network)?;
+            registry.invoke(
+                "initialize",
+                &["--admin", &self.admin.address],
+                &self.admin,
+                network,
+            )?;
             println!("✓ router-registry initialized");
         }
 
@@ -366,7 +378,12 @@ impl TestFixture {
 
         // Initialize router-middleware
         if let Some(ref middleware) = self.router_middleware {
-            middleware.invoke("initialize", &["--admin", &self.admin.address], &self.admin, network)?;
+            middleware.invoke(
+                "initialize",
+                &["--admin", &self.admin.address],
+                &self.admin,
+                network,
+            )?;
             println!("✓ router-middleware initialized");
         }
 

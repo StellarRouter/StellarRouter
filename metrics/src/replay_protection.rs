@@ -1,14 +1,9 @@
-//! Replay attack protection middleware for the metrics exporter.
+//! Re-exports the shared replay-protection middleware from `router-off-chain-common`.
 //!
-//! Prevents duplicate or malicious repeated transaction submissions using nonce-based approach.
-//!
-//! Configuration via environment variables:
-//! - `ROUTER_REPLAY_PROTECTION_ENABLED` — Set to "true" to enable replay protection (default: false)
-//! - `ROUTER_NONCE_CACHE_SIZE` — Maximum number of nonces to cache (default: 10000)
-//! - `ROUTER_NONCE_TTL_SECS` — Time-to-live for nonces in seconds (default: 3600)
+//! See [`router_off_chain_common::replay_protection`] for full documentation.
 
 use axum::{
-    extract::Request,
+    extract::{Request, State},
     http::{HeaderMap, StatusCode},
     middleware::Next,
     response::{IntoResponse, Response},
@@ -79,19 +74,19 @@ impl NonceCache {
 
     /// Check if a nonce has been seen before and add it to the cache.
     /// Returns true if the nonce is valid (not seen before), false if it's a replay.
+    ///
+    /// The check-and-insert is performed atomically via [`DashMap::entry`] so
+    /// that two concurrent requests carrying the same nonce cannot both pass
+    /// the uniqueness check before either inserts — eliminating the TOCTOU
+    /// race that existed when `contains_key` and `insert` were separate
+    /// operations.
     pub fn check_and_add(&self, nonce: &str) -> bool {
         let now = current_timestamp();
 
         // Clean up expired nonces
         self.cleanup_expired(now);
 
-        // Check if nonce already exists
-        if self.cache.contains_key(nonce) {
-            debug!("Replay attack detected: nonce {} already seen", nonce);
-            return false;
-        }
-
-        // Check cache size limit
+        // Reject if already at capacity before attempting the shard lock.
         if self.cache.len() >= self.config.cache_size {
             warn!(
                 "Nonce cache at capacity ({}), rejecting new nonce",
@@ -100,13 +95,19 @@ impl NonceCache {
             return false;
         }
 
-        // Add nonce to cache
-        self.cache.insert(
-            nonce.to_string(),
-            NonceEntry { timestamp: now },
-        );
-
-        true
+        // `entry(...).or_insert(...)` acquires the shard lock once, either
+        // returning the existing entry (replay) or inserting a new one (fresh).
+        use dashmap::mapref::entry::Entry;
+        match self.cache.entry(nonce.to_string()) {
+            Entry::Occupied(_) => {
+                debug!("Replay attack detected: nonce {} already seen", nonce);
+                false
+            }
+            Entry::Vacant(slot) => {
+                slot.insert(NonceEntry { timestamp: now });
+                true
+            }
+        }
     }
 
     /// Clean up expired nonces from the cache.
@@ -157,22 +158,25 @@ impl IntoResponse for ReplayError {
 
 /// Replay attack protection middleware.
 pub async fn replay_protection_middleware(
-    cache: NonceCache,
+    State(cache): State<NonceCache>,
     req: Request,
     next: Next,
-) -> Result<Response, ReplayError> {
+) -> Response {
     // Skip protection if disabled
     if !cache.config.enabled {
-        return Ok(next.run(req).await);
+        return next.run(req).await;
     }
 
     let headers = req.headers();
-    let nonce = extract_nonce(headers).ok_or(ReplayError::MissingNonce)?;
+    let nonce = match extract_nonce(headers) {
+        Some(n) => n,
+        None => return ReplayError::MissingNonce.into_response(),
+    };
 
     if cache.check_and_add(&nonce) {
-        Ok(next.run(req).await)
+        next.run(req).await
     } else {
-        Err(ReplayError::DuplicateNonce)
+        ReplayError::DuplicateNonce.into_response()
     }
 }
 
@@ -216,7 +220,7 @@ mod tests {
 
         assert!(cache.check_and_add("nonce-1"));
         assert!(cache.check_and_add("nonce-2"));
-        assert!(!cache.check_and_add("nonce-3")); // Cache full
+        assert!(!cache.check_and_add("nonce-3"));
     }
 
     #[test]
@@ -228,10 +232,41 @@ mod tests {
         assert_eq!(nonce, Some("test-nonce-123".to_string()));
     }
 
-    #[test]
-    fn test_extract_nonce_missing() {
-        let headers = HeaderMap::new();
-        let nonce = extract_nonce(&headers);
-        assert_eq!(nonce, None);
+    /// Spawn N concurrent tasks all racing to insert the same nonce.
+    /// Exactly one must succeed and all others must be rejected — verifying
+    /// that `check_and_add` is atomic (no TOCTOU window).
+    #[tokio::test]
+    async fn concurrent_same_nonce_only_one_succeeds() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc as StdArc;
+
+        let config = ReplayProtectionConfig {
+            enabled: true,
+            cache_size: 1000,
+            nonce_ttl_secs: 3600,
+        };
+        let cache = StdArc::new(NonceCache::new(config));
+        let success_count = StdArc::new(AtomicUsize::new(0));
+        const N: usize = 64;
+
+        let mut handles = Vec::with_capacity(N);
+        for _ in 0..N {
+            let c = StdArc::clone(&cache);
+            let sc = StdArc::clone(&success_count);
+            handles.push(tokio::spawn(async move {
+                if c.check_and_add("race-nonce") {
+                    sc.fetch_add(1, Ordering::Relaxed);
+                }
+            }));
+        }
+        for h in handles {
+            h.await.unwrap();
+        }
+
+        assert_eq!(
+            success_count.load(Ordering::Relaxed),
+            1,
+            "exactly one concurrent insertion must succeed"
+        );
     }
 }

@@ -1,17 +1,2 @@
-# Environment variables
+# Environment variables (metrics-specific)
 .env
-
-# Cargo build artifacts
-target/
-Cargo.lock
-
-# IDE
-.vscode/
-.idea/
-*.swp
-*.swo
-*~
-
-# OS
-.DS_Store
-Thumbs.db

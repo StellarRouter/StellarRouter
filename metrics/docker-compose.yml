@@ -39,7 +39,8 @@ services:
       - '--web.console.templates=/usr/share/prometheus/consoles'
     restart: unless-stopped
     depends_on:
-      - router-metrics-exporter
+      router-metrics-exporter:
+        condition: service_healthy
 
   # Grafana (optional - for local testing)
   grafana:

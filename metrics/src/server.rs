@@ -17,17 +17,17 @@ use axum::{
     middleware::{self, Next},
     response::{IntoResponse, Response},
     routing::get,
-    Router,
+    Json, Router,
 };
 use prometheus::{Encoder, Registry, TextEncoder};
 use std::net::SocketAddr;
+use tokio::net::TcpListener;
 use tracing::{info, info_span, Instrument};
-use utoipa_swagger_ui::SwaggerUi;
 
+use crate::auth::AuthConfig;
 use crate::logging::new_request_id;
 use crate::openapi::ApiDoc;
 use crate::rate_limit::{rate_limit_middleware, RateLimiter};
-use crate::auth::AuthConfig;
 use crate::replay_protection::{NonceCache, ReplayProtectionConfig};
 
 /// Shared server state.
@@ -47,11 +47,10 @@ pub async fn serve(listen: String, registry: Registry, limiter: RateLimiter) -> 
     let replay_config = ReplayProtectionConfig::from_env();
     let nonce_cache = NonceCache::new(replay_config);
 
-    let app = Router::new()
+    // Routes that require auth + rate limiting
+    let protected = Router::new()
         .route("/metrics", get(metrics_handler))
-        .route("/health", get(health_handler))
-        .route("/ready", get(ready_handler))
-        .merge(SwaggerUi::new("/swagger-ui").url("/api-docs/openapi.json", ApiDoc::openapi()))
+        .route("/api-docs/openapi.json", get(openapi_handler))
         .layer(middleware::from_fn_with_state(
             limiter,
             rate_limit_middleware,
@@ -63,18 +62,31 @@ pub async fn serve(listen: String, registry: Registry, limiter: RateLimiter) -> 
         .layer(middleware::from_fn_with_state(
             auth_config,
             crate::auth::auth_middleware,
-        ))
+        ));
+
+    // Health/ready probes must be reachable without credentials
+    let public = Router::new()
+        .route("/health", get(health_handler))
+        .route("/ready", get(ready_handler))
+        .with_state(state.clone());
+
+    let app = Router::new()
+        .merge(protected)
+        .merge(public)
         .layer(middleware::from_fn(request_id_middleware))
         .with_state(state);
 
     info!(%addr, "HTTP server listening");
-    let listener = tokio::net::TcpListener::bind(addr)
+    let listener = TcpListener::bind(addr)
         .await
         .with_context(|| format!("failed to bind to {addr}"))?;
 
-    axum::serve(listener, app)
-        .await
-        .context("HTTP server error")?;
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .await
+    .context("HTTP server error")?;
 
     Ok(())
 }
@@ -159,33 +171,20 @@ async fn health_handler() -> impl IntoResponse {
     (StatusCode::OK, "ok")
 }
 
-/// `GET /ready` — readiness probe that checks if the exporter is ready to serve traffic.
-///
-/// Returns 200 OK if the last scrape cycle succeeded (router_up == 1).
-/// Returns 503 Service Unavailable otherwise.
-#[utoipa::path(
-    get,
-    path = "/ready",
-    tag = "health",
-    responses(
-        (status = 200, description = "Exporter is ready to serve traffic"),
-        (status = 503, description = "Exporter is not ready (scrape failed or no contracts configured)"),
-    ),
-)]
+/// `GET /ready` — readiness probe.
+#[utoipa::path(get, path = "/ready", tag = "health",
+    responses((status = 200, description = "Ready"), (status = 503, description = "Not ready")))]
 async fn ready_handler(State(state): State<AppState>) -> impl IntoResponse {
     // Check if router_up metric is 1
     let metric_families = state.registry.gather();
 
     let router_up = metric_families
         .iter()
-        .find(|mf| mf.get_name() == "router_up")
+        .find(|mf| mf.name() == "router_up")
         .and_then(|mf| mf.get_metric().first())
+        .and_then(|m| m.gauge.as_ref().map(|g| g.value()))
         .and_then(|m| {
-            if m.has_gauge() {
-                Some(m.get_gauge().get_value())
-            } else {
-                None
-            }
+            m.gauge.as_ref().map(|g| g.value())
         })
         .unwrap_or(0.0);
 
@@ -194,6 +193,12 @@ async fn ready_handler(State(state): State<AppState>) -> impl IntoResponse {
     } else {
         (StatusCode::SERVICE_UNAVAILABLE, "not ready")
     }
+}
+
+/// `GET /api-docs/openapi.json` — OpenAPI specification.
+async fn openapi_handler() -> impl IntoResponse {
+    use utoipa::OpenApi;
+    Json(ApiDoc::openapi())
 }
 
 #[cfg(test)]

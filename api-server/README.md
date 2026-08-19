@@ -97,7 +97,26 @@ Real-time transaction status updates via WebSocket.
 export LISTEN_ADDR="127.0.0.1:8080"
 export SOROBAN_RPC_URL="https://soroban-testnet.stellar.org"
 export ROUTER_EXECUTION_CONTRACT_ID="CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4"
+export ROUTER_API_MAX_REQUESTS="60"
+export ROUTER_API_RATE_WINDOW_SECS="60"
 ```
+
+`ROUTER_API_MAX_REQUESTS` and `ROUTER_API_RATE_WINDOW_SECS` control the token-bucket limiter for protected API routes. Requests are limited by `X-API-Key` when present, otherwise by remote IP address.
+
+#### Fee Estimation
+
+The heuristic fee-estimation model is tunable without code changes. Each
+variable falls back to the default shown below when unset, unparseable, or not
+strictly positive:
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `ROUTER_BASE_FEE` | `100` | Flat base fee, in stroops. |
+| `ROUTER_RESOURCE_FEE_FLOOR` | `100` | Lower bound for the derived resource fee. |
+| `ROUTER_RESOURCE_FEE_DIVISOR` | `1000` | Divisor scaling `amount` into a resource fee. |
+| `ROUTER_SURGE_LOAD_THRESHOLD_BPS` | `8000` | Network load (bps) at/above which surge pricing applies. |
+| `ROUTER_SURGE_MULTIPLIER` | `200` | Multiplier (percent) applied under surge. |
+| `ROUTER_NORMAL_MULTIPLIER` | `100` | Multiplier (percent) applied under normal load. |
 
 ### Start Server
 
@@ -121,6 +140,8 @@ docker run -p 8080:8080 \
 |----------|--------|-------------|
 | `/health` | GET | Health check |
 | `/simulate` | POST | Simulate transaction |
+| `/routes` | GET | List registered route names |
+| `/routes/:name` | GET | Fetch route details |
 | `/ws` | GET | WebSocket connection for status tracking |
 
 ## Reconnection Handling

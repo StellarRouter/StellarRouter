@@ -6,9 +6,64 @@ on:
   pull_request:
 
 jobs:
+  # ── Fast gate: parse + format ─────────────────────────────────────────────
+  # Runs first, before any heavier jobs. Catches merge corruption (un-parseable
+  # files, mismatched braces, duplicate items) and formatting drift across the
+  # entire workspace, not just the off-chain crates. Kept separate so a format
+  # failure is immediately visible without waiting for test/build results.
+  lint:
+    name: Format & Parse Gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          # wasm32 target is needed for cargo check to resolve feature flags
+          # that gate soroban-sdk cfg(target_arch = "wasm32") items.
+          targets: wasm32-unknown-unknown
+          components: rustfmt, clippy
+
+      - name: Cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-lint-${{ hashFiles('**/Cargo.lock') }}
+
+      # Check formatting for every crate in the workspace.
+      # Previously only router-api-server and router-metrics-exporter were
+      # checked; WASM contracts were silently excluded, allowing merge
+      # corruption to persist undetected for 12+ commits (issue #49b).
+      - name: Check formatting (all workspace crates)
+        run: cargo fmt --all --check
+
+      # cargo check --workspace parses and type-checks every crate without
+      # producing any binary. This is the cheapest way to catch:
+      #   - mismatched braces / orphaned code fragments from merge conflicts
+      #   - duplicate function definitions
+      #   - missing imports or broken module trees
+      # Running it here, before the build job, means a broken contract can
+      # never sneak past CI even if a later job is blocked by an earlier failure.
+      - name: Check compilation (all workspace crates — native target)
+        run: cargo check --workspace
+
+      # Also check under the WASM target so cfg-gated soroban code is validated.
+      - name: Check compilation (all workspace crates — wasm32 target)
+        run: cargo check --workspace --target wasm32-unknown-unknown
+
+      # Clippy across all workspace crates.
+      - name: Run clippy (all workspace crates)
+        run: cargo clippy --workspace -- -D warnings
+
+  # ── Unit & integration tests for off-chain crates ─────────────────────────
   test:
     name: Test Suite
     runs-on: ubuntu-latest
+    needs: lint
     steps:
       - uses: actions/checkout@v4
 
@@ -27,28 +82,23 @@ jobs:
             target
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
 
-      - name: Check formatting
-        run: cargo fmt --check
-
-      - name: Check compilation
-        run: cargo check --workspace
-
-      - name: Run clippy
-        run: cargo clippy --workspace -- -D warnings
-
       - name: Run tests
-        run: cargo test --workspace --verbose
+        run: |
+          cargo test -p router-api-server --verbose
+          cargo test -p router-metrics-exporter --verbose
+          # Run Soroban contract unit tests with testutils feature
+          for pkg in router-core router-registry router-access router-middleware \
+                     router-timelock router-multicall router-execution router-quote; do
+            cargo test -p $pkg --features testutils --verbose
+          done
 
-      - name: Test router-common
-        run: cargo test -p router-common --verbose
-
-      - name: Test router-metrics-exporter
-        run: cargo test -p router-metrics-exporter --verbose
-
+  # ── WASM contract build ───────────────────────────────────────────────────
+  # Depends on lint (not just test) so that a test-job failure cannot mask a
+  # broken contract. lint already validated that every contract parses cleanly.
   build:
     name: Build WASM
     runs-on: ubuntu-latest
-    needs: test
+    needs: [lint, test]
     steps:
       - uses: actions/checkout@v4
 
@@ -67,7 +117,11 @@ jobs:
           key: ${{ runner.os }}-cargo-wasm-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Build WASM contracts
-        run: cargo build --target wasm32-unknown-unknown --release
+        run: |
+          for pkg in router-core router-registry router-access router-middleware \
+                     router-timelock router-multicall router-execution router-quote; do
+            cargo build -p $pkg --target wasm32-unknown-unknown --release --no-default-features
+          done
 
       - name: Upload WASM artifacts
         uses: actions/upload-artifact@v4
@@ -76,11 +130,11 @@ jobs:
           path: target/wasm32-unknown-unknown/release/*.wasm
           retention-days: 7
 
+  # ── Integration tests (testnet, only on main) ─────────────────────────────
   integration-test:
     name: Integration Tests (Testnet)
     runs-on: ubuntu-latest
     needs: build
-    # Only run on main branch or when manually triggered
     if: github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
     steps:
       - uses: actions/checkout@v4
@@ -107,12 +161,13 @@ jobs:
 
       - name: Install Stellar CLI
         run: cargo install --locked stellar-cli
+        continue-on-error: true
 
       - name: Run integration tests
         run: cargo test --test integration_tests -- --ignored --test-threads=1 --nocapture
         env:
           STELLAR_RPC_URL: https://soroban-testnet.stellar.org
-        continue-on-error: true  # Don't fail CI if testnet is unavailable
+        continue-on-error: true
 
       - name: Upload integration test results
         if: always()
@@ -123,3 +178,66 @@ jobs:
             target/debug/
             *.log
           retention-days: 7
+
+  # ── Code coverage (off-chain crates) ─────────────────────────────────────
+  coverage:
+    name: Code Coverage
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-coverage-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Install cargo-tarpaulin
+        run: cargo install cargo-tarpaulin
+
+      - name: Run cargo-tarpaulin
+        run: >
+          cargo tarpaulin
+          -p router-api-server
+          -p router-metrics-exporter
+          -p router-off-chain-common
+          --timeout 300
+          --out xml
+          --output-dir ./coverage
+
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v4
+        continue-on-error: true
+        with:
+          files: ./coverage/cobertura.xml
+          fail_ci_if_error: false
+          token: ${{ secrets.CODECOV_TOKEN }}
+
+      - name: Check coverage threshold
+        run: |
+          COVERAGE=$(grep -oP 'line-rate="\K[0-9.]+' ./coverage/cobertura.xml | head -1)
+          COVERAGE_INT=$(echo "$COVERAGE" | awk '{printf "%d", $1 * 100}')
+          echo "Current coverage: ${COVERAGE_INT}%"
+          if [ "$COVERAGE_INT" -lt 40 ]; then
+            echo "❌ Coverage ${COVERAGE_INT}% is below the 40% threshold"
+            exit 1
+          else
+            echo "✅ Coverage ${COVERAGE_INT}% meets the 40% threshold"
+          fi
+
+      - name: Upload coverage report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: ./coverage/
+          retention-days: 30

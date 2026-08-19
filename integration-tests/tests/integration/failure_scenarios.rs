@@ -6,20 +6,14 @@
 //! - Network failures
 //! - Contract errors
 
-use crate::integration::testnet_setup::{TestAccount, TestFixture};
+use integration_tests::{TestAccount, TestSuite};
 
 #[test]
 #[ignore] // Run with: cargo test --test integration -- --ignored
 fn test_unauthorized_route_registration() {
     println!("\n=== Testing Unauthorized Route Registration ===\n");
 
-    let mut fixture = TestFixture::new().expect("Failed to create test fixture");
-    fixture
-        .deploy_all_contracts()
-        .expect("Failed to deploy contracts");
-    fixture
-        .initialize_all_contracts()
-        .expect("Failed to initialize contracts");
+    let fixture = TestSuite::setup().expect("Failed to set up test suite");
 
     let core = fixture
         .router_core
@@ -65,13 +59,7 @@ fn test_unauthorized_route_registration() {
 fn test_duplicate_route_registration() {
     println!("\n=== Testing Duplicate Route Registration ===\n");
 
-    let mut fixture = TestFixture::new().expect("Failed to create test fixture");
-    fixture
-        .deploy_all_contracts()
-        .expect("Failed to deploy contracts");
-    fixture
-        .initialize_all_contracts()
-        .expect("Failed to initialize contracts");
+    let fixture = TestSuite::setup().expect("Failed to set up test suite");
 
     let core = fixture
         .router_core
@@ -140,13 +128,7 @@ fn test_duplicate_route_registration() {
 fn test_resolve_nonexistent_route() {
     println!("\n=== Testing Resolve Nonexistent Route ===\n");
 
-    let mut fixture = TestFixture::new().expect("Failed to create test fixture");
-    fixture
-        .deploy_all_contracts()
-        .expect("Failed to deploy contracts");
-    fixture
-        .initialize_all_contracts()
-        .expect("Failed to initialize contracts");
+    let fixture = TestSuite::setup().expect("Failed to set up test suite");
 
     let core = fixture
         .router_core
@@ -175,13 +157,7 @@ fn test_resolve_nonexistent_route() {
 fn test_invalid_route_name() {
     println!("\n=== Testing Invalid Route Name ===\n");
 
-    let mut fixture = TestFixture::new().expect("Failed to create test fixture");
-    fixture
-        .deploy_all_contracts()
-        .expect("Failed to deploy contracts");
-    fixture
-        .initialize_all_contracts()
-        .expect("Failed to initialize contracts");
+    let fixture = TestSuite::setup().expect("Failed to set up test suite");
 
     let core = fixture
         .router_core
@@ -228,13 +204,7 @@ fn test_invalid_route_name() {
 fn test_paused_router_operations() {
     println!("\n=== Testing Paused Router Operations ===\n");
 
-    let mut fixture = TestFixture::new().expect("Failed to create test fixture");
-    fixture
-        .deploy_all_contracts()
-        .expect("Failed to deploy contracts");
-    fixture
-        .initialize_all_contracts()
-        .expect("Failed to initialize contracts");
+    let fixture = TestSuite::setup().expect("Failed to set up test suite");
 
     let core = fixture
         .router_core
@@ -314,13 +284,7 @@ fn test_paused_router_operations() {
 fn test_update_nonexistent_route() {
     println!("\n=== Testing Update Nonexistent Route ===\n");
 
-    let mut fixture = TestFixture::new().expect("Failed to create test fixture");
-    fixture
-        .deploy_all_contracts()
-        .expect("Failed to deploy contracts");
-    fixture
-        .initialize_all_contracts()
-        .expect("Failed to initialize contracts");
+    let fixture = TestSuite::setup().expect("Failed to set up test suite");
 
     let core = fixture
         .router_core
@@ -364,13 +328,7 @@ fn test_update_nonexistent_route() {
 fn test_remove_nonexistent_route() {
     println!("\n=== Testing Remove Nonexistent Route ===\n");
 
-    let mut fixture = TestFixture::new().expect("Failed to create test fixture");
-    fixture
-        .deploy_all_contracts()
-        .expect("Failed to deploy contracts");
-    fixture
-        .initialize_all_contracts()
-        .expect("Failed to initialize contracts");
+    let fixture = TestSuite::setup().expect("Failed to set up test suite");
 
     let core = fixture
         .router_core
@@ -403,13 +361,7 @@ fn test_remove_nonexistent_route() {
 fn test_unauthorized_admin_transfer() {
     println!("\n=== Testing Unauthorized Admin Transfer ===\n");
 
-    let mut fixture = TestFixture::new().expect("Failed to create test fixture");
-    fixture
-        .deploy_all_contracts()
-        .expect("Failed to deploy contracts");
-    fixture
-        .initialize_all_contracts()
-        .expect("Failed to initialize contracts");
+    let fixture = TestSuite::setup().expect("Failed to set up test suite");
 
     let core = fixture
         .router_core
@@ -451,13 +403,7 @@ fn test_unauthorized_admin_transfer() {
 fn test_registry_version_conflict() {
     println!("\n=== Testing Registry Version Conflict ===\n");
 
-    let mut fixture = TestFixture::new().expect("Failed to create test fixture");
-    fixture
-        .deploy_all_contracts()
-        .expect("Failed to deploy contracts");
-    fixture
-        .initialize_all_contracts()
-        .expect("Failed to initialize contracts");
+    let fixture = TestSuite::setup().expect("Failed to set up test suite");
 
     let registry = fixture
         .router_registry
@@ -525,13 +471,7 @@ fn test_registry_version_conflict() {
 fn test_access_control_blacklist() {
     println!("\n=== Testing Access Control Blacklist ===\n");
 
-    let mut fixture = TestFixture::new().expect("Failed to create test fixture");
-    fixture
-        .deploy_all_contracts()
-        .expect("Failed to deploy contracts");
-    fixture
-        .initialize_all_contracts()
-        .expect("Failed to initialize contracts");
+    let fixture = TestSuite::setup().expect("Failed to set up test suite");
 
     let access = fixture
         .router_access

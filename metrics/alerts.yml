@@ -1,0 +1,174 @@
+groups:
+  - name: stellar-router.rules
+    rules:
+      - alert: RouterMiddlewareCircuitBreakerOpen
+        expr: |
+          sum by (contract, route) (router_middleware_circuit_open{job!=""}) > 0
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Circuit breaker open for route {{ $labels.route }}"
+          description: "Circuit breaker is open on route {{ $labels.route }} for contract {{ $labels.contract }}. Investigate upstream failures or increase tolerance."
+
+      - alert: RouterMiddlewareHighFailureRate
+        expr: |
+          increase(router_middleware_failure_count[5m]) > 10
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "High failure count on route"
+          description: "Route {{ $labels.route }} on contract {{ $labels.contract }} has high consecutive failures (increase > 10 in 5m). Consider throttling traffic or investigating downstream services."
+
+      - alert: RouterMiddlewareHighErrorRate
+        expr: |
+          increase(router_scrape_errors_total[5m]) > 0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Scrape errors detected for router exporter"
+          description: "The exporter has observed scrape errors for router contracts in the last 10m. Check RPC connectivity and contract availability."
+
+      - alert: RouterMiddlewareRateLimitViolations
+        expr: |
+          increase(router_middleware_total_calls[5m]) > 10000
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High request volume detected"
+          description: "Total pre_call invocations increased by >10k in 5m for contract {{ $labels.contract }}, which may indicate abuse or traffic spike."
+  - name: stellar-router-alerts
+    interval: 30s
+    rules:
+      # Circuit Breaker Alerts
+      - alert: CircuitBreakerOpen
+        expr: router_middleware_circuit_open == 1
+        for: 1m
+        labels:
+          severity: warning
+          component: middleware
+        annotations:
+          summary: "Circuit breaker open for route {{ $labels.route }}"
+          description: "Circuit breaker has been open on route {{ $labels.route }} for more than 1 minute. This suggests repeated failures in the routed contract."
+
+      - alert: CircuitBreakerStuck
+        expr: router_middleware_circuit_open == 1
+        for: 5m
+        labels:
+          severity: critical
+          component: middleware
+        annotations:
+          summary: "Circuit breaker stuck open on route {{ $labels.route }}"
+          description: "Circuit breaker has been open on route {{ $labels.route }} for more than 5 minutes. Manual intervention may be required to reset the circuit."
+
+      # Failure Rate Alerts
+      - alert: HighConsecutiveFailures
+        expr: router_middleware_failure_count > 10
+        for: 2m
+        labels:
+          severity: warning
+          component: middleware
+        annotations:
+          summary: "High consecutive failures on route {{ $labels.route }}"
+          description: "Route {{ $labels.route }} has {{ $value }} consecutive failures. Circuit breaker may trigger soon."
+
+      - alert: CriticalFailureCount
+        expr: router_middleware_failure_count > 20
+        for: 1m
+        labels:
+          severity: critical
+          component: middleware
+        annotations:
+          summary: "Critical failure count on route {{ $labels.route }}"
+          description: "Route {{ $labels.route }} has {{ $value }} consecutive failures. Immediate investigation required."
+
+      # Route Pause Alerts
+      - alert: RoutePaused
+        expr: router_core_route_paused == 1
+        for: 5m
+        labels:
+          severity: warning
+          component: core
+        annotations:
+          summary: "Route {{ $labels.route }} is paused"
+          description: "Route {{ $labels.route }} has been paused for more than 5 minutes. Clients cannot access this route."
+
+      - alert: GlobalRouterPaused
+        expr: router_core_paused == 1
+        for: 1m
+        labels:
+          severity: critical
+          component: core
+        annotations:
+          summary: "Global router pause activated"
+          description: "The stellar-router has been globally paused. All routing is blocked. This may indicate an incident or maintenance."
+
+      # Rate Limit Alerts
+      - alert: RateLimitApproaching
+        expr: |
+          (rate(router_middleware_total_calls[5m]) / 60) > 0.8 * 
+          scalar(count(router_middleware_total_calls) by (route))
+        for: 2m
+        labels:
+          severity: warning
+          component: middleware
+        annotations:
+          summary: "Rate limit approaching for route {{ $labels.route }}"
+          description: "Route {{ $labels.route }} is at 80% of its configured rate limit. Requests may start being rejected soon."
+
+      # Scraper Health Alerts
+      - alert: MetricsScraperFailing
+        expr: increase(router_scrape_errors_total[5m]) > 5
+        for: 2m
+        labels:
+          severity: warning
+          component: exporter
+        annotations:
+          summary: "Metrics scraper failing for contract {{ $labels.contract }}"
+          description: "Contract {{ $labels.contract }} scrape has failed {{ $value }} times in the last 5 minutes."
+
+      - alert: MetricsExporterDown
+        expr: router_up == 0
+        for: 1m
+        labels:
+          severity: critical
+          component: exporter
+        annotations:
+          summary: "Metrics exporter is down"
+          description: "The stellar-router metrics exporter has failed to scrape contract state. Metrics are stale."
+
+      # Scrape Duration Alerts
+      - alert: HighScrapeDuration
+        expr: histogram_quantile(0.95, router_scrape_duration_seconds_bucket) > 5
+        for: 2m
+        labels:
+          severity: warning
+          component: exporter
+        annotations:
+          summary: "High p95 scrape latency for contract {{ $labels.contract }}"
+          description: "P95 scrape latency for {{ $labels.contract }} is {{ $value }}s. RPC endpoint may be slow or overloaded."
+
+      # No Activity Alerts
+      - alert: NoRoutingActivity
+        expr: increase(router_core_total_routed[10m]) == 0
+        for: 10m
+        labels:
+          severity: info
+          component: core
+        annotations:
+          summary: "No routing activity detected"
+          description: "No routes have been resolved in the last 10 minutes. This may indicate a network issue or lack of traffic."
+
+      # Registry Alerts
+      - alert: RegistryEmpty
+        expr: router_registry_total_names == 0
+        for: 5m
+        labels:
+          severity: warning
+          component: registry
+        annotations:
+          summary: "Registry contains no entries"
+          description: "The router-registry is empty. No routes can be registered or resolved."

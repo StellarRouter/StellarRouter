@@ -8,6 +8,7 @@ crate-type = ["rlib"]
 
 [dependencies]
 soroban-sdk = { workspace = true }
+ed25519-dalek = ">=2.0.0, <3"
 
 [dev-dependencies]
 soroban-sdk = { workspace = true, features = ["testutils"] }

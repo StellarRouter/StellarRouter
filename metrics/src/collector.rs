@@ -6,38 +6,66 @@
 //!
 //! ## Scraping strategy
 //!
-//! Soroban contracts store state in on-chain ledger entries.  The cleanest
-//! way to read that state from off-chain is to call the contract's view
-//! functions via `simulateTransaction`.  This exporter calls:
+//! - `router-core`: `simulateTransaction` — `total_routed()`, `is_paused()`,
+//!   `get_all_routes()` + `get_route(name)` per route.
+//! - `router-middleware`: `simulateTransaction` — `total_calls()`,
+//!   `get_configured_routes()` + `circuit_breaker_state(route)`.
+//! - `router-registry`: `simulateTransaction` — `get_all_names()` (total count).
+//! - `router-quote`: `getEvents` — counts `quote_generated` and `fee_estimated`
+//!   events emitted by the contract.
+//! - `router-execution`: `getEvents` — counts `execution_result` and `execution_error`
+//!   events; reads `MaxRetries` config via `getLedgerEntries`.
+//! - `router-access`: `simulateTransaction` — `get_blacklist_count()`,
+//!   `get_all_roles()` + `get_role_count(role)` per role.
+//! - `router-timelock`: `simulateTransaction` — `get_pending_op_count()`.
+//! - `router-multicall`: `simulateTransaction` — `total_batches()`;
+//!   `getEvents` — counts successful/failed calls from `call_result` events.
 //!
-//! - `router-core`:       `total_routed()`, `is_paused()`, `get_all_routes()`
-//!                        + `get_route(name)` for each route
-//! - `router-middleware`: `total_calls()`, `get_configured_routes()`
-//!                        + `circuit_breaker_state(route)` for each route
-//! - `router-registry`:   `get_all_names()` (total count)
+//! ## Ledger cursor (quote + execution)
 //!
-//! Each contract scrape is timed and any error increments the
-//! `router_scrape_errors_total` counter for that contract label.
+//! `scrape_quote` and `scrape_execution` maintain a per-contract *last-processed
+//! ledger* cursor stored in memory.  On the first scrape (cursor = 0) the full
+//! event history visible in the RPC server's retention window is counted and the
+//! gauges are **set** to that baseline.  On subsequent scrapes only new events
+//! (ledger > cursor) are fetched and the gauges are **incremented** by the
+//! new-event count, avoiding redundant re-processing.
+//!
+//! **Restart limitation:** the in-memory cursor resets to 0 on process restart,
+//! so the exporter re-establishes the baseline from the RPC window on the next
+//! scrape cycle.  Prometheus will show a transient dip-then-jump if the restart
+//! occurs while events are within the retention window.
 
+use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::Instant;
 
 use anyhow::Result;
+use tokio::sync::Mutex;
+use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
 
 use crate::cli::Args;
 use crate::metrics::RouterMetrics;
 use crate::rpc::{RpcClient, SorobanRpcClient};
+use crate::sse::{sse_config_from_args, SseSubscriber};
 
 /// Drives the periodic scrape loop.
 #[derive(Clone)]
 pub struct Collector {
     args: Args,
     metrics: RouterMetrics,
+    /// Last-processed ledger cursor per contract, keyed as `"<scope>:<contract_id>"`.
+    /// Held in-memory; resets to 0 on restart (see module-level docs).
+    last_ledger: Arc<Mutex<HashMap<String, u32>>>,
 }
 
 impl Collector {
     pub fn new(args: Args, metrics: RouterMetrics) -> Self {
-        Self { args, metrics }
+        Self {
+            args,
+            metrics,
+            last_ledger: Arc::new(Mutex::new(HashMap::new())),
+        }
     }
 
     /// Run forever, scraping on the configured interval.
@@ -57,10 +85,105 @@ impl Collector {
         };
 
         loop {
-            let cycle_ok = self.scrape_all(&client).await;
-            self.metrics.up.set(if cycle_ok { 1.0 } else { 0.0 });
+            // Run the scrape in a spawned task so we can detect panics (task join errors)
+            // and recover by logging and marking the `up` gauge to 0. This prevents a
+            // silent crash of the scrape loop if `scrape_all` panics.
+            let cloned = self.clone();
+            let client_clone = client.clone();
+
+            let handle = tokio::spawn(async move { cloned.scrape_all(&client_clone).await });
+
+            match handle.await {
+                Ok(cycle_ok) => {
+                    self.metrics.up.set(if cycle_ok { 1.0 } else { 0.0 });
+                }
+                Err(join_err) => {
+                    error!(%join_err, "scrape task panicked or was cancelled");
+                    // Mark router as down so metrics reflect the outage.
+                    self.metrics.up.set(0.0);
+                }
+            }
+
             tokio::time::sleep(interval).await;
         }
+    }
+
+    /// Run in SSE mode.
+    ///
+    /// Performs a one-shot bootstrap poll first (so state-based metrics like
+    /// `core_total_routed` and circuit-breaker state are populated immediately),
+    /// then spawns one [`SseSubscriber`] task per configured contract to receive
+    /// near-real-time event updates.
+    ///
+    /// The poll-based scrape loop is not started; `router_up` is set to 1 after
+    /// the bootstrap poll succeeds.
+    ///
+    /// Subscribers run until `cancel` is triggered or max reconnects is exceeded.
+    /// If a subscriber exits due to exhausted reconnects, its `sse_connected`
+    /// gauge is left at 0 (the metric reflects the live state).
+    pub async fn run_sse(self, cancel: CancellationToken) {
+        info!("SSE mode: performing bootstrap poll");
+
+        let client = match SorobanRpcClient::new(&self.args.rpc_url, self.args.rpc_timeout_secs) {
+            Ok(c) => c,
+            Err(e) => {
+                error!("SSE mode: failed to create RPC client for bootstrap: {e:#}");
+                self.metrics.up.set(0.0);
+                return;
+            }
+        };
+
+        // Bootstrap poll — populates state-based metrics before SSE takes over.
+        let bootstrap_ok = self.scrape_all(&client).await;
+        self.metrics.up.set(if bootstrap_ok { 1.0 } else { 0.0 });
+
+        if bootstrap_ok {
+            info!("SSE mode: bootstrap poll succeeded — starting SSE subscribers");
+        } else {
+            warn!("SSE mode: bootstrap poll had errors — SSE subscribers will still start");
+        }
+
+        let sse_cfg = sse_config_from_args(&self.args);
+
+        // Collect all non-empty contract IDs to subscribe to.
+        let contracts: Vec<String> = [
+            &self.args.core_contract_id,
+            &self.args.middleware_contract_id,
+            &self.args.registry_contract_id,
+            &self.args.quote_contract_id,
+            &self.args.execution_contract_id,
+        ]
+        .iter()
+        .filter(|id| !id.is_empty())
+        .map(|id| id.to_string())
+        .collect();
+
+        let mut handles = Vec::new();
+
+        for contract_id in contracts {
+            let cfg = sse_cfg.clone();
+            let metrics = self.metrics.clone();
+            let cancel_child = cancel.child_token();
+
+            match SseSubscriber::new(cfg, contract_id.clone(), metrics, cancel_child) {
+                Ok(sub) => {
+                    info!(contract_id, "SSE subscriber spawned");
+                    handles.push(tokio::spawn(async move { sub.run().await }));
+                }
+                Err(e) => {
+                    error!(contract_id, "failed to create SSE subscriber: {e:#}");
+                }
+            }
+        }
+
+        // Wait for all subscribers to finish (they exit on cancel or max reconnects).
+        for handle in handles {
+            if let Err(e) = handle.await {
+                error!("SSE subscriber task panicked: {e}");
+            }
+        }
+
+        info!("SSE mode: all subscribers have terminated");
     }
 
     /// Scrape all configured contracts.  Returns `true` if every scrape
@@ -107,7 +230,237 @@ impl Collector {
             }
         }
 
+        if !self.args.quote_contract_id.is_empty() {
+            if let Err(e) = self
+                .scrape_quote(client, &self.args.quote_contract_id)
+                .await
+            {
+                warn!(contract = %self.args.quote_contract_id, "quote scrape failed: {e:#}");
+                self.metrics
+                    .scrape_errors_total
+                    .with_label_values(&[&self.args.quote_contract_id])
+                    .inc();
+                all_ok = false;
+            }
+        }
+
+        if !self.args.execution_contract_id.is_empty() {
+            if let Err(e) = self
+                .scrape_execution(client, &self.args.execution_contract_id)
+                .await
+            {
+                warn!(contract = %self.args.execution_contract_id, "execution scrape failed: {e:#}");
+                self.metrics
+                    .scrape_errors_total
+                    .with_label_values(&[&self.args.execution_contract_id])
+                    .inc();
+                all_ok = false;
+            }
+        }
+
+        if !self.args.access_contract_id.is_empty() {
+            if let Err(e) = self
+                .scrape_access(client, &self.args.access_contract_id)
+                .await
+            {
+                warn!(contract = %self.args.access_contract_id, "access scrape failed: {e:#}");
+                self.metrics
+                    .scrape_errors_total
+                    .with_label_values(&[&self.args.access_contract_id])
+                    .inc();
+                all_ok = false;
+            }
+        }
+
+        if !self.args.timelock_contract_id.is_empty() {
+            if let Err(e) = self
+                .scrape_timelock(client, &self.args.timelock_contract_id)
+                .await
+            {
+                warn!(contract = %self.args.timelock_contract_id, "timelock scrape failed: {e:#}");
+                self.metrics
+                    .scrape_errors_total
+                    .with_label_values(&[&self.args.timelock_contract_id])
+                    .inc();
+                all_ok = false;
+            }
+        }
+
+        if !self.args.multicall_contract_id.is_empty() {
+            if let Err(e) = self
+                .scrape_multicall(client, &self.args.multicall_contract_id)
+                .await
+            {
+                warn!(contract = %self.args.multicall_contract_id, "multicall scrape failed: {e:#}");
+                self.metrics
+                    .scrape_errors_total
+                    .with_label_values(&[&self.args.multicall_contract_id])
+                    .inc();
+                all_ok = false;
+            }
+        }
+
         all_ok
+    }
+
+    // ── router-access ─────────────────────────────────────────────────────────
+
+    async fn scrape_access(&self, client: &dyn RpcClient, contract_id: &str) -> Result<()> {
+        let start = Instant::now();
+        info!(contract_id, "scraping router-access");
+
+        // 1. Blacklist size (no arg view).
+        let blacklist_size = client.call_u64(contract_id, "get_blacklist_count").await?;
+        self.metrics
+            .access_blacklist_size
+            .with_label_values(&[contract_id])
+            .set(blacklist_size as f64);
+
+        // 2. Per-role member counts. Enumerate roles via `get_all_roles`, then
+        //    fetch `get_role_count(role)` for each.
+        let roles = client
+            .call_string_vec(contract_id, "get_all_roles")
+            .await
+            .unwrap_or_default();
+
+        for role in &roles {
+            match client.call_u32_vec(contract_id, "get_role_count", role).await {
+                Ok(counts) => {
+                    let count = counts.first().copied().unwrap_or(0);
+                    self.metrics
+                        .access_role_member_count
+                        .with_label_values(&[contract_id, role])
+                        .set(count as f64);
+                }
+                Err(e) => {
+                    warn!(contract_id, role, "failed to get role count: {e:#}");
+                }
+            }
+        }
+
+        let elapsed = start.elapsed().as_secs_f64();
+        self.metrics
+            .scrape_duration_seconds
+            .with_label_values(&[contract_id])
+            .observe(elapsed);
+
+        info!(
+            contract_id,
+            elapsed_secs = elapsed,
+            roles = roles.len(),
+            blacklist_size,
+            "access scrape done"
+        );
+        Ok(())
+    }
+
+    // ── router-timelock ───────────────────────────────────────────────────────
+
+    async fn scrape_timelock(&self, client: &dyn RpcClient, contract_id: &str) -> Result<()> {
+        let start = Instant::now();
+        info!(contract_id, "scraping router-timelock");
+
+        let pending = client
+            .call_u64(contract_id, "get_pending_op_count")
+            .await?;
+        self.metrics
+            .timelock_pending_operations
+            .with_label_values(&[contract_id])
+            .set(pending as f64);
+
+        let elapsed = start.elapsed().as_secs_f64();
+        self.metrics
+            .scrape_duration_seconds
+            .with_label_values(&[contract_id])
+            .observe(elapsed);
+
+        info!(
+            contract_id,
+            elapsed_secs = elapsed,
+            pending_operations = pending,
+            "timelock scrape done"
+        );
+        Ok(())
+    }
+
+    // ── router-multicall ──────────────────────────────────────────────────────
+
+    /// Scrape `router-multicall` via `total_batches()` for the cumulative batch
+    /// count (gauge) and `getEvents` for `call_result` events to track
+    /// cumulative successful / failed calls within batches.
+    ///
+    /// Uses the same in-memory ledger cursor pattern as the quote / execution
+    /// scrapers (see module-level docs for restart semantics).
+    async fn scrape_multicall(&self, client: &dyn RpcClient, contract_id: &str) -> Result<()> {
+        let start = Instant::now();
+        info!(contract_id, "scraping router-multicall");
+
+        let total_batches = client.call_u64(contract_id, "total_batches").await?;
+        self.metrics
+            .multicall_total_batches
+            .with_label_values(&[contract_id])
+            .set(total_batches as f64);
+
+        let start_ledger = {
+            let map = self.last_ledger.lock().await;
+            map.get(&format!("multicall:{contract_id}"))
+                .copied()
+                .unwrap_or(0)
+        };
+
+        let call_events = client
+            .get_events(contract_id, &["call_result"], start_ledger)
+            .await?;
+
+        let max_ledger = call_events
+            .iter()
+            .map(|e| e.ledger)
+            .max()
+            .unwrap_or(start_ledger);
+
+        let mut success = 0u64;
+        let mut failure = 0u64;
+        for event in &call_events {
+            match extract_call_result_success(event) {
+                Some(true) => success += 1,
+                Some(false) => failure += 1,
+                None => {}
+            }
+        }
+
+        self.metrics
+            .multicall_batch_success_total
+            .with_label_values(&[contract_id])
+            .inc_by(success as f64);
+        self.metrics
+            .multicall_batch_failure_total
+            .with_label_values(&[contract_id])
+            .inc_by(failure as f64);
+
+        if max_ledger > start_ledger {
+            self.last_ledger
+                .lock()
+                .await
+                .insert(format!("multicall:{contract_id}"), max_ledger);
+        }
+
+        let elapsed = start.elapsed().as_secs_f64();
+        self.metrics
+            .scrape_duration_seconds
+            .with_label_values(&[contract_id])
+            .observe(elapsed);
+
+        info!(
+            contract_id,
+            elapsed_secs = elapsed,
+            total_batches,
+            batch_success = success,
+            batch_failure = failure,
+            start_ledger,
+            max_ledger,
+            "multicall scrape done"
+        );
+        Ok(())
     }
 
     // ── router-core ───────────────────────────────────────────────────────────
@@ -229,6 +582,48 @@ impl Collector {
             }
         }
 
+        // 3. Per-route call/failure counts from post_call events
+        let start_ledger = {
+            let map = self.last_ledger.lock().await;
+            map.get(&format!("middleware:{contract_id}"))
+                .copied()
+                .unwrap_or(0)
+        };
+
+        let post_call_events = client
+            .get_events(contract_id, &["post_call"], start_ledger)
+            .await?;
+
+        // Advance cursor to the highest ledger seen
+        let max_ledger = post_call_events
+            .iter()
+            .map(|e| e.ledger)
+            .max()
+            .unwrap_or(start_ledger);
+
+        // Process events: extract route and success, increment counters
+        for event in &post_call_events {
+            if let Some((route, success)) = extract_post_call_data(event) {
+                self.metrics
+                    .middleware_route_calls_total
+                    .with_label_values(&[contract_id, &route])
+                    .inc();
+                if !success {
+                    self.metrics
+                        .middleware_route_failures_total
+                        .with_label_values(&[contract_id, &route])
+                        .inc();
+                }
+            }
+        }
+
+        if max_ledger > start_ledger {
+            self.last_ledger
+                .lock()
+                .await
+                .insert(format!("middleware:{contract_id}"), max_ledger);
+        }
+
         let elapsed = start.elapsed().as_secs_f64();
         self.metrics
             .scrape_duration_seconds
@@ -240,6 +635,9 @@ impl Collector {
             elapsed_secs = elapsed,
             routes = routes.len(),
             total_calls,
+            post_call_events = post_call_events.len(),
+            start_ledger,
+            max_ledger,
             "middleware scrape done"
         );
         Ok(())
@@ -251,13 +649,27 @@ impl Collector {
         let start = Instant::now();
         info!(contract_id, "scraping router-registry");
 
-        // get_all_names returns Vec<String> of registered contract names
         let names = client.call_string_vec(contract_id, "get_all_names").await?;
 
         self.metrics
             .registry_total_names
             .with_label_values(&[contract_id])
             .set(names.len() as f64);
+
+        // Call versions(name) for each registered name to track per-name version count.
+        for name in &names {
+            match client.call_u32_vec(contract_id, "versions", name).await {
+                Ok(versions) => {
+                    self.metrics
+                        .registry_version_count
+                        .with_label_values(&[contract_id, name])
+                        .set(versions.len() as f64);
+                }
+                Err(e) => {
+                    warn!(contract_id, name, "failed to get versions: {e:#}");
+                }
+            }
+        }
 
         let elapsed = start.elapsed().as_secs_f64();
         self.metrics
@@ -273,6 +685,216 @@ impl Collector {
         );
         Ok(())
     }
+
+    // ── router-quote ──────────────────────────────────────────────────────────
+
+    /// Scrape `router-quote` by counting `quote_generated` and `fee_estimated`
+    /// events via `getEvents`, using an in-memory ledger cursor to avoid
+    /// reprocessing events on every cycle.
+    ///
+    /// First scrape (cursor = 0): fetches all events in the RPC retention window
+    /// and **sets** the gauges to the observed totals.  Subsequent scrapes fetch
+    /// only events newer than the cursor and **increment** the gauges.
+    async fn scrape_quote(&self, client: &dyn RpcClient, contract_id: &str) -> Result<()> {
+        let start = Instant::now();
+        info!(contract_id, "scraping router-quote");
+
+        let start_ledger = {
+            let map = self.last_ledger.lock().await;
+            map.get(&format!("quote:{contract_id}"))
+                .copied()
+                .unwrap_or(0)
+        };
+
+        let quote_events = client
+            .get_events(contract_id, &["quote_generated"], start_ledger)
+            .await?;
+        let fee_events = client
+            .get_events(contract_id, &["fee_estimated"], start_ledger)
+            .await?;
+
+        // Advance cursor to the highest ledger seen across both event sets.
+        let max_ledger = quote_events
+            .iter()
+            .chain(fee_events.iter())
+            .map(|e| e.ledger)
+            .max()
+            .unwrap_or(start_ledger);
+
+        let quote_count = quote_events.len() as f64;
+        let fee_count = fee_events.len() as f64;
+        let g_quote = self
+            .metrics
+            .quote_total_generated
+            .with_label_values(&[contract_id]);
+        let g_fee = self
+            .metrics
+            .quote_total_fee_estimated
+            .with_label_values(&[contract_id]);
+
+        // Counters can only be incremented, never set.
+        // On first scrape (cursor=0), we increment by all events in the retention window.
+        // On subsequent scrapes, we increment by only new events.
+        g_quote.inc_by(quote_count);
+        g_fee.inc_by(fee_count);
+
+        if max_ledger > start_ledger {
+            self.last_ledger
+                .lock()
+                .await
+                .insert(format!("quote:{contract_id}"), max_ledger);
+        }
+
+        let elapsed = start.elapsed().as_secs_f64();
+        self.metrics
+            .scrape_duration_seconds
+            .with_label_values(&[contract_id])
+            .observe(elapsed);
+
+        info!(
+            contract_id,
+            elapsed_secs = elapsed,
+            quote_generated = quote_events.len(),
+            fee_estimated = fee_events.len(),
+            start_ledger,
+            max_ledger,
+            "quote scrape done"
+        );
+        Ok(())
+    }
+
+    // ── router-execution ──────────────────────────────────────────────────────
+
+    /// Scrape `router-execution` via `getEvents` for execution counters and
+    /// `getLedgerEntries` for the `MaxRetries` configuration value.
+    ///
+    /// The contract emits:
+    /// - `execution_result` — one event per completed execution (success or
+    ///   final-attempt failure after retries are exhausted).
+    /// - `execution_error`  — one event per failed execution (after all retries).
+    ///
+    /// `MaxRetries` is a configuration value written to instance storage on
+    /// initialization and updated via `set_max_retries`; it is not event-based,
+    /// so it is read directly via `getLedgerEntries`.
+    ///
+    /// Like `scrape_quote`, an in-memory ledger cursor prevents re-processing
+    /// the same events on every cycle (see module-level docs for restart semantics).
+    async fn scrape_execution(&self, client: &dyn RpcClient, contract_id: &str) -> Result<()> {
+        let start = Instant::now();
+        info!(contract_id, "scraping router-execution");
+
+        let start_ledger = {
+            let map = self.last_ledger.lock().await;
+            map.get(&format!("execution:{contract_id}"))
+                .copied()
+                .unwrap_or(0)
+        };
+
+        // Fetch execution result and error events since the last cursor.
+        let result_events = client
+            .get_events(contract_id, &["execution_result"], start_ledger)
+            .await?;
+        let error_events = client
+            .get_events(contract_id, &["execution_error"], start_ledger)
+            .await?;
+
+        // MaxRetries is a config value in instance storage, not event-based.
+        let max_retries_key = encode_contract_data_key(contract_id, "MaxRetries");
+        let max_retries_entries = client
+            .get_ledger_entries(vec![max_retries_key])
+            .await
+            .unwrap_or_default();
+        let max_retries = extract_u64_from_entry(&max_retries_entries, "MaxRetries").unwrap_or(0);
+
+        let max_ledger = result_events
+            .iter()
+            .chain(error_events.iter())
+            .map(|e| e.ledger)
+            .max()
+            .unwrap_or(start_ledger);
+
+        let exec_count = result_events.len() as f64;
+        let err_count = error_events.len() as f64;
+        let g_exec = self
+            .metrics
+            .execution_total_executions
+            .with_label_values(&[contract_id]);
+        let g_err = self
+            .metrics
+            .execution_total_errors
+            .with_label_values(&[contract_id]);
+
+        // Counters can only be incremented, never set.
+        // On first scrape (cursor=0), we increment by all events in the retention window.
+        // On subsequent scrapes, we increment by only new events.
+        g_exec.inc_by(exec_count);
+        g_err.inc_by(err_count);
+
+        self.metrics
+            .execution_max_retries
+            .with_label_values(&[contract_id])
+            .set(max_retries as f64);
+
+        if max_ledger > start_ledger {
+            self.last_ledger
+                .lock()
+                .await
+                .insert(format!("execution:{contract_id}"), max_ledger);
+        }
+
+        let elapsed = start.elapsed().as_secs_f64();
+        self.metrics
+            .scrape_duration_seconds
+            .with_label_values(&[contract_id])
+            .observe(elapsed);
+
+        info!(
+            contract_id,
+            elapsed_secs = elapsed,
+            total_executions = result_events.len(),
+            total_errors = error_events.len(),
+            max_retries,
+            start_ledger,
+            max_ledger,
+            "execution scrape done"
+        );
+        Ok(())
+    }
+}
+
+/// Encode a `ContractData` ledger key for a named instance-storage entry.
+///
+/// Produces a string key that the mock client can match on. In production
+/// this should be replaced with proper XDR encoding via the `stellar-xdr` crate.
+fn encode_contract_data_key(contract_id: &str, storage_key: &str) -> String {
+    format!("{}:{}", contract_id, storage_key)
+}
+
+/// Extract a `u64` value from a `getLedgerEntries` response for the given key name.
+///
+/// The RPC server returns entries with a `xdr` field containing base64-encoded
+/// `LedgerEntryData` XDR. In the JSON-decoded representation (used by some RPC
+/// versions) the value is available directly. We try both paths.
+fn extract_u64_from_entry(entries: &[crate::rpc::LedgerEntry], key_name: &str) -> Option<u64> {
+    for entry in entries {
+        // The key field encodes the storage key name; we match by suffix.
+        if entry.key.ends_with(key_name) || entry.key.contains(key_name) {
+            // Try to parse the xdr field as a plain u64 (mock / JSON path).
+            if let Ok(n) = entry.xdr.parse::<u64>() {
+                return Some(n);
+            }
+            // Try JSON-decoded path: `{"u64": <n>}`.
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&entry.xdr) {
+                if let Some(n) = v.get("u64").and_then(|n| n.as_u64()) {
+                    return Some(n);
+                }
+                if let Some(n) = v.as_u64() {
+                    return Some(n);
+                }
+            }
+        }
+    }
+    None
 }
 
 #[cfg(test)]
@@ -287,6 +909,16 @@ mod tests {
         middleware: &str,
         registry_id: &str,
     ) -> (Collector, RouterMetrics) {
+        make_collector_full(core, middleware, registry_id, "", "")
+    }
+
+    fn make_collector_full(
+        core: &str,
+        middleware: &str,
+        registry_id: &str,
+        quote_id: &str,
+        execution_id: &str,
+    ) -> (Collector, RouterMetrics) {
         let reg = Registry::new();
         let metrics = RouterMetrics::new(&reg).unwrap();
         let args = Args {
@@ -295,9 +927,19 @@ mod tests {
             core_contract_id: core.to_string(),
             middleware_contract_id: middleware.to_string(),
             registry_contract_id: registry_id.to_string(),
+            quote_contract_id: quote_id.to_string(),
+            execution_contract_id: execution_id.to_string(),
+            access_contract_id: String::new(),
+            timelock_contract_id: String::new(),
+            multicall_contract_id: String::new(),
             scrape_interval_secs: 15,
             listen: "0.0.0.0:9090".to_string(),
             rpc_timeout_secs: 10,
+            event_mode: crate::cli::EventMode::Poll,
+            horizon_url: "https://horizon-testnet.stellar.org".to_string(),
+            sse_max_reconnects: 10,
+            sse_reconnect_delay_ms: 1000,
+            sse_reconnect_max_delay_ms: 30_000,
         };
         let collector = Collector::new(args, metrics.clone());
         (collector, metrics)
@@ -343,20 +985,62 @@ mod tests {
     async fn test_scrape_registry_updates_metrics() {
         let (collector, metrics) = make_collector("", "", "REG_ID");
 
-        let mock = MockRpcClient::new().with_string_vec(
-            "REG_ID",
-            "get_all_names",
-            vec!["oracle".to_string(), "vault".to_string()],
-        );
+        let mock = MockRpcClient::new()
+            .with_string_vec(
+                "REG_ID",
+                "get_all_names",
+                vec!["oracle".to_string(), "vault".to_string()],
+            )
+            .with_u32_vec("REG_ID", "versions", "oracle", vec![1, 2, 3])
+            .with_u32_vec("REG_ID", "versions", "vault", vec![1]);
 
         let ok = collector.scrape_all(&mock).await;
         assert!(ok);
 
-        let val = metrics
-            .registry_total_names
-            .with_label_values(&["REG_ID"])
-            .get();
-        assert_eq!(val, 2.0);
+        assert_eq!(
+            metrics
+                .registry_total_names
+                .with_label_values(&["REG_ID"])
+                .get(),
+            2.0
+        );
+        assert_eq!(
+            metrics
+                .registry_version_count
+                .with_label_values(&["REG_ID", "oracle"])
+                .get(),
+            3.0
+        );
+        assert_eq!(
+            metrics
+                .registry_version_count
+                .with_label_values(&["REG_ID", "vault"])
+                .get(),
+            1.0
+        );
+    }
+
+    #[tokio::test]
+    async fn test_scrape_registry_empty_versions_for_name() {
+        let (collector, metrics) = make_collector("", "", "REG_ID");
+
+        let mock = MockRpcClient::new().with_string_vec(
+            "REG_ID",
+            "get_all_names",
+            vec!["ghost".to_string()],
+        );
+        // No with_u32_vec configured → mock returns empty vec (default)
+
+        let ok = collector.scrape_all(&mock).await;
+        assert!(ok);
+
+        assert_eq!(
+            metrics
+                .registry_version_count
+                .with_label_values(&["REG_ID", "ghost"])
+                .get(),
+            0.0
+        );
     }
 
     #[tokio::test]
@@ -382,22 +1066,14 @@ mod tests {
 
         let mock = MockRpcClient::new()
             .with_u64("CORE_ID", "total_routed", 100)
-            .with_string_vec(
-                "CORE_ID",
-                "get_all_routes",
-                vec!["oracle".to_string()],
-            )
+            .with_string_vec("CORE_ID", "get_all_routes", vec!["oracle".to_string()])
             .with_simulate(
                 "CORE_ID",
                 "get_route",
                 json!({ "results": [{ "retval": { "paused": false } }] }),
             )
             .with_u64("MW_ID", "total_calls", 50)
-            .with_string_vec(
-                "MW_ID",
-                "get_configured_routes",
-                vec!["oracle".to_string()],
-            )
+            .with_string_vec("MW_ID", "get_configured_routes", vec!["oracle".to_string()])
             .with_simulate(
                 "MW_ID",
                 "circuit_breaker_state",
@@ -435,66 +1111,423 @@ mod tests {
             3.0
         );
     }
-}
 
-/// Encode a plain string as a base64 XDR `ScVal::String` argument.
-///
-/// This is a placeholder — a real implementation would use the `stellar-xdr`
-/// crate to produce the correct XDR encoding.
-fn encode_string_arg(s: &str) -> String {
-    // Base64-encode the raw UTF-8 bytes as a minimal stand-in.
-    // Replace with proper ScVal XDR encoding in production.
-    use std::fmt::Write;
-    let mut out = String::new();
-    for b in s.as_bytes() {
-        write!(out, "{b:02x}").ok();
+    #[tokio::test]
+    async fn test_scrape_quote_baseline_sets_gauges() {
+        use crate::rpc::ContractEvent;
+        let (collector, metrics) = make_collector_full("", "", "", "QUOTE_ID", "");
+
+        let make_event = |topic: &str, ledger: u32| ContractEvent {
+            contract_id: "QUOTE_ID".to_string(),
+            ledger,
+            topic: vec![serde_json::json!(topic)],
+            value: serde_json::json!({}),
+        };
+
+        let mock = MockRpcClient::new()
+            .with_events(
+                "QUOTE_ID",
+                "quote_generated",
+                vec![
+                    make_event("quote_generated", 100),
+                    make_event("quote_generated", 101),
+                ],
+            )
+            .with_events(
+                "QUOTE_ID",
+                "fee_estimated",
+                vec![make_event("fee_estimated", 102)],
+            );
+
+        // First scrape (cursor=0) → SET to baseline.
+        let ok = collector.scrape_all(&mock).await;
+        assert!(ok);
+
+        assert_eq!(
+            metrics
+                .quote_total_generated
+                .with_label_values(&["QUOTE_ID"])
+                .get(),
+            2.0
+        );
+        assert_eq!(
+            metrics
+                .quote_total_fee_estimated
+                .with_label_values(&["QUOTE_ID"])
+                .get(),
+            1.0
+        );
     }
-    out
-}
 
-/// Extract the `paused` field from a `RouteEntry` JSON value returned by
-/// `simulateTransaction`.
-fn extract_route_paused(val: &serde_json::Value) -> Option<bool> {
-    // The Soroban RPC returns struct fields as a JSON map.
-    // RouteEntry { address, name, paused, updated_by, metadata }
-    val.get("results")
-        .and_then(|r| r.get(0))
-        .and_then(|r| r.get("retval"))
-        .and_then(|v| v.get("paused"))
-        .and_then(|p| p.as_bool())
-        .or_else(|| val.get("paused").and_then(|p| p.as_bool()))
-}
+    #[tokio::test]
+    async fn test_scrape_quote_increments_on_second_scrape() {
+        use crate::rpc::ContractEvent;
+        let (collector, metrics) = make_collector_full("", "", "", "QUOTE_ID", "");
 
-/// Extract `(is_open, failure_count)` from a `CircuitBreakerState` JSON value.
-fn extract_circuit_breaker_state(val: &serde_json::Value) -> Option<(bool, u32)> {
-    let retval = val
-        .get("results")
-        .and_then(|r| r.get(0))
-        .and_then(|r| r.get("retval"))
-        .unwrap_or(val);
+        let make_event = |topic: &str, ledger: u32| ContractEvent {
+            contract_id: "QUOTE_ID".to_string(),
+            ledger,
+            topic: vec![serde_json::json!(topic)],
+            value: serde_json::json!({}),
+        };
 
-    // Handle Option<CircuitBreakerState> — None means no state recorded yet
-    if retval.is_null() || retval.get("none").is_some() {
-        return Some((false, 0));
+        // First scrape: 2 quote events at ledger 100.
+        let mock1 = MockRpcClient::new()
+            .with_events(
+                "QUOTE_ID",
+                "quote_generated",
+                vec![
+                    make_event("quote_generated", 100),
+                    make_event("quote_generated", 100),
+                ],
+            )
+            .with_events("QUOTE_ID", "fee_estimated", vec![]);
+        collector.scrape_all(&mock1).await;
+
+        // Second scrape: 1 new quote event at ledger 101 (cursor now at 100).
+        let mock2 = MockRpcClient::new()
+            .with_events(
+                "QUOTE_ID",
+                "quote_generated",
+                vec![make_event("quote_generated", 101)],
+            )
+            .with_events("QUOTE_ID", "fee_estimated", vec![]);
+        let ok = collector.scrape_all(&mock2).await;
+        assert!(ok);
+
+        // Gauge should be 2 (baseline) + 1 (new) = 3.
+        assert_eq!(
+            metrics
+                .quote_total_generated
+                .with_label_values(&["QUOTE_ID"])
+                .get(),
+            3.0
+        );
     }
 
-    let state = retval.get("some").unwrap_or(retval);
-    let is_open = state
-        .get("is_open")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
-    let failure_count = state
-        .get("failure_count")
-        .and_then(|v| v.as_u64())
-        .unwrap_or(0) as u32;
+    #[tokio::test]
+    async fn test_scrape_execution_uses_events() {
+        use crate::rpc::{ContractEvent, LedgerEntry};
+        let (collector, metrics) = make_collector_full("", "", "", "", "EXEC_ID");
 
-    Some((is_open, failure_count))
-}
+        let make_event = |topic: &str, ledger: u32| ContractEvent {
+            contract_id: "EXEC_ID".to_string(),
+            ledger,
+            topic: vec![serde_json::json!(topic)],
+            value: serde_json::json!({}),
+        };
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use serde_json::json;
+        let mock = MockRpcClient::new()
+            .with_events(
+                "EXEC_ID",
+                "execution_result",
+                vec![
+                    make_event("execution_result", 200),
+                    make_event("execution_result", 201),
+                    make_event("execution_result", 202),
+                ],
+            )
+            .with_events(
+                "EXEC_ID",
+                "execution_error",
+                vec![make_event("execution_error", 203)],
+            )
+            .with_ledger_entries(
+                "EXEC_ID:MaxRetries",
+                vec![LedgerEntry {
+                    key: "EXEC_ID:MaxRetries".to_string(),
+                    xdr: "3".to_string(),
+                }],
+            );
+
+        let ok = collector.scrape_all(&mock).await;
+        assert!(ok);
+
+        assert_eq!(
+            metrics
+                .execution_total_executions
+                .with_label_values(&["EXEC_ID"])
+                .get(),
+            3.0
+        );
+        assert_eq!(
+            metrics
+                .execution_total_errors
+                .with_label_values(&["EXEC_ID"])
+                .get(),
+            1.0
+        );
+        assert_eq!(
+            metrics
+                .execution_max_retries
+                .with_label_values(&["EXEC_ID"])
+                .get(),
+            3.0
+        );
+    }
+
+    #[tokio::test]
+    async fn test_scrape_execution_increments_on_second_scrape() {
+        use crate::rpc::{ContractEvent, LedgerEntry};
+        let (collector, metrics) = make_collector_full("", "", "", "", "EXEC_ID");
+
+        let make_event = |topic: &str, ledger: u32| ContractEvent {
+            contract_id: "EXEC_ID".to_string(),
+            ledger,
+            topic: vec![serde_json::json!(topic)],
+            value: serde_json::json!({}),
+        };
+
+        let make_max_retries = || {
+            MockRpcClient::new().with_ledger_entries(
+                "EXEC_ID:MaxRetries",
+                vec![LedgerEntry {
+                    key: "EXEC_ID:MaxRetries".to_string(),
+                    xdr: "2".to_string(),
+                }],
+            )
+        };
+
+        // First scrape: 5 results, 1 error at ledger 300.
+        let mock1 = make_max_retries()
+            .with_events(
+                "EXEC_ID",
+                "execution_result",
+                (0..5)
+                    .map(|_| make_event("execution_result", 300))
+                    .collect(),
+            )
+            .with_events(
+                "EXEC_ID",
+                "execution_error",
+                vec![make_event("execution_error", 300)],
+            );
+        collector.scrape_all(&mock1).await;
+
+        // Second scrape: 2 new results at ledger 301.
+        let mock2 = make_max_retries()
+            .with_events(
+                "EXEC_ID",
+                "execution_result",
+                vec![
+                    make_event("execution_result", 301),
+                    make_event("execution_result", 301),
+                ],
+            )
+            .with_events("EXEC_ID", "execution_error", vec![]);
+        let ok = collector.scrape_all(&mock2).await;
+        assert!(ok);
+
+        // 5 (baseline) + 2 (new) = 7
+        assert_eq!(
+            metrics
+                .execution_total_executions
+                .with_label_values(&["EXEC_ID"])
+                .get(),
+            7.0
+        );
+        // 1 (baseline) + 0 (new) = 1
+        assert_eq!(
+            metrics
+                .execution_total_errors
+                .with_label_values(&["EXEC_ID"])
+                .get(),
+            1.0
+        );
+    }
+
+    #[tokio::test]
+    async fn test_scrape_access_updates_metrics() {
+        let (collector, metrics) = make_collector("", "", "");
+
+        let mut args = collector.args.clone();
+        args.access_contract_id = "ACCESS_ID".to_string();
+        let collector = Collector::new(args, metrics.clone());
+
+        let mock = MockRpcClient::new()
+            .with_u64("ACCESS_ID", "get_blacklist_count", 4)
+            .with_string_vec(
+                "ACCESS_ID",
+                "get_all_roles",
+                vec!["admin".to_string(), "trader".to_string()],
+            )
+            .with_u32_vec("ACCESS_ID", "get_role_count", "admin", vec![3])
+            .with_u32_vec("ACCESS_ID", "get_role_count", "trader", vec![7]);
+
+        let ok = collector.scrape_all(&mock).await;
+        assert!(ok);
+
+        assert_eq!(
+            metrics
+                .access_blacklist_size
+                .with_label_values(&["ACCESS_ID"])
+                .get(),
+            4.0
+        );
+        assert_eq!(
+            metrics
+                .access_role_member_count
+                .with_label_values(&["ACCESS_ID", "admin"])
+                .get(),
+            3.0
+        );
+        assert_eq!(
+            metrics
+                .access_role_member_count
+                .with_label_values(&["ACCESS_ID", "trader"])
+                .get(),
+            7.0
+        );
+    }
+
+    #[tokio::test]
+    async fn test_scrape_timelock_updates_metrics() {
+        let (collector, metrics) = make_collector("", "", "");
+
+        let mut args = collector.args.clone();
+        args.timelock_contract_id = "TIMELOCK_ID".to_string();
+        let collector = Collector::new(args, metrics.clone());
+
+        let mock = MockRpcClient::new().with_u64("TIMELOCK_ID", "get_pending_op_count", 12);
+
+        let ok = collector.scrape_all(&mock).await;
+        assert!(ok);
+
+        assert_eq!(
+            metrics
+                .timelock_pending_operations
+                .with_label_values(&["TIMELOCK_ID"])
+                .get(),
+            12.0
+        );
+    }
+
+    #[tokio::test]
+    async fn test_scrape_multicall_updates_metrics() {
+        use crate::rpc::ContractEvent;
+        let (collector, metrics) = make_collector("", "", "");
+
+        let mut args = collector.args.clone();
+        args.multicall_contract_id = "MULTI_ID".to_string();
+        let collector = Collector::new(args, metrics.clone());
+
+        let make_event = |success: bool, ledger: u32| ContractEvent {
+            contract_id: "MULTI_ID".to_string(),
+            ledger,
+            topic: vec![serde_json::json!("call_result")],
+            value: json!([{"address": "CALLER"}, {"address": "TARGET"}, "fn", success]),
+        };
+
+        let mock = MockRpcClient::new()
+            .with_u64("MULTI_ID", "total_batches", 5)
+            .with_events(
+                "MULTI_ID",
+                "call_result",
+                vec![
+                    make_event(true, 100),
+                    make_event(true, 101),
+                    make_event(false, 102),
+                ],
+            );
+
+        let ok = collector.scrape_all(&mock).await;
+        assert!(ok);
+
+        assert_eq!(
+            metrics
+                .multicall_total_batches
+                .with_label_values(&["MULTI_ID"])
+                .get(),
+            5.0
+        );
+        assert_eq!(
+            metrics
+                .multicall_batch_success_total
+                .with_label_values(&["MULTI_ID"])
+                .get(),
+            2.0
+        );
+        assert_eq!(
+            metrics
+                .multicall_batch_failure_total
+                .with_label_values(&["MULTI_ID"])
+                .get(),
+            1.0
+        );
+    }
+
+    #[tokio::test]
+    async fn test_scrape_multicall_increments_on_second_scrape() {
+        use crate::rpc::ContractEvent;
+        let (collector, metrics) = make_collector("", "", "");
+
+        let mut args = collector.args.clone();
+        args.multicall_contract_id = "MULTI_ID".to_string();
+        let collector = Collector::new(args, metrics.clone());
+
+        let make_event = |success: bool, ledger: u32| ContractEvent {
+            contract_id: "MULTI_ID".to_string(),
+            ledger,
+            topic: vec![serde_json::json!("call_result")],
+            value: json!([{"address": "CALLER"}, {"address": "TARGET"}, "fn", success]),
+        };
+
+        let mock1 = MockRpcClient::new()
+            .with_u64("MULTI_ID", "total_batches", 1)
+            .with_events(
+                "MULTI_ID",
+                "call_result",
+                vec![make_event(true, 100), make_event(false, 100)],
+            );
+        collector.scrape_all(&mock1).await;
+
+        let mock2 = MockRpcClient::new()
+            .with_u64("MULTI_ID", "total_batches", 2)
+            .with_events(
+                "MULTI_ID",
+                "call_result",
+                vec![make_event(true, 101), make_event(true, 101)],
+            );
+        let ok = collector.scrape_all(&mock2).await;
+        assert!(ok);
+
+        // 1 (baseline success) + 2 (new) = 3
+        assert_eq!(
+            metrics
+                .multicall_batch_success_total
+                .with_label_values(&["MULTI_ID"])
+                .get(),
+            3.0
+        );
+        // 1 (baseline failure) + 0 (new) = 1
+        assert_eq!(
+            metrics
+                .multicall_batch_failure_total
+                .with_label_values(&["MULTI_ID"])
+                .get(),
+            1.0
+        );
+    }
+
+    #[test]
+    fn test_extract_call_result_success() {
+        use crate::rpc::ContractEvent;
+        let ev = ContractEvent {
+            contract_id: "MULTI_ID".to_string(),
+            ledger: 100,
+            topic: vec![serde_json::json!("call_result")],
+            value: json!([{"address": "C"}, {"address": "T"}, "fn", true]),
+        };
+        assert_eq!(extract_call_result_success(&ev), Some(true));
+
+        let ev2 = ContractEvent {
+            contract_id: "MULTI_ID".to_string(),
+            ledger: 101,
+            topic: vec![serde_json::json!("call_result")],
+            value: json!({ "success": false }),
+        };
+        assert_eq!(extract_call_result_success(&ev2), Some(false));
+    }
 
     #[test]
     fn test_extract_route_paused_true() {
@@ -549,4 +1582,271 @@ mod tests {
         });
         assert_eq!(extract_circuit_breaker_state(&val), Some((false, 2)));
     }
+
+    #[test]
+    fn test_extract_post_call_data_success() {
+        use crate::rpc::ContractEvent;
+        let event = ContractEvent {
+            contract_id: "MW_ID".to_string(),
+            ledger: 100,
+            topic: vec![serde_json::json!("post_call")],
+            value: json!({ "route": "oracle", "success": true }),
+        };
+        assert_eq!(
+            extract_post_call_data(&event),
+            Some(("oracle".to_string(), true))
+        );
+    }
+
+    #[test]
+    fn test_extract_post_call_data_failure() {
+        use crate::rpc::ContractEvent;
+        let event = ContractEvent {
+            contract_id: "MW_ID".to_string(),
+            ledger: 101,
+            topic: vec![serde_json::json!("post_call")],
+            value: json!({ "route": "vault", "success": false }),
+        };
+        assert_eq!(
+            extract_post_call_data(&event),
+            Some(("vault".to_string(), false))
+        );
+    }
+
+    #[test]
+    fn test_extract_post_call_data_nested() {
+        use crate::rpc::ContractEvent;
+        let event = ContractEvent {
+            contract_id: "MW_ID".to_string(),
+            ledger: 102,
+            topic: vec![serde_json::json!("post_call")],
+            value: json!({
+                "value": ["caller_address", "oracle", true]
+            }),
+        };
+        assert_eq!(
+            extract_post_call_data(&event),
+            Some(("oracle".to_string(), true))
+        );
+    }
+
+    #[test]
+    fn test_extract_post_call_data_invalid() {
+        use crate::rpc::ContractEvent;
+        let event = ContractEvent {
+            contract_id: "MW_ID".to_string(),
+            ledger: 103,
+            topic: vec![serde_json::json!("post_call")],
+            value: json!({ "invalid": "data" }),
+        };
+        assert_eq!(extract_post_call_data(&event), None);
+    }
+
+    #[tokio::test]
+    async fn test_scrape_middleware_with_post_call_events() {
+        use crate::rpc::ContractEvent;
+        let (collector, metrics) = make_collector("", "MW_ID", "");
+
+        let make_event = |route: &str, success: bool, ledger: u32| ContractEvent {
+            contract_id: "MW_ID".to_string(),
+            ledger,
+            topic: vec![serde_json::json!("post_call")],
+            value: json!({ "route": route, "success": success }),
+        };
+
+        let mock = MockRpcClient::new()
+            .with_u64("MW_ID", "total_calls", 10)
+            .with_string_vec("MW_ID", "get_configured_routes", vec!["oracle".to_string()])
+            .with_events(
+                "MW_ID",
+                "post_call",
+                vec![
+                    make_event("oracle", true, 100),
+                    make_event("oracle", true, 101),
+                    make_event("oracle", false, 102),
+                ],
+            );
+
+        let ok = collector.scrape_all(&mock).await;
+        assert!(ok);
+
+        // Check that per-route counters were incremented
+        assert_eq!(
+            metrics
+                .middleware_route_calls_total
+                .with_label_values(&["MW_ID", "oracle"])
+                .get(),
+            3.0
+        );
+        assert_eq!(
+            metrics
+                .middleware_route_failures_total
+                .with_label_values(&["MW_ID", "oracle"])
+                .get(),
+            1.0
+        );
+    }
+
+    #[tokio::test]
+    async fn test_scrape_middleware_post_call_increments_on_second_scrape() {
+        use crate::rpc::ContractEvent;
+        let (collector, metrics) = make_collector("", "MW_ID", "");
+
+        let make_event = |route: &str, success: bool, ledger: u32| ContractEvent {
+            contract_id: "MW_ID".to_string(),
+            ledger,
+            topic: vec![serde_json::json!("post_call")],
+            value: json!({ "route": route, "success": success }),
+        };
+
+        // First scrape: 2 events
+        let mock1 = MockRpcClient::new()
+            .with_u64("MW_ID", "total_calls", 5)
+            .with_string_vec("MW_ID", "get_configured_routes", vec!["oracle".to_string()])
+            .with_events(
+                "MW_ID",
+                "post_call",
+                vec![
+                    make_event("oracle", true, 100),
+                    make_event("oracle", false, 101),
+                ],
+            );
+        collector.scrape_all(&mock1).await;
+
+        // Second scrape: 1 new event
+        let mock2 = MockRpcClient::new()
+            .with_u64("MW_ID", "total_calls", 6)
+            .with_string_vec("MW_ID", "get_configured_routes", vec!["oracle".to_string()])
+            .with_events("MW_ID", "post_call", vec![make_event("oracle", true, 102)]);
+        let ok = collector.scrape_all(&mock2).await;
+        assert!(ok);
+
+        // Counters should be 2 (first scrape) + 1 (second scrape) = 3 total calls, 1 failure
+        assert_eq!(
+            metrics
+                .middleware_route_calls_total
+                .with_label_values(&["MW_ID", "oracle"])
+                .get(),
+            3.0
+        );
+        assert_eq!(
+            metrics
+                .middleware_route_failures_total
+                .with_label_values(&["MW_ID", "oracle"])
+                .get(),
+            1.0
+        );
+    }
+}
+
+/// Encode a plain string as a base64 XDR `ScVal::String` argument.
+///
+/// This is a placeholder — a real implementation would use the `stellar-xdr`
+/// crate to produce the correct XDR encoding.
+pub(crate) fn encode_string_arg(s: &str) -> String {
+    use std::fmt::Write;
+    let mut out = String::new();
+    for b in s.as_bytes() {
+        write!(out, "{b:02x}").ok();
+    }
+    out
+}
+
+/// Extract the `paused` field from a `RouteEntry` JSON value returned by
+/// `simulateTransaction`.
+fn extract_route_paused(val: &serde_json::Value) -> Option<bool> {
+    // The Soroban RPC returns struct fields as a JSON map.
+    // RouteEntry { address, name, paused, updated_by, metadata }
+    val.get("results")
+        .and_then(|r| r.get(0))
+        .and_then(|r| r.get("retval"))
+        .and_then(|v| v.get("paused"))
+        .and_then(|p| p.as_bool())
+        .or_else(|| val.get("paused").and_then(|p| p.as_bool()))
+}
+
+/// Extract `(is_open, failure_count)` from a `CircuitBreakerState` JSON value.
+fn extract_circuit_breaker_state(val: &serde_json::Value) -> Option<(bool, u32)> {
+    let retval = val
+        .get("results")
+        .and_then(|r| r.get(0))
+        .and_then(|r| r.get("retval"))
+        .unwrap_or(val);
+
+    // Handle Option<CircuitBreakerState> — None means no state recorded yet
+    if retval.is_null() || retval.get("none").is_some() {
+        return Some((false, 0));
+    }
+
+    let state = retval.get("some").unwrap_or(retval);
+    let is_open = state
+        .get("is_open")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let failure_count = state
+        .get("failure_count")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0) as u32;
+
+    Some((is_open, failure_count))
+}
+
+/// Extract `(route, success)` from a `post_call` event value.
+///
+/// Event schema: { caller: Address, route: String, success: bool }
+fn extract_post_call_data(event: &crate::rpc::ContractEvent) -> Option<(String, bool)> {
+    // The event value contains the post_call data as a JSON object
+    let value = &event.value;
+
+    // Try to extract route and success from the value
+    // The value may be directly the struct or wrapped in an array/object
+    let route = value
+        .get("route")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+        .or_else(|| {
+            // Try nested path: value.value[1] for route (index 1 in array)
+            value
+                .get("value")
+                .and_then(|v| v.as_array())
+                .and_then(|arr| arr.get(1))
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string())
+        });
+
+    let success = value.get("success").and_then(|v| v.as_bool()).or_else(|| {
+        // Try nested path: value.value[2] for success (index 2 in array)
+        value
+            .get("value")
+            .and_then(|v| v.as_array())
+            .and_then(|arr| arr.get(2))
+            .and_then(|v| v.as_bool())
+    });
+
+    match (route, success) {
+        (Some(r), Some(s)) => Some((r, s)),
+        _ => None,
+    }
+}
+
+/// Extract the `success` boolean from a `call_result` event emitted by
+/// `router-multicall`'s `execute_batch`.
+///
+/// The event value is a tuple `(caller, target, function, success)`. We accept
+/// either a JSON object with a `success` field or a JSON array whose last
+/// element is the boolean success flag.
+fn extract_call_result_success(event: &crate::rpc::ContractEvent) -> Option<bool> {
+    let value = &event.value;
+
+    if let Some(s) = value.get("success").and_then(|v| v.as_bool()) {
+        return Some(s);
+    }
+
+    if let Some(arr) = value.as_array() {
+        if let Some(last) = arr.last().and_then(|v| v.as_bool()) {
+            return Some(last);
+        }
+    }
+
+    None
 }

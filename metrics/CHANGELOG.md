@@ -5,7 +5,7 @@ All notable changes to the router-metrics-exporter will be documented in this fi
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.1.0] - 2025-01-XX
+## [0.1.0] - 2026-01-01
 
 ### Added
 - Initial release of the Prometheus/OpenTelemetry metrics exporter
@@ -48,6 +48,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Real-time event streaming via Stellar SSE** (`--event-mode sse` / `ROUTER_EVENT_MODE=sse`):
+  - New `EventMode` CLI flag (`poll` | `sse`) and companion env var `ROUTER_EVENT_MODE`.
+  - `--horizon-url` / `ROUTER_HORIZON_URL` — Horizon base URL for SSE subscriptions.
+  - `--sse-max-reconnects` / `ROUTER_SSE_MAX_RECONNECTS` — max reconnect attempts (0 = unlimited).
+  - `--sse-reconnect-delay-ms` / `ROUTER_SSE_RECONNECT_DELAY_MS` — base back-off delay.
+  - `--sse-reconnect-max-delay-ms` / `ROUTER_SSE_RECONNECT_MAX_DELAY_MS` — back-off ceiling.
+  - Bootstrap poll on startup (same as poll mode) so state-based metrics are immediately available.
+  - Automatic reconnect with exponential back-off when the SSE connection drops.
+  - New SSE health metrics:
+    - `router_sse_connected{contract}` — 1 while the SSE stream is active, 0 otherwise.
+    - `router_sse_reconnects_total{contract}` — cumulative reconnect attempts.
+    - `router_sse_events_total{contract}` — cumulative events received over SSE.
+  - Poll mode is **fully unaffected** and remains the default.
+
 ### Planned
 - Support for custom metric labels via configuration
 - Support for scraping `router-access` contract metrics (role counts, blacklist size)
@@ -56,7 +71,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Alerting rule templates for Prometheus
 - Helm chart for Kubernetes deployment
 - Integration with Stellar Horizon for transaction-level metrics
-- Real-time event streaming via Stellar SSE
 - Proper XDR encoding/decoding using `stellar-xdr` crate
 - Metric cardinality limits to prevent label explosion
 - Support for multiple network endpoints (failover)
