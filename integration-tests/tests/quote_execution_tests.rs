@@ -75,13 +75,19 @@ fn setup() -> Suite<'static> {
     core.initialize(&admin);
     quote.initialize(&admin, &100); // 1% default fee
     execution.initialize(
-        &admin,
-        &2,   // max_retries cap = 2
+        &admin, &2,   // max_retries cap = 2
         &0,   // backoff_base_ms = 0 (no wall-clock delay in tests)
         &100, // backoff_multiplier = 1x (no escalation)
     );
 
-    Suite { env, admin, core, quote, execution, target_addr }
+    Suite {
+        env,
+        admin,
+        core,
+        quote,
+        execution,
+        target_addr,
+    }
 }
 
 // ── Test 1: Full happy-path pipeline ─────────────────────────────────────────
@@ -99,11 +105,15 @@ fn test_full_quote_execution_pipeline() {
     let caller = Address::generate(&s.env);
 
     // Step 1 — register route
-    s.core.register_route(&s.admin, &route_name, &s.target_addr, &None);
+    s.core
+        .register_route(&s.admin, &route_name, &s.target_addr, &None);
 
     // Step 2 — resolve
     let resolved_addr = s.core.resolve(&route_name);
-    assert_eq!(resolved_addr, s.target_addr, "resolve must return target_addr");
+    assert_eq!(
+        resolved_addr, s.target_addr,
+        "resolve must return target_addr"
+    );
     assert_eq!(s.core.total_routed(), 1);
 
     // Step 3 — quote (30 bps = 0.3% fee)
@@ -182,7 +192,8 @@ fn test_full_pipeline_with_simulation() {
     let route_name = String::from_str(&s.env, "swap");
     let caller = Address::generate(&s.env);
 
-    s.core.register_route(&s.admin, &route_name, &s.target_addr, &None);
+    s.core
+        .register_route(&s.admin, &route_name, &s.target_addr, &None);
 
     let resolved = s.core.resolve(&route_name);
     assert_eq!(resolved, s.target_addr);
@@ -224,8 +235,10 @@ fn test_best_quote_then_execute() {
     let route_a = String::from_str(&s.env, "route-a");
     let route_b = String::from_str(&s.env, "route-b");
 
-    s.core.register_route(&s.admin, &route_a, &s.target_addr, &None);
-    s.core.register_route(&s.admin, &route_b, &s.target_addr, &None);
+    s.core
+        .register_route(&s.admin, &route_a, &s.target_addr, &None);
+    s.core
+        .register_route(&s.admin, &route_b, &s.target_addr, &None);
 
     // route-a: 50 bps, route-b: 20 bps → route-b has lower fee → more amount_out
     s.quote.set_route_fee(&s.admin, &route_a, &50);
@@ -289,7 +302,8 @@ fn test_route_paused_mid_flow_blocks_downstream() {
     let route_name = String::from_str(&s.env, "oracle");
     let caller = Address::generate(&s.env);
 
-    s.core.register_route(&s.admin, &route_name, &s.target_addr, &None);
+    s.core
+        .register_route(&s.admin, &route_name, &s.target_addr, &None);
     s.quote.set_route_fee(&s.admin, &route_name, &50);
 
     // ── Pre-pause: full flow succeeds ─────────────────────────────────────
@@ -372,7 +386,10 @@ fn test_route_paused_mid_flow_blocks_downstream() {
     s.core.set_route_paused(&s.admin, &route_name, &false);
 
     let resolved_after = s.core.resolve(&route_name);
-    assert_eq!(resolved_after, s.target_addr, "resolve must work after unpause");
+    assert_eq!(
+        resolved_after, s.target_addr,
+        "resolve must work after unpause"
+    );
     assert_eq!(
         s.core.total_routed(),
         2,
@@ -385,7 +402,10 @@ fn test_route_paused_mid_flow_blocks_downstream() {
         token_out: Address::generate(&s.env),
         amount_in: 5_000,
     });
-    assert_eq!(quote_after.amount_out, 4_975, "quote is identical after unpause");
+    assert_eq!(
+        quote_after.amount_out, 4_975,
+        "quote is identical after unpause"
+    );
 
     let exec_after = s.execution.execute(
         &caller,
@@ -411,7 +431,8 @@ fn test_global_router_pause_mid_flow() {
     let route_name = String::from_str(&s.env, "vault");
     let caller = Address::generate(&s.env);
 
-    s.core.register_route(&s.admin, &route_name, &s.target_addr, &None);
+    s.core
+        .register_route(&s.admin, &route_name, &s.target_addr, &None);
     s.quote.set_route_fee(&s.admin, &route_name, &30);
 
     // Pre-pause: resolve + quote + execute all succeed.
@@ -449,7 +470,11 @@ fn test_global_router_pause_mid_flow() {
         s.core.try_resolve(&route_name),
         Err(Ok(RouterError::RouterPaused))
     );
-    assert_eq!(s.core.total_routed(), routed_before, "counter must not change on paused resolve");
+    assert_eq!(
+        s.core.total_routed(),
+        routed_before,
+        "counter must not change on paused resolve"
+    );
 
     // get_best_route also respects the global pause.
     let candidates = soroban_sdk::vec![&s.env, route_name.clone()];
@@ -502,9 +527,12 @@ fn test_compare_quotes_filter_then_execute() {
     let route_mid = String::from_str(&s.env, "mid");
     let route_expensive = String::from_str(&s.env, "expensive");
 
-    s.core.register_route(&s.admin, &route_cheap, &s.target_addr, &None);
-    s.core.register_route(&s.admin, &route_mid, &s.target_addr, &None);
-    s.core.register_route(&s.admin, &route_expensive, &s.target_addr, &None);
+    s.core
+        .register_route(&s.admin, &route_cheap, &s.target_addr, &None);
+    s.core
+        .register_route(&s.admin, &route_mid, &s.target_addr, &None);
+    s.core
+        .register_route(&s.admin, &route_expensive, &s.target_addr, &None);
 
     // cheap: 10 bps, mid: 50 bps, expensive: 200 bps
     s.quote.set_route_fee(&s.admin, &route_cheap, &10);
@@ -538,11 +566,18 @@ fn test_compare_quotes_filter_then_execute() {
 
     // Threshold 100 bps: expensive (200 bps impact) is filtered out.
     let filtered = s.quote.compare_quotes(&requests, &100_i128);
-    assert_eq!(filtered.len(), 2, "cheap and mid must survive; expensive must not");
+    assert_eq!(
+        filtered.len(),
+        2,
+        "cheap and mid must survive; expensive must not"
+    );
 
     // compare_quotes returns survivors sorted by amount_out descending.
     let winner = filtered.get(0).unwrap();
-    assert_eq!(winner.route, route_cheap, "cheap route must be first (best amount_out)");
+    assert_eq!(
+        winner.route, route_cheap,
+        "cheap route must be first (best amount_out)"
+    );
     assert_eq!(winner.fee_bps, 10);
     // cheap: fee_amount = 10_000 * 10 / 10_000 = 10 → amount_out = 9_990
     assert_eq!(winner.amount_out, 9_990);
@@ -578,7 +613,8 @@ fn test_execution_fails_gracefully_on_invalid_target() {
     let caller = Address::generate(&s.env);
 
     let non_contract_addr = Address::generate(&s.env);
-    s.core.register_route(&s.admin, &route_name, &non_contract_addr, &None);
+    s.core
+        .register_route(&s.admin, &route_name, &non_contract_addr, &None);
     s.quote.set_route_fee(&s.admin, &route_name, &50);
 
     // Resolve succeeds — routing layer has no knowledge the target is invalid.

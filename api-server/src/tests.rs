@@ -935,21 +935,24 @@ async fn spawn_ws_server_with_rpc(rpc_url: String) -> (SocketAddr, AppState) {
 
 #[tokio::test]
 async fn test_stats_reflects_active_subscriptions() {
+    use axum::routing::get;
     use futures_util::{SinkExt, StreamExt};
     use serde_json::json;
     use std::time::Duration;
+    use tokio::net::TcpListener;
     use tokio::time::timeout;
     use tokio_tungstenite::connect_async;
     use tokio_tungstenite::tungstenite::Message as TungMessage;
-    use axum::routing::get;
-    use tokio::net::TcpListener;
 
     // Build a server that exposes both /ws and /stats.
     let state = AppState::new(
         "http://localhost:1".to_string(),
         "".to_string(),
         "".to_string(),
-        AuthConfig { enabled: false, api_key: None },
+        AuthConfig {
+            enabled: false,
+            api_key: None,
+        },
         FeeConfig::default(),
     );
 
@@ -1246,7 +1249,11 @@ async fn test_valid_key_still_works_after_invalid_key_is_rate_limited() {
     // A request with the correct key uses a distinct rate-limit bucket and
     // should succeed.
     let ok = app
-        .oneshot(request_with_addr_and_api_key("/health", addr, "correct-key"))
+        .oneshot(request_with_addr_and_api_key(
+            "/health",
+            addr,
+            "correct-key",
+        ))
         .await
         .unwrap();
     assert_eq!(

@@ -165,6 +165,7 @@ impl SorobanRpcClient {
     ) -> Result<RpcResponse> {
         let mut attempt = 0u32;
         loop {
+            let result = self.http.post(&self.rpc_url).json(req_body).send().await;
             let result = self
                 .http
                 .post(endpoint)
@@ -276,6 +277,7 @@ impl SorobanRpcClient {
             params: invoke_params,
         };
 
+        let resp = self.post_with_retry(&req).await?;
         let resp = self
             .post_with_failover(&req)
             .await?;
@@ -296,6 +298,7 @@ impl SorobanRpcClient {
             params: json!({ "keys": keys_xdr }),
         };
 
+        let resp = self.post_with_retry(&req).await?;
         let resp = self
             .post_with_failover(&req)
             .await?;
@@ -361,9 +364,8 @@ impl SorobanRpcClient {
             let raw_value = resp.result.ok_or_else(|| anyhow!("empty RPC result"))?;
 
             // Deserialize the raw response to extract paging tokens.
-            let raw_result: GetEventsResult =
-                serde_json::from_value(raw_value.clone())
-                    .context("failed to deserialize getEvents result")?;
+            let raw_result: GetEventsResult = serde_json::from_value(raw_value.clone())
+                .context("failed to deserialize getEvents result")?;
 
             let page_events = raw_result.events.unwrap_or_default();
             if page_events.is_empty() {
@@ -471,6 +473,237 @@ impl SorobanRpcClient {
 
 // ── XDR helpers ───────────────────────────────────────────────────────────────
 
+// ── Strkey decode ─────────────────────────────────────────────────────────────
+
+const BASE32_ALPHA: &[u8; 32] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+const VERSION_CONTRACT: u8 = 2 << 3; // 0x10 → first char 'C'
+
+/// CRC-16/XModem used by Stellar strkey checksums.
+fn crc16(data: &[u8]) -> u16 {
+    let mut crc: u16 = 0;
+    for &b in data {
+        crc ^= (b as u16) << 8;
+        for _ in 0..8 {
+            crc = if crc & 0x8000 != 0 {
+                (crc << 1) ^ 0x1021
+            } else {
+                crc << 1
+            };
+        }
+    }
+    crc
+}
+
+/// Decode a Stellar contract strkey (C…) into its 32-byte hash.
+pub fn decode_contract_id(strkey: &str) -> Result<[u8; 32]> {
+    if strkey.len() != 56 {
+        return Err(anyhow!("strkey must be 56 chars, got {}", strkey.len()));
+    }
+    let mut lookup = [0xFFu8; 256];
+    for (i, &c) in BASE32_ALPHA.iter().enumerate() {
+        lookup[c as usize] = i as u8;
+    }
+    let mut bits: u64 = 0;
+    let mut bit_count: u32 = 0;
+    let mut decoded: Vec<u8> = Vec::with_capacity(35);
+    for &ch in strkey.as_bytes() {
+        let v = lookup[ch as usize];
+        if v == 0xFF {
+            return Err(anyhow!("invalid base32 character '{}'", ch as char));
+        }
+        bits = (bits << 5) | v as u64;
+        bit_count += 5;
+        if bit_count >= 8 {
+            bit_count -= 8;
+            decoded.push((bits >> bit_count) as u8);
+        }
+    }
+    if decoded.len() != 35 {
+        return Err(anyhow!(
+            "strkey decoded to {} bytes, expected 35",
+            decoded.len()
+        ));
+    }
+    let version = decoded[0];
+    if version != VERSION_CONTRACT {
+        return Err(anyhow!(
+            "expected contract strkey (C…), got version 0x{version:02x}"
+        ));
+    }
+    let payload: [u8; 32] = decoded[1..33].try_into().unwrap();
+    let stored_crc = u16::from_le_bytes([decoded[33], decoded[34]]);
+    let actual_crc = crc16(&decoded[..33]);
+    if actual_crc != stored_crc {
+        return Err(anyhow!("strkey checksum mismatch"));
+    }
+    Ok(payload)
+}
+
+// ── Base64 ────────────────────────────────────────────────────────────────────
+
+const B64: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+fn base64_encode(input: &[u8]) -> String {
+    let mut out = String::with_capacity(input.len().div_ceil(3) * 4);
+    for chunk in input.chunks(3) {
+        let b0 = chunk[0] as u32;
+        let b1 = chunk.get(1).copied().unwrap_or(0) as u32;
+        let b2 = chunk.get(2).copied().unwrap_or(0) as u32;
+        let n = (b0 << 16) | (b1 << 8) | b2;
+        out.push(B64[(n >> 18 & 0x3F) as usize] as char);
+        out.push(B64[(n >> 12 & 0x3F) as usize] as char);
+        out.push(if chunk.len() > 1 {
+            B64[(n >> 6 & 0x3F) as usize] as char
+        } else {
+            '='
+        });
+        out.push(if chunk.len() > 2 {
+            B64[(n & 0x3F) as usize] as char
+        } else {
+            '='
+        });
+    }
+    out
+}
+
+/// Decode a standard base64 string (with `=` padding) into bytes.
+///
+/// Used in tests to verify the XDR byte layout produced by the encoder functions.
+#[cfg(test)]
+fn base64_decode(input: &str) -> Result<Vec<u8>> {
+    let mut lut = [0xFFu8; 256];
+    for (i, &c) in B64.iter().enumerate() {
+        lut[c as usize] = i as u8;
+    }
+    let input = input.trim_end_matches('=');
+    let mut bits: u32 = 0;
+    let mut bit_count: u32 = 0;
+    let mut out = Vec::with_capacity(input.len() * 3 / 4);
+    for &ch in input.as_bytes() {
+        let v = lut[ch as usize];
+        if v == 0xFF {
+            return Err(anyhow!("invalid base64 char '{}'", ch as char));
+        }
+        bits = (bits << 6) | v as u32;
+        bit_count += 6;
+        if bit_count >= 8 {
+            bit_count -= 8;
+            out.push((bits >> bit_count) as u8);
+        }
+    }
+    Ok(out)
+}
+
+// ── XDR writer ────────────────────────────────────────────────────────────────
+
+struct XdrWriter(Vec<u8>);
+
+impl XdrWriter {
+    fn new() -> Self {
+        Self(Vec::new())
+    }
+    fn u32(&mut self, v: u32) {
+        self.0.extend_from_slice(&v.to_be_bytes());
+    }
+    fn i64(&mut self, v: i64) {
+        self.0.extend_from_slice(&v.to_be_bytes());
+    }
+    /// Write `data` followed by zero-padding to the next 4-byte boundary.
+    fn opaque_fixed(&mut self, data: &[u8]) {
+        self.0.extend_from_slice(data);
+        let pad = data.len().wrapping_neg() & 3;
+        self.0.extend(std::iter::repeat_n(0u8, pad));
+    }
+    /// Write a 4-byte length prefix, then `opaque_fixed(data)`.
+    fn opaque_var(&mut self, data: &[u8]) {
+        self.u32(data.len() as u32);
+        self.opaque_fixed(data);
+    }
+    fn into_bytes(self) -> Vec<u8> {
+        self.0
+    }
+}
+
+// ScVal discriminants (Soroban protocol 21)
+const SCV_STRING: u32 = 14;
+const SCV_SYMBOL: u32 = 15;
+const SCV_LEDGER_KEY_CONTRACT_INSTANCE: u32 = 20;
+const SC_ADDR_CONTRACT: u32 = 1;
+
+// LedgerEntryType discriminant
+const LEDGER_ENTRY_TYPE_CONTRACT_DATA: u32 = 6;
+
+// ContractDataDurability discriminants
+const CONTRACT_DATA_DURABILITY_PERSISTENT: u32 = 1;
+
+/// Build a minimal base64-encoded `TransactionEnvelope` (v1) containing a
+/// single `InvokeHostFunctionOp` for `simulateTransaction`.
+///
+/// The source account is the all-zero Ed25519 key, fee is 100 stroops, and
+/// sequence number is 0. Signatures are omitted — `simulateTransaction` does
+/// not validate them.
+///
+/// `args_xdr` items are treated as Soroban `ScVal::String` arguments
+/// (the only type currently needed for registry/core view functions).
+fn build_invoke_xdr(contract_id: &str, function_name: &str, args_xdr: &[String]) -> Result<String> {
+    let contract_hash = decode_contract_id(contract_id)
+        .with_context(|| format!("invalid contract id '{contract_id}'"))?;
+
+    let mut w = XdrWriter::new();
+
+    // TransactionEnvelope discriminant: ENVELOPE_TYPE_TX = 2
+    w.u32(2);
+
+    // sourceAccount: MuxedAccount::Ed25519([0u8;32])
+    w.u32(0); // KEY_TYPE_ED25519
+    w.opaque_fixed(&[0u8; 32]);
+
+    w.u32(100); // fee (stroops)
+    w.i64(0); // seqNum
+
+    // cond: Preconditions::None
+    w.u32(0);
+    // memo: Memo::None
+    w.u32(0);
+
+    // operations: count = 1
+    w.u32(1);
+
+    // Operation
+    w.u32(0); // sourceAccount: absent
+    w.u32(24); // OperationType::INVOKE_HOST_FUNCTION
+
+    // InvokeHostFunctionOp
+    // hostFunction: HOST_FUNCTION_TYPE_INVOKE_CONTRACT = 0
+    w.u32(0);
+
+    // InvokeContractArgs
+    // contractAddress: SC_ADDRESS_TYPE_CONTRACT
+    w.u32(SC_ADDR_CONTRACT);
+    w.opaque_fixed(&contract_hash); // Hash(32)
+
+    // functionName: SCSymbol
+    w.opaque_var(function_name.as_bytes());
+
+    // args: SCVal[]
+    w.u32(args_xdr.len() as u32);
+    for arg in args_xdr {
+        // Treat each arg string as SCV_STRING
+        w.u32(SCV_STRING);
+        w.opaque_var(arg.as_bytes());
+    }
+
+    // auth: SorobanAuthorizationEntry[] — empty for read-only calls
+    w.u32(0);
+
+    // Transaction.ext: v = 0
+    w.u32(0);
+
+    // TransactionV1Envelope.signatures: count = 0
+    w.u32(0);
+
+    Ok(base64_encode(&w.into_bytes()))
+}
 /// Re-exported so callers addressing the crate as `rpc::decode_contract_id`
 /// (e.g. older fuzz targets) keep resolving; the implementation lives in the
 /// shared `router_off_chain_common::xdr` module.
@@ -643,11 +876,70 @@ pub fn extract_last_paging_token(raw_result: &Value) -> Option<String> {
 /// Always returns `Err` with the message:
 /// `"Direct XDR key construction not implemented. Use the simulation path or integrate stellar-xdr."`
 #[allow(dead_code)]
-pub fn instance_storage_key_xdr(_contract_id: &str) -> Result<String> {
-    Err(anyhow!(
-        "Direct XDR key construction not implemented. \
-         Use the simulation path or integrate stellar-xdr."
-    ))
+pub fn instance_storage_key_xdr(contract_id: &str) -> Result<String> {
+    let hash = decode_contract_id(contract_id)
+        .with_context(|| format!("invalid contract id '{contract_id}'"))?;
+
+    let mut w = XdrWriter::new();
+
+    // LedgerKey discriminant: CONTRACT_DATA = 6
+    w.u32(LEDGER_ENTRY_TYPE_CONTRACT_DATA);
+
+    // SCAddress::Contract
+    w.u32(SC_ADDR_CONTRACT);
+    w.opaque_fixed(&hash);
+
+    // ScVal::LedgerKeyContractInstance  (void – no payload)
+    w.u32(SCV_LEDGER_KEY_CONTRACT_INSTANCE);
+
+    // ContractDataDurability::Persistent
+    w.u32(CONTRACT_DATA_DURABILITY_PERSISTENT);
+
+    Ok(base64_encode(&w.into_bytes()))
+}
+
+/// Build the base64-encoded XDR [`LedgerKey::ContractData`] for a **named**
+/// persistent storage entry.
+///
+/// Router contracts store per-route configuration and counters as individual
+/// `Persistent` entries whose key is an `ScVal::Symbol` (e.g. `"MaxRetries"`,
+/// `"TotalRouted"`).  This function encodes such a key so that it can be
+/// passed directly to `getLedgerEntries`.
+///
+/// # XDR layout
+/// ```text
+/// LedgerKey::ContractData
+///   u32(6)  — LEDGER_ENTRY_TYPE_CONTRACT_DATA
+///   SCAddress::Contract
+///     u32(1)   — SC_ADDRESS_TYPE_CONTRACT
+///     Hash[32] — contract id bytes
+///   ScVal::Symbol
+///     u32(15)  — SCV_SYMBOL
+///     opaque_var(name bytes)   — 4-byte length + utf-8 bytes padded to 4-byte boundary
+///   ContractDataDurability::Persistent
+///     u32(1)   — PERSISTENT
+/// ```
+pub fn named_storage_key_xdr(contract_id: &str, storage_key: &str) -> Result<String> {
+    let hash = decode_contract_id(contract_id)
+        .with_context(|| format!("invalid contract id '{contract_id}'"))?;
+
+    let mut w = XdrWriter::new();
+
+    // LedgerKey discriminant: CONTRACT_DATA = 6
+    w.u32(LEDGER_ENTRY_TYPE_CONTRACT_DATA);
+
+    // SCAddress::Contract
+    w.u32(SC_ADDR_CONTRACT);
+    w.opaque_fixed(&hash);
+
+    // ScVal::Symbol
+    w.u32(SCV_SYMBOL);
+    w.opaque_var(storage_key.as_bytes());
+
+    // ContractDataDurability::Persistent
+    w.u32(CONTRACT_DATA_DURABILITY_PERSISTENT);
+
+    Ok(base64_encode(&w.into_bytes()))
 }
 
 // ── RpcClient trait ───────────────────────────────────────────────────────────
@@ -1011,9 +1303,15 @@ mod tests {
                     Ok(42)
                 }
             }
-            async fn call_bool(&self, _: &str, _: &str) -> Result<bool> { Ok(false) }
-            async fn call_string_vec(&self, _: &str, _: &str) -> Result<Vec<String>> { Ok(vec![]) }
-            async fn call_u32_vec(&self, _: &str, _: &str, _: &str) -> Result<Vec<u32>> { Ok(vec![]) }
+            async fn call_bool(&self, _: &str, _: &str) -> Result<bool> {
+                Ok(false)
+            }
+            async fn call_string_vec(&self, _: &str, _: &str) -> Result<Vec<String>> {
+                Ok(vec![])
+            }
+            async fn call_u32_vec(&self, _: &str, _: &str, _: &str) -> Result<Vec<u32>> {
+                Ok(vec![])
+            }
             async fn simulate_invoke(&self, _: &str, _: &str, _: Vec<String>) -> Result<Value> {
                 Ok(json!({}))
             }
@@ -1025,7 +1323,9 @@ mod tests {
             }
         }
 
-        let mock = FlakyMock { call_count: Arc::clone(&call_count) };
+        let mock = FlakyMock {
+            call_count: Arc::clone(&call_count),
+        };
 
         // First attempt returns an error; a real retry loop in the caller
         // would try again. We model that here by calling twice and asserting
@@ -1047,10 +1347,7 @@ mod tests {
             ],
             "latestLedger": 100
         });
-        assert_eq!(
-            extract_last_paging_token(&v),
-            Some("token-b".to_string())
-        );
+        assert_eq!(extract_last_paging_token(&v), Some("token-b".to_string()));
     }
 
     #[test]
@@ -1141,6 +1438,7 @@ mod tests {
             axum::serve(listener, app).await.unwrap();
         });
 
+        let client = SorobanRpcClient::new(format!("http://{addr}"), 5).expect("build client");
         let client =
             SorobanRpcClient::new(vec![format!("http://{addr}")], 5).expect("build client");
 
