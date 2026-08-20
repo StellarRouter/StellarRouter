@@ -1,4 +1,18 @@
-//! Failure scenario integration tests
+//! # Failure Scenario Integration Tests (Real Testnet)
+//!
+//! This module contains **real testnet integration tests** that are registered as a submodule
+//! in `tests/integration_tests.rs`. These tests are marked with `#[ignore]` and deploy contracts
+//! to a live testnet environment to verify end-to-end behavior.
+//!
+//! ## Scope
+//! - Runs as a submodule of `integration_tests.rs` (not a standalone test target)
+//! - Tests against real or staging testnet infrastructure
+//! - Requires network access and actual Stellar testnet account credentials
+//! - Use `cargo test --test integration -- --ignored` to run
+//!
+//! ## Sister File
+//! See `tests/failure_scenarios.rs` for **in-process Soroban environment tests**.
+//! That file runs as a standalone test target and uses the Soroban test environment (no testnet).
 //!
 //! These tests verify that the router system handles failures gracefully:
 //! - Unauthorized access attempts

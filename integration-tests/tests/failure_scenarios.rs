@@ -1,8 +1,20 @@
-/// Failure scenario tests for stellar-router.
-///
-/// Verifies that all contracts return the correct errors for invalid inputs,
-/// unauthorized callers, and edge cases. All tests run in the Soroban test
-/// environment — no testnet required.
+//! # Failure Scenario Tests (In-Process Soroban Environment)
+//!
+//! This is a **standalone test target** that runs failure scenarios in the **Soroban test environment**.
+//! These are unit-style tests that execute contracts in-process without requiring access to a testnet.
+//!
+//! ## Scope
+//! - Runs as its own `[[test]]` target in `Cargo.toml`
+//! - Uses `Env::default()` to instantiate a Soroban test environment
+//! - Tests contract behavior in isolation (no external network calls)
+//!
+//! ## Sister File
+//! See `tests/integration/failure_scenarios.rs` for **real testnet integration tests**.
+//! That file contains `#[ignore]` tests that deploy to testnet and verify end-to-end scenarios.
+//!
+//! Verifies that all contracts return the correct errors for invalid inputs,
+//! unauthorized callers, and edge cases.
+
 extern crate std;
 
 use soroban_sdk::{
