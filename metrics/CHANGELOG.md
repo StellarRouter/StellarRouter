@@ -48,6 +48,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- XDR/strkey/base64 parsing consolidated into the shared `router-off-chain-common::xdr`
+  module; the metrics exporter no longer maintains an independent copy of
+  `decode_contract_id`, `base64_encode`, or the `build_invoke_xdr` helper.
+
 ### Added
 - **Real-time event streaming via Stellar SSE** (`--event-mode sse` / `ROUTER_EVENT_MODE=sse`):
   - New `EventMode` CLI flag (`poll` | `sse`) and companion env var `ROUTER_EVENT_MODE`.

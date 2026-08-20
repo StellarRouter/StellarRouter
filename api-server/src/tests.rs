@@ -695,7 +695,9 @@ async fn test_get_route_invalid_characters_returns_400() {
     let resp = app
         .oneshot(
             Request::builder()
-                .uri("/routes/invalid name")
+                // Percent-encode the space — raw ' ' is rejected by the `http` crate
+                // as an invalid URI character before it reaches the server.
+                .uri("/routes/invalid%20name")
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -710,23 +712,21 @@ async fn test_get_route_invalid_characters_returns_400() {
 }
 
 #[tokio::test]
-async fn test_get_route_empty_name_returns_400() {
+async fn test_get_route_empty_name_returns_404() {
     let app = test_app();
     let resp = app
         .oneshot(
             Request::builder()
+                // A trailing-slash URI has an empty `:name` segment, which the
+                // router does not match, so it is 404 rather than reaching the
+                // handler's 400 validation.
                 .uri("/routes/")
                 .body(Body::empty())
                 .unwrap(),
         )
         .await
         .unwrap();
-    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
-    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
-        .await
-        .unwrap();
-    let json: Value = serde_json::from_slice(&bytes).unwrap();
-    assert!(json["error"].as_str().unwrap().contains("empty"));
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
 }
 
 #[test]
@@ -1265,9 +1265,9 @@ async fn test_valid_key_still_works_after_invalid_key_is_rate_limited() {
 //
 //   • GET /routes/:name — validate_route_name rejects the request (400) before
 //     the route name is ever passed to `info!()`.
-//   • POST /simulate — `function` is sanitized via `sanitize_for_log` before
-//     logging; the request still proceeds normally (function is not shape-
-//     validated beyond non-empty).
+//   • POST /simulate — `validate_function_name` rejects control characters in
+//     `function` with a 400; `sanitize_for_log` additionally guarantees any
+//     value is stripped before reaching `info!()`.
 //
 // The unit-level guarantee (that sanitize_for_log itself strips control chars)
 // lives in router-off-chain-common/src/logging.rs.
@@ -1366,8 +1366,9 @@ async fn test_simulate_with_newline_in_function_does_not_forge_log() {
     // a new log line.
     assert!(sanitized.contains('\u{240A}')); // ␊ — LINE FEED symbol
 
-    // Also confirm the HTTP handler accepts (not rejects) the request —
-    // sanitization is applied at the logging site, not as an input gate.
+    // Also confirm the HTTP handler rejects the request: `function` is now
+    // shape-validated via `validate_function_name`, which rejects control
+    // characters, so the forged value cannot reach the log at all.
     let app = test_app();
     let body = json!({
         "target": VALID_CONTRACT_ID,
@@ -1389,13 +1390,12 @@ async fn test_simulate_with_newline_in_function_does_not_forge_log() {
         .await
         .unwrap();
 
-    // The simulate handler doesn't gate on function content — it should still
-    // return 200 (heuristic path) or 500 (RPC unreachable in test).  Either
-    // way it must NOT return 400/422 for this input.
-    assert!(
-        resp.status() == StatusCode::OK || resp.status() == StatusCode::INTERNAL_SERVER_ERROR,
-        "simulate should not reject a request purely because `function` contains control chars; \
-         got {}",
+    // The simulate handler rejects control characters in `function` with a 400
+    // before any logging takes place.
+    assert_eq!(
+        resp.status(),
+        StatusCode::BAD_REQUEST,
+        "simulate should reject a function containing control chars; got {}",
         resp.status()
     );
 }
