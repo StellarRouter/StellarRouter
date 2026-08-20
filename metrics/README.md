@@ -79,6 +79,10 @@ Options:
       [env: ROUTER_RPC_URL]
       [default: https://soroban-testnet.stellar.org]
 
+  --rpc-urls <URLS>...
+      Soroban RPC endpoint URLs for failover (comma-separated or repeat flag)
+      [env: ROUTER_RPC_URLS]
+
   --network-passphrase <PASSPHRASE>
       Stellar network passphrase (used to decode XDR correctly)
       [env: ROUTER_NETWORK_PASSPHRASE]
@@ -215,6 +219,17 @@ rate(router_sse_reconnects_total{contract="CBGTG..."}[5m])
 # Event throughput
 rate(router_sse_events_total{contract="CBGTG..."}[1m])
 ```
+
+### RPC Failover
+
+```bash
+export ROUTER_RPC_URLS="https://primary.example.com,https://secondary.example.com"
+export ROUTER_SCRAPE_INTERVAL_SECS=15
+```
+
+When multiple RPC endpoints are provided, the exporter automatically fails over to the next endpoint if the current one becomes unreachable. Each endpoint gets its own retry budget (controlled by `ROUTER_RPC_MAX_RETRIES` and `ROUTER_RPC_BACKOFF_MS`). If all endpoints fail, the scrape cycle is marked as failed and `router_up` is set to `0`.
+
+The exporter treats each failed endpoint as a health-check failure and moves traffic to healthy endpoints without manual intervention.
 
 ### Example: Testnet deployment
 

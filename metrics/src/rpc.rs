@@ -7,6 +7,7 @@
 
 use anyhow::{anyhow, Context, Result};
 use reqwest::Client;
+use router_off_chain_common::xdr::build_invoke_xdr_from_strkey;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::time::Duration;
@@ -83,11 +84,11 @@ struct GetEventsResult {
 
 // ── Client ────────────────────────────────────────────────────────────────────
 
-/// Thin async wrapper around the Soroban JSON-RPC endpoint.
+/// Thin async wrapper around the Soroban JSON-RPC endpoint(s).
 #[derive(Clone)]
 pub struct SorobanRpcClient {
     http: Client,
-    rpc_url: String,
+    endpoints: Vec<String>,
     /// Maximum number of retry attempts for retryable errors (default: 3).
     max_retries: u32,
     /// Base backoff duration before first retry (doubles on each attempt).
@@ -95,7 +96,7 @@ pub struct SorobanRpcClient {
 }
 
 impl SorobanRpcClient {
-    /// Create a new client.
+    /// Create a new client with one or more RPC endpoints.
     ///
     /// `timeout_secs` is applied to every individual HTTP request.
     /// Retry behaviour is configured via environment variables:
@@ -104,11 +105,22 @@ impl SorobanRpcClient {
     /// |---|---|---|
     /// | `ROUTER_RPC_MAX_RETRIES` | `3` | Max retry attempts for transient errors. |
     /// | `ROUTER_RPC_BACKOFF_MS` | `200` | Base backoff in milliseconds (doubles each retry). |
-    pub fn new(rpc_url: impl Into<String>, timeout_secs: u64) -> Result<Self> {
+    ///
+    /// If multiple endpoints are provided, the client will automatically
+    /// failover to the next endpoint when the current one is unreachable.
+    pub fn new(
+        rpc_urls: impl IntoIterator<Item = impl Into<String>>,
+        timeout_secs: u64,
+    ) -> Result<Self> {
         let http = Client::builder()
             .timeout(Duration::from_secs(timeout_secs))
             .build()
             .context("failed to build HTTP client")?;
+
+        let endpoints: Vec<String> = rpc_urls.into_iter().map(Into::into).collect();
+        if endpoints.is_empty() {
+            return Err(anyhow!("at least one RPC endpoint is required"));
+        }
 
         let max_retries = std::env::var("ROUTER_RPC_MAX_RETRIES")
             .ok()
@@ -122,7 +134,7 @@ impl SorobanRpcClient {
 
         Ok(Self {
             http,
-            rpc_url: rpc_url.into(),
+            endpoints,
             max_retries,
             base_backoff: Duration::from_millis(base_backoff_ms),
         })
@@ -146,10 +158,20 @@ impl SorobanRpcClient {
     /// Execute an HTTP POST and parse the JSON-RPC response, retrying up to
     /// `self.max_retries` times on transient/retryable errors with exponential
     /// backoff.
-    async fn post_with_retry(&self, req_body: &impl Serialize) -> Result<RpcResponse> {
+    async fn post_with_retry(
+        &self,
+        req_body: &impl Serialize,
+        endpoint: &str,
+    ) -> Result<RpcResponse> {
         let mut attempt = 0u32;
         loop {
             let result = self.http.post(&self.rpc_url).json(req_body).send().await;
+            let result = self
+                .http
+                .post(endpoint)
+                .json(req_body)
+                .send()
+                .await;
 
             match result {
                 Ok(response) => {
@@ -163,6 +185,7 @@ impl SorobanRpcClient {
                             attempt,
                             delay_ms = delay.as_millis(),
                             %status,
+                            endpoint = %endpoint,
                             "RPC HTTP error — retrying"
                         );
                         attempt += 1;
@@ -172,7 +195,7 @@ impl SorobanRpcClient {
                     return response
                         .json::<RpcResponse>()
                         .await
-                        .context("failed to parse JSON-RPC response");
+                        .with_context(|| format!("failed to parse JSON-RPC response from {endpoint}"));
                 }
                 Err(err) => {
                     if Self::is_retryable_error(&err) && attempt < self.max_retries {
@@ -181,16 +204,53 @@ impl SorobanRpcClient {
                             attempt,
                             delay_ms = delay.as_millis(),
                             error = %err,
+                            endpoint = %endpoint,
                             "RPC request failed — retrying"
                         );
                         attempt += 1;
                         tokio::time::sleep(delay).await;
                         continue;
                     }
-                    return Err(err).context("HTTP request failed");
+                    return Err(err).with_context(|| format!("HTTP request to {endpoint} failed"));
                 }
             }
         }
+    }
+
+    /// Execute an HTTP POST with automatic failover across all configured endpoints.
+    ///
+    /// Each endpoint gets its own retry budget. If one endpoint fails after
+    /// retries, the client moves to the next endpoint. This provides resilience
+    /// against individual endpoint outages.
+    async fn post_with_failover(&self, req_body: &impl Serialize) -> Result<RpcResponse> {
+        let mut last_err = None;
+
+        for (idx, endpoint) in self.endpoints.iter().enumerate() {
+            match self.post_with_retry(req_body, endpoint).await {
+                Ok(resp) => {
+                    if idx > 0 {
+                        warn!(
+                            endpoint = %endpoint,
+                            attempt = idx + 1,
+                            "failover to endpoint succeeded"
+                        );
+                    }
+                    return Ok(resp);
+                }
+                Err(err) => {
+                    warn!(
+                        endpoint = %endpoint,
+                        attempt = idx + 1,
+                        total_endpoints = self.endpoints.len(),
+                        error = %err,
+                        "endpoint failed after retries"
+                    );
+                    last_err = Some(err);
+                }
+            }
+        }
+
+        Err(last_err.unwrap_or_else(|| anyhow!("no RPC endpoints configured")))
     }
 
     /// Call `simulateTransaction` to invoke a read-only contract function and
@@ -207,7 +267,7 @@ impl SorobanRpcClient {
         // Build a minimal transaction envelope XDR for simulation.
         // We use the `invokeHostFunction` operation type.
         let invoke_params = json!({
-            "transaction": build_invoke_xdr(contract_id, function_name, &args_xdr)?,
+            "transaction": build_invoke_xdr_from_strkey(contract_id, function_name, &args_xdr)?,
         });
 
         let req = RpcRequest {
@@ -218,6 +278,9 @@ impl SorobanRpcClient {
         };
 
         let resp = self.post_with_retry(&req).await?;
+        let resp = self
+            .post_with_failover(&req)
+            .await?;
 
         if let Some(err) = resp.error {
             return Err(anyhow!("RPC error {}: {}", err.code, err.message));
@@ -236,6 +299,9 @@ impl SorobanRpcClient {
         };
 
         let resp = self.post_with_retry(&req).await?;
+        let resp = self
+            .post_with_failover(&req)
+            .await?;
 
         if let Some(err) = resp.error {
             return Err(anyhow!("RPC error {}: {}", err.code, err.message));
@@ -288,7 +354,7 @@ impl SorobanRpcClient {
             };
 
             let resp = self
-                .post_with_retry(&req)
+                .post_with_failover(&req)
                 .await?;
 
             if let Some(err) = resp.error {
@@ -638,6 +704,10 @@ fn build_invoke_xdr(contract_id: &str, function_name: &str, args_xdr: &[String])
 
     Ok(base64_encode(&w.into_bytes()))
 }
+/// Re-exported so callers addressing the crate as `rpc::decode_contract_id`
+/// (e.g. older fuzz targets) keep resolving; the implementation lives in the
+/// shared `router_off_chain_common::xdr` module.
+pub use router_off_chain_common::xdr::decode_contract_id;
 
 // ── Result extraction helpers ─────────────────────────────────────────────────
 
@@ -954,13 +1024,18 @@ impl RpcClient for SorobanRpcClient {
 /// Pre-load responses via the builder methods; any call not explicitly
 /// configured returns an error so tests fail loudly on unexpected calls.
 ///
+/// This is part of the library API (rather than `#[cfg(test)]`) because the
+/// binary crate's own unit tests in `collector.rs` reach it through the
+/// `crate::rpc` re-export, which resolves to the library module.
+///
 /// # Example
 /// ```rust
+/// use router_metrics_exporter::rpc::MockRpcClient;
+/// # use router_metrics_exporter::rpc::MockRpcClient;
 /// let mock = MockRpcClient::new()
 ///     .with_u64("CONTRACT", "total_routed", 42)
 ///     .with_string_vec("CONTRACT", "get_all_routes", vec![]);
 /// ```
-#[cfg(test)]
 pub struct MockRpcClient {
     u64_responses: std::collections::HashMap<(String, String), u64>,
     bool_responses: std::collections::HashMap<(String, String), bool>,
@@ -971,7 +1046,12 @@ pub struct MockRpcClient {
     ledger_entries_responses: std::collections::HashMap<String, Vec<LedgerEntry>>,
 }
 
-#[cfg(test)]
+impl Default for MockRpcClient {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl MockRpcClient {
     pub fn new() -> Self {
         Self {
@@ -1032,7 +1112,6 @@ impl MockRpcClient {
     }
 }
 
-#[cfg(test)]
 #[async_trait::async_trait]
 impl RpcClient for MockRpcClient {
     async fn call_u64(&self, contract_id: &str, function_name: &str) -> Result<u64> {
@@ -1173,43 +1252,29 @@ mod tests {
         assert_eq!(result, vec!["oracle", "price_feed"]);
     }
 
-    /// Verify that `build_invoke_xdr` produces valid base64-encoded XDR starting
-    /// with the ENVELOPE_TYPE_TX discriminant (big-endian 2 = [0,0,0,2]).
+    /// Verify that `build_invoke_xdr_from_strkey` produces valid base64-encoded
+    /// XDR starting with the ENVELOPE_TYPE_TX discriminant (big-endian 2).
     #[test]
     fn build_invoke_xdr_produces_valid_envelope() {
         let contract = "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4";
-        let xdr = build_invoke_xdr(contract, "total_routed", &[]).unwrap();
-        // Must be valid base64
-        let mut lut = [0xFFu8; 256];
-        for (i, &c) in B64.iter().enumerate() {
-            lut[c as usize] = i as u8;
-        }
-        // Decode first 4 bytes to verify ENVELOPE_TYPE_TX = 2
-        let bytes: Vec<u8> = {
-            let s = xdr.trim_end_matches('=').as_bytes();
-            let c0 = lut[s[0] as usize] as u32;
-            let c1 = lut[s[1] as usize] as u32;
-            let c2 = lut[s[2] as usize] as u32;
-            let c3 = lut[s[3] as usize] as u32;
-            let n = (c0 << 18) | (c1 << 12) | (c2 << 6) | c3;
-            vec![(n >> 16) as u8, (n >> 8) as u8, n as u8]
-        };
-        assert_eq!(&bytes[0..3], &[0, 0, 0], "high bytes of discriminant");
-        // The fourth byte is in the next group; just check first 3 are 0.
-        let _ = bytes;
+        let xdr = build_invoke_xdr_from_strkey(contract, "total_routed", &[]).unwrap();
+        // Must be valid base64 (decodes without error).
+        let bytes = router_off_chain_common::xdr::base64_decode(&xdr)
+            .expect("XDR must be valid base64");
+        assert_eq!(&bytes[0..4], &[0, 0, 0, 2], "ENVELOPE_TYPE_TX discriminant");
     }
 
     #[test]
     fn build_invoke_xdr_with_string_arg() {
         let contract = "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4";
-        let result = build_invoke_xdr(contract, "get_route", &["oracle".to_string()]);
+        let result = build_invoke_xdr_from_strkey(contract, "get_route", &["oracle".to_string()]);
         assert!(result.is_ok(), "XDR build with arg should succeed");
         assert!(!result.unwrap().is_empty());
     }
 
     #[test]
     fn build_invoke_xdr_invalid_contract_id_returns_error() {
-        let result = build_invoke_xdr("not-a-valid-contract-id", "fn", &[]);
+        let result = build_invoke_xdr_from_strkey("not-a-valid-contract-id", "fn", &[]);
         assert!(result.is_err(), "invalid contract id should return Err");
     }
     /// fail the overall call — the retry logic absorbs the first blip.
@@ -1374,6 +1439,8 @@ mod tests {
         });
 
         let client = SorobanRpcClient::new(format!("http://{addr}"), 5).expect("build client");
+        let client =
+            SorobanRpcClient::new(vec![format!("http://{addr}")], 5).expect("build client");
 
         let events = client
             .get_events("CONTRACT", &["post_call"], 10)
@@ -1405,5 +1472,158 @@ mod tests {
             err.to_string().contains("not implemented"),
             "expected stub error message, got: {err}"
         );
+    }
+
+    /// Verify that the client fails over to the next endpoint when the primary
+    /// returns 500. Server A always fails; server B returns a valid response.
+    #[tokio::test]
+    async fn test_failover_to_healthy_endpoint() {
+        // Server A: always returns 500
+        let app_a = axum::Router::new().route(
+            "/",
+            axum::routing::post(|| async {
+                (axum::http::StatusCode::INTERNAL_SERVER_ERROR, "server error")
+            }),
+        );
+        let listener_a = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind A");
+        let addr_a = listener_a.local_addr().expect("local addr A");
+        tokio::spawn(async move {
+            axum::serve(listener_a, app_a)
+                .await
+                .expect("serve A");
+        });
+
+        // Server B: returns a valid JSON-RPC response
+        let app_b = axum::Router::new().route(
+            "/",
+            axum::routing::post(|axum::Json(_body): axum::Json<Value>| async move {
+                let response = json!({
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "result": {
+                        "results": [{"retval": {"u64": 42}}]
+                    }
+                });
+                axum::Json(response)
+            }),
+        );
+        let listener_b = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind B");
+        let addr_b = listener_b.local_addr().expect("local addr B");
+        tokio::spawn(async move {
+            axum::serve(listener_b, app_b)
+                .await
+                .expect("serve B");
+        });
+
+        let client = SorobanRpcClient::new(
+            vec![format!("http://{addr_a}"), format!("http://{addr_b}")],
+            5,
+        )
+        .expect("build client");
+
+        let result = client
+            .call_u64(
+                "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
+                "total_routed",
+            )
+            .await
+            .expect("failover should succeed");
+
+        assert_eq!(result, 42);
+    }
+
+    /// Verify that the client returns an error when ALL endpoints are unreachable.
+    #[tokio::test]
+    async fn test_all_endpoints_fail() {
+        // Server A: returns 500
+        let app_a = axum::Router::new().route(
+            "/",
+            axum::routing::post(|| async {
+                (axum::http::StatusCode::INTERNAL_SERVER_ERROR, "server error")
+            }),
+        );
+        let listener_a = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind A");
+        let addr_a = listener_a.local_addr().expect("local addr A");
+        tokio::spawn(async move {
+            axum::serve(listener_a, app_a)
+                .await
+                .expect("serve A");
+        });
+
+        // Server B: also returns 500
+        let app_b = axum::Router::new().route(
+            "/",
+            axum::routing::post(|| async {
+                (axum::http::StatusCode::INTERNAL_SERVER_ERROR, "server error")
+            }),
+        );
+        let listener_b = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind B");
+        let addr_b = listener_b.local_addr().expect("local addr B");
+        tokio::spawn(async move {
+            axum::serve(listener_b, app_b)
+                .await
+                .expect("serve B");
+        });
+
+        let client = SorobanRpcClient::new(
+            vec![format!("http://{addr_a}"), format!("http://{addr_b}")],
+            5,
+        )
+        .expect("build client");
+
+        let result = client
+            .call_u64(
+                "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
+                "total_routed",
+            )
+            .await;
+        assert!(result.is_err(), "expected error when all endpoints fail");
+    }
+
+    /// Verify that the client succeeds immediately on the first endpoint
+    /// without triggering failover.
+    #[tokio::test]
+    async fn test_single_endpoint_succeeds_without_failover() {
+        let app = axum::Router::new().route(
+            "/",
+            axum::routing::post(|axum::Json(_body): axum::Json<Value>| async move {
+                let response = json!({
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "result": {
+                        "results": [{"retval": {"u64": 99}}]
+                    }
+                });
+                axum::Json(response)
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
+        let addr = listener.local_addr().expect("local addr");
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.expect("serve");
+        });
+
+        let client =
+            SorobanRpcClient::new(vec![format!("http://{addr}")], 5).expect("build client");
+
+        let result = client
+            .call_u64(
+                "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
+                "total_routed",
+            )
+            .await
+            .expect("single endpoint should succeed");
+
+        assert_eq!(result, 99);
     }
 }

@@ -52,6 +52,16 @@ pub struct Args {
     )]
     pub rpc_url: String,
 
+    /// Soroban RPC endpoint URL(s) for failover.
+    ///
+    /// Accepts one or more comma-separated URLs. When multiple endpoints are
+    /// provided, the exporter will automatically failover to the next endpoint
+    /// if the current one becomes unreachable.
+    ///
+    /// Example: `--rpc-urls https://primary.example.com,https://secondary.example.com`
+    #[arg(long, env = "ROUTER_RPC_URLS", value_delimiter = ',')]
+    pub rpc_urls: Vec<String>,
+
     /// Stellar network passphrase (used to decode XDR correctly).
     ///
     /// Defaults to the public testnet passphrase.
