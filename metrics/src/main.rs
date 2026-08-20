@@ -85,7 +85,11 @@ async fn main() -> Result<()> {
     }
 
     info!(
-        rpc_url = %args.rpc_url,
+        rpc_urls = ?if args.rpc_urls.is_empty() {
+            vec![args.rpc_url.clone()]
+        } else {
+            args.rpc_urls.clone()
+        },
         listen = %args.listen,
         scrape_interval_secs = args.scrape_interval_secs,
         event_mode = %args.event_mode,

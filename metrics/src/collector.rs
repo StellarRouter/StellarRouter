@@ -76,7 +76,13 @@ impl Collector {
             "scrape loop started"
         );
 
-        let client = match SorobanRpcClient::new(&self.args.rpc_url, self.args.rpc_timeout_secs) {
+        let endpoints: Vec<String> = if self.args.rpc_urls.is_empty() {
+            vec![self.args.rpc_url.clone()]
+        } else {
+            self.args.rpc_urls.clone()
+        };
+
+        let client = match SorobanRpcClient::new(endpoints, self.args.rpc_timeout_secs) {
             Ok(c) => c,
             Err(e) => {
                 error!("failed to create RPC client: {e:#}");
@@ -124,7 +130,13 @@ impl Collector {
     pub async fn run_sse(self, cancel: CancellationToken) {
         info!("SSE mode: performing bootstrap poll");
 
-        let client = match SorobanRpcClient::new(&self.args.rpc_url, self.args.rpc_timeout_secs) {
+        let endpoints: Vec<String> = if self.args.rpc_urls.is_empty() {
+            vec![self.args.rpc_url.clone()]
+        } else {
+            self.args.rpc_urls.clone()
+        };
+
+        let client = match SorobanRpcClient::new(endpoints, self.args.rpc_timeout_secs) {
             Ok(c) => c,
             Err(e) => {
                 error!("SSE mode: failed to create RPC client for bootstrap: {e:#}");
@@ -923,6 +935,7 @@ mod tests {
         let metrics = RouterMetrics::new(&reg).unwrap();
         let args = Args {
             rpc_url: String::new(),
+            rpc_urls: vec![],
             network_passphrase: String::new(),
             core_contract_id: core.to_string(),
             middleware_contract_id: middleware.to_string(),
