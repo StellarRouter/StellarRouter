@@ -143,6 +143,30 @@ mod tests {
         assert!(validate_contract_id(&id).is_err());
     }
 
+    #[test]
+    fn contract_id_with_multibyte_utf8_rejected() {
+        // "é" (U+00E9) encodes to 2 bytes in UTF-8, so this string is exactly
+        // 56 bytes long but only 55 characters. It slips past the byte-length
+        // gate (`id.len() == 56`) and must be caught by the ASCII-alphanumeric
+        // check instead. This locks in the rejection behavior for inputs where
+        // `.len()` (bytes) and `.chars().count()` diverge.
+        let id = format!("C{}\u{00e9}", "A".repeat(53));
+        assert_eq!(id.len(), 56, "byte length should satisfy the length gate");
+        assert_eq!(
+            id.chars().count(),
+            55,
+            "char count diverges from byte length for multi-byte input"
+        );
+        assert!(validate_contract_id(&id).is_err());
+    }
+
+    #[test]
+    fn contract_id_with_emoji_rejected() {
+        // A 4-byte emoji is multi-byte UTF-8 and is never ASCII alphanumeric.
+        let id = format!("C{}\u{1f680}", "A".repeat(54));
+        assert!(validate_contract_id(&id).is_err());
+    }
+
     // ── validate_route_name ───────────────────────────────────────────────────
 
     #[test]
