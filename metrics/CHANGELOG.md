@@ -67,6 +67,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     - `router_sse_reconnects_total{contract}` — cumulative reconnect attempts.
     - `router_sse_events_total{contract}` — cumulative events received over SSE.
   - Poll mode is **fully unaffected** and remains the default.
+- **Multi-endpoint RPC failover** (`--rpc-urls` / `ROUTER_RPC_URLS`):
+  - Accepts a comma-separated list or repeated `--rpc-urls` flags.
+  - Automatic failover with per-endpoint retry budgets when an endpoint is unreachable.
+  - Backward compatible: `--rpc-url` / `ROUTER_RPC_URL` still works as a single endpoint.
 
 ### Planned
 - Support for custom metric labels via configuration
@@ -78,5 +82,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Integration with Stellar Horizon for transaction-level metrics
 - Proper XDR encoding/decoding using `stellar-xdr` crate
 - Metric cardinality limits to prevent label explosion
-- Support for multiple network endpoints (failover)
 - Metric aggregation across multiple contract instances
