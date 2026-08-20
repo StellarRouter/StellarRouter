@@ -4,6 +4,7 @@ benches/src/scrap-menu/
 .DS_Store
 *.wasm
 artifacts/
+coverage/
 .env
 .env.*
 *.log
