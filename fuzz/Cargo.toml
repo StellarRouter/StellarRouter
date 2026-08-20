@@ -23,6 +23,9 @@ path = "../api-server"
 [dependencies.router-metrics-exporter]
 path = "../metrics"
 
+[dependencies.router-off-chain-common]
+path = "../router-off-chain-common"
+
 # Disable default features on the fuzz crate itself to keep compile times short.
 [[bin]]
 name = "fuzz_xdr_parse"
