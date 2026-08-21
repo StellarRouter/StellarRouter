@@ -18,6 +18,7 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use std::env;
+use subtle::ConstantTimeEq;
 use tracing::warn;
 
 /// Authentication configuration.
@@ -75,7 +76,7 @@ pub async fn auth_middleware(
     match api_key {
         Some(key) => {
             if let Some(expected_key) = &config.api_key {
-                if key == *expected_key {
+                if api_keys_equal(&key, expected_key) {
                     Ok(next.run(req).await)
                 } else {
                     Err(AuthError::InvalidKey)
@@ -86,6 +87,18 @@ pub async fn auth_middleware(
         }
         None => Err(AuthError::MissingKey),
     }
+}
+
+/// Compare an API key against the expected value in constant time.
+///
+/// A plain `==` on `String` short-circuits at the first mismatched byte, so
+/// the comparison latency reveals how many leading bytes matched. An attacker
+/// measuring response times could therefore recover `ROUTER_API_KEY`
+/// byte-by-byte. [`ConstantTimeEq`] compares every byte and accumulates the
+/// result via a bitwise OR, so the comparison time does not depend on where
+/// (or whether) the first mismatch occurs.
+fn api_keys_equal(supplied: &str, expected: &str) -> bool {
+    supplied.as_bytes().ct_eq(expected.as_bytes()).into()
 }
 
 /// Extract the API key from request headers.
@@ -165,4 +178,33 @@ mod tests {
         headers.insert("x-api-key", "api-key".parse().unwrap());
         assert_eq!(extract_api_key(&headers), Some("bearer-key".to_string()));
     }
-}
+
+    // ── constant-time comparison tests ───────────────────────────────
+
+    #[test]
+    fn test_api_keys_equal_matching_keys() {
+        assert!(api_keys_equal("secret-api-key-123", "secret-api-key-123"));
+    }
+
+    #[test]
+    fn test_api_keys_equal_mismatch_at_start() {
+        assert!(!api_keys_equal("aaaa", "bbbb"));
+    }
+
+    #[test]
+    fn test_api_keys_equal_mismatch_at_end() {
+        assert!(!api_keys_equal("abcX", "abcY"));
+    }
+
+    #[test]
+    fn test_api_keys_equal_different_lengths() {
+        assert!(!api_keys_equal("short", "shortlong"));
+        assert!(!api_keys_equal("longlong", "long"));
+    }
+
+    #[test]
+    fn test_api_keys_equal_empty_keys() {
+        assert!(api_keys_equal("", ""));
+        assert!(!api_keys_equal("", "not-empty"));
+        assert!(!api_keys_equal("not-empty", ""));
+    }
