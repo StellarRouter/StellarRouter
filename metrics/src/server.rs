@@ -180,9 +180,9 @@ async fn ready_handler(State(state): State<AppState>) -> impl IntoResponse {
 
     let router_up = metric_families
         .iter()
-        .find(|mf| mf.name() == "router_up")
+        .find(|mf| mf.get_name() == "router_up")
         .and_then(|mf| mf.get_metric().first())
-        .and_then(|m| m.gauge.as_ref().map(|g| g.value()))
+        .map(|m| m.get_gauge().get_value())
         .unwrap_or(0.0);
 
     if router_up >= 1.0 {

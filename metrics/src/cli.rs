@@ -136,7 +136,6 @@ pub struct Args {
     pub rpc_timeout_secs: u64,
 
     // ── SSE / event-mode configuration ────────────────────────────────────────
-
     /// Event ingestion mode: `poll` (default) or `sse`.
     ///
     /// `poll` — scrape the Soroban RPC every `scrape_interval_secs` seconds
@@ -188,4 +187,11 @@ pub struct Args {
         default_value_t = 30_000
     )]
     pub sse_reconnect_max_delay_ms: u64,
+
+    // ── Cardinality limiting ────────────────────────────────────────────────
+    /// Maximum distinct label values allowed per high-cardinality metric
+    /// (per-route, per-name).  When the cap is exceeded, new values are
+    /// grouped into an `_other` bucket to prevent Prometheus label explosion.
+    #[arg(long, env = "ROUTER_MAX_CARDINALITY", default_value_t = 100)]
+    pub max_cardinality: usize,
 }

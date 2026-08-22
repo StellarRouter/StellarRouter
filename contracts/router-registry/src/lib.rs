@@ -1,4 +1,9 @@
 #![no_std]
+#![allow(
+    clippy::manual_strip,
+    clippy::needless_borrow,
+    clippy::unnecessary_map_or
+)]
 
 //! # router-registry
 //!

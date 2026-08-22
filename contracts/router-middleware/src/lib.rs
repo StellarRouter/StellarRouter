@@ -1,4 +1,5 @@
 #![no_std]
+#![allow(clippy::too_many_arguments)]
 
 //! # router-middleware
 //!
@@ -320,7 +321,11 @@ impl RouterMiddleware {
                     if !recovers {
                         return Err(MiddlewareError::CircuitOpen);
                     }
-                    // Transition to half-open state for probe call
+                    // Transition to half-open state for probe call. Reset the
+                    // failure metadata so a successful probe starts a fresh
+                    // failure window; a failed probe records a new failure.
+                    route_call_state.circuit_breaker.failure_count = 0;
+                    route_call_state.circuit_breaker.opened_at = 0;
                     route_call_state.circuit_breaker.is_open = false;
                     route_call_state.circuit_breaker.is_half_open = true;
                     state_changed = true;
@@ -812,8 +817,10 @@ impl RouterMiddleware {
         env.storage()
             .instance()
             .remove(&DataKey::CallLog(route.clone()));
-        env.events()
-            .publish((Symbol::new(&env, router_common::EVENT_CALL_LOG_CLEARED),), route);
+        env.events().publish(
+            (Symbol::new(&env, router_common::EVENT_CALL_LOG_CLEARED),),
+            route,
+        );
         Ok(())
     }
 
@@ -1656,7 +1663,7 @@ mod tests {
         client.post_call(&caller, &route, &false);
         let state = client.circuit_breaker_state(&route).unwrap();
         assert!(state.is_open);
-        assert!(state.opened_at > 0);
+        assert_eq!(state.opened_at, env.ledger().timestamp());
     }
 
     #[test]
@@ -1737,10 +1744,7 @@ mod tests {
         // Check state after window expires — should reset to 0
         let state_after_window = client.rate_limit_state(&route, &caller).unwrap();
         assert_eq!(state_after_window.calls_in_window, 0);
-        assert_eq!(
-            state_after_window.window_start,
-            env.ledger().timestamp() - 1
-        );
+        assert_eq!(state_after_window.window_start, env.ledger().timestamp());
     }
 
     #[test]
@@ -2194,7 +2198,7 @@ mod tests {
         let state_open = client.circuit_breaker_state(&route).unwrap();
         assert!(state_open.is_open);
         assert_eq!(state_open.failure_count, 1);
-        assert!(state_open.opened_at > 0);
+        assert_eq!(state_open.opened_at, env.ledger().timestamp());
 
         // Advance past recovery window
         env.ledger().with_mut(|l| l.timestamp += 51);

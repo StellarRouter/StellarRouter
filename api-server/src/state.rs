@@ -46,6 +46,7 @@ impl AppState {
     ///
     /// The return value is ignored: a send error simply means no receivers are
     /// currently listening, which is not a fatal condition.
+    #[allow(dead_code)]
     pub fn broadcast_status(&self, event: TransactionStatusEvent) {
         let _ = self.tx_status_tx.send(event);
     }

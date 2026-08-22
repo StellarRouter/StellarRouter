@@ -5,13 +5,18 @@ use axum::{
     Json,
 };
 use router_off_chain_common::logging::sanitize_for_log;
-use router_off_chain_common::validation::{validate_contract_id, validate_function_name, validate_route_name};
+use router_off_chain_common::validation::{
+    validate_contract_id, validate_function_name, validate_route_name,
+};
 use serde_json::json;
 use tracing::{error, info};
 
 use crate::{
     state::AppState,
-    types::{ErrorResponse, FeeEstimate, SimulateRequest, SimulateResponse, SimulationDetail, StatsResponse},
+    types::{
+        ErrorResponse, FeeEstimate, SimulateRequest, SimulateResponse, SimulationDetail,
+        StatsResponse,
+    },
 };
 
 #[utoipa::path(
@@ -82,9 +87,7 @@ pub async fn simulate(
     if let Err(e) = validate_function_name(&req.function) {
         return Err((
             StatusCode::BAD_REQUEST,
-            Json(ErrorResponse {
-                error: e.message,
-            }),
+            Json(ErrorResponse { error: e.message }),
         ));
     }
 
