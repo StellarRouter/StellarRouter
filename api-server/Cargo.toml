@@ -57,3 +57,6 @@ tokio-util = { version = "0.7.15" }
 
 # Shared off-chain utilities
 router-off-chain-common = { path = "../router-off-chain-common" }
+
+[dev-dependencies]
+tower = { version = "0.5.3" }
