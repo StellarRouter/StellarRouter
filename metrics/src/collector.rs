@@ -44,6 +44,7 @@ use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
 
+use crate::cardinality_limit::LabelCardinalityLimiter;
 use crate::cli::Args;
 use crate::metrics::RouterMetrics;
 use crate::rpc::{RpcClient, SorobanRpcClient};
@@ -57,14 +58,17 @@ pub struct Collector {
     /// Last-processed ledger cursor per contract, keyed as `"<scope>:<contract_id>"`.
     /// Held in-memory; resets to 0 on restart (see module-level docs).
     last_ledger: Arc<Mutex<HashMap<String, u32>>>,
+    /// Cardinality limiter for high-cardinality labels (route, name).
+    cardinality_limiter: LabelCardinalityLimiter,
 }
 
 impl Collector {
-    pub fn new(args: Args, metrics: RouterMetrics) -> Self {
+    pub fn new(args: Args, metrics: RouterMetrics, cardinality_limiter: LabelCardinalityLimiter) -> Self {
         Self {
             args,
             metrics,
             last_ledger: Arc::new(Mutex::new(HashMap::new())),
+            cardinality_limiter,
         }
     }
 
@@ -515,12 +519,17 @@ impl Collector {
                 .simulate_invoke(contract_id, "get_route", vec![encode_string_arg(route)])
                 .await;
 
+            // Apply cardinality limit to the route label.
+            let mapped_route = self
+                .cardinality_limiter
+                .map_label("router_core_route_paused", route);
+
             match route_result {
                 Ok(val) => {
                     let paused = extract_route_paused(&val).unwrap_or(false);
                     self.metrics
                         .core_route_paused
-                        .with_label_values(&[contract_id, route])
+                        .with_label_values(&[contract_id, &mapped_route])
                         .set(if paused { 1.0 } else { 0.0 });
                 }
                 Err(e) => {
@@ -572,17 +581,22 @@ impl Collector {
                 )
                 .await;
 
+            // Apply cardinality limit to the route label.
+            let mapped_route = self
+                .cardinality_limiter
+                .map_label("router_middleware_circuit_open", route);
+
             match cb_result {
                 Ok(val) => {
                     let (is_open, failure_count) =
                         extract_circuit_breaker_state(&val).unwrap_or((false, 0));
                     self.metrics
                         .middleware_circuit_open
-                        .with_label_values(&[contract_id, route])
+                        .with_label_values(&[contract_id, &mapped_route])
                         .set(if is_open { 1.0 } else { 0.0 });
                     self.metrics
                         .middleware_failure_count
-                        .with_label_values(&[contract_id, route])
+                        .with_label_values(&[contract_id, &mapped_route])
                         .set(failure_count as f64);
                 }
                 Err(e) => {
@@ -616,14 +630,18 @@ impl Collector {
         // Process events: extract route and success, increment counters
         for event in &post_call_events {
             if let Some((route, success)) = extract_post_call_data(event) {
+                // Apply cardinality limit to the route label.
+                let mapped_route = self
+                    .cardinality_limiter
+                    .map_label("router_middleware_route_calls_total", &route);
                 self.metrics
                     .middleware_route_calls_total
-                    .with_label_values(&[contract_id, &route])
+                    .with_label_values(&[contract_id, &mapped_route])
                     .inc();
                 if !success {
                     self.metrics
                         .middleware_route_failures_total
-                        .with_label_values(&[contract_id, &route])
+                        .with_label_values(&[contract_id, &mapped_route])
                         .inc();
                 }
             }
@@ -670,11 +688,15 @@ impl Collector {
 
         // Call versions(name) for each registered name to track per-name version count.
         for name in &names {
+            // Apply cardinality limit to the name label.
+            let mapped_name = self
+                .cardinality_limiter
+                .map_label("router_registry_version_count", name);
             match client.call_u32_vec(contract_id, "versions", name).await {
                 Ok(versions) => {
                     self.metrics
                         .registry_version_count
-                        .with_label_values(&[contract_id, name])
+                        .with_label_values(&[contract_id, &mapped_name])
                         .set(versions.len() as f64);
                 }
                 Err(e) => {
@@ -962,8 +984,10 @@ mod tests {
             sse_max_reconnects: 10,
             sse_reconnect_delay_ms: 1000,
             sse_reconnect_max_delay_ms: 30_000,
+            max_cardinality: 100,
         };
-        let collector = Collector::new(args, metrics.clone());
+        let limiter = LabelCardinalityLimiter::new(args.max_cardinality);
+        let collector = Collector::new(args, metrics.clone(), limiter);
         (collector, metrics)
     }
 
@@ -1758,6 +1782,224 @@ mod tests {
                 .get(),
             1.0
         );
+    }
+
+    // ── Cardinality limiter integration tests ───────────────────────────────
+
+    /// Helper: create a collector with a custom max_cardinality.
+    fn make_collector_with_cardinality(
+        core: &str,
+        middleware: &str,
+        registry_id: &str,
+        max_cardinality: usize,
+    ) -> (Collector, RouterMetrics) {
+        let reg = Registry::new();
+        let metrics = RouterMetrics::new(&reg).unwrap();
+        let args = Args {
+            rpc_url: String::new(),
+            network_passphrase: String::new(),
+            core_contract_id: core.to_string(),
+            middleware_contract_id: middleware.to_string(),
+            registry_contract_id: registry_id.to_string(),
+            quote_contract_id: String::new(),
+            execution_contract_id: String::new(),
+            scrape_interval_secs: 15,
+            listen: "0.0.0.0:9090".to_string(),
+            rpc_timeout_secs: 10,
+            max_cardinality,
+        };
+        let limiter = LabelCardinalityLimiter::new(max_cardinality);
+        let collector = Collector::new(args, metrics.clone(), limiter);
+        (collector, metrics)
+    }
+
+    #[tokio::test]
+    async fn test_cardinality_limit_routes_overflow_to_other() {
+        let (collector, metrics) = make_collector_with_cardinality("CORE_ID", "", "", 2);
+
+        let mock = MockRpcClient::new()
+            .with_u64("CORE_ID", "total_routed", 10)
+            .with_string_vec(
+                "CORE_ID",
+                "get_all_routes",
+                vec!["r1".to_string(), "r2".to_string(), "r3".to_string()],
+            )
+            .with_simulate(
+                "CORE_ID",
+                "get_route",
+                json!({ "results": [{ "retval": { "paused": false } }] }),
+            );
+
+        let ok = collector.scrape_all(&mock).await;
+        assert!(ok);
+
+        // r1 and r2 are accepted (under cap of 2).
+        let r1_paused = metrics
+            .core_route_paused
+            .with_label_values(&["CORE_ID", "r1"])
+            .get();
+        assert_eq!(r1_paused, 0.0);
+
+        let r2_paused = metrics
+            .core_route_paused
+            .with_label_values(&["CORE_ID", "r2"])
+            .get();
+        assert_eq!(r2_paused, 0.0);
+
+        // r3 should overflow into _other.
+        let other_paused = metrics
+            .core_route_paused
+            .with_label_values(&["CORE_ID", "_other"])
+            .get();
+        assert_eq!(other_paused, 0.0);
+    }
+
+    #[tokio::test]
+    async fn test_cardinality_limit_middleware_circuit_breaker_overflow() {
+        let (collector, metrics) = make_collector_with_cardinality("", "MW_ID", "", 1);
+
+        let mock = MockRpcClient::new()
+            .with_u64("MW_ID", "total_calls", 10)
+            .with_string_vec(
+                "MW_ID",
+                "get_configured_routes",
+                vec!["oracle".to_string(), "vault".to_string()],
+            )
+            .with_simulate(
+                "MW_ID",
+                "circuit_breaker_state",
+                json!({
+                    "results": [{
+                        "retval": {
+                            "some": { "is_open": false, "failure_count": 0, "opened_at": 0 }
+                        }
+                    }]
+                }),
+            );
+
+        let ok = collector.scrape_all(&mock).await;
+        assert!(ok);
+
+        // oracle is accepted (first distinct route, under cap of 1).
+        let oracle_open = metrics
+            .middleware_circuit_open
+            .with_label_values(&["MW_ID", "oracle"])
+            .get();
+        assert_eq!(oracle_open, 0.0);
+
+        // vault should overflow into _other.
+        let other_open = metrics
+            .middleware_circuit_open
+            .with_label_values(&["MW_ID", "_other"])
+            .get();
+        assert_eq!(other_open, 0.0);
+
+        // failure_count for _other should also be set.
+        let other_failures = metrics
+            .middleware_failure_count
+            .with_label_values(&["MW_ID", "_other"])
+            .get();
+        assert_eq!(other_failures, 0.0);
+    }
+
+    #[tokio::test]
+    async fn test_cardinality_limit_registry_names_overflow() {
+        let (collector, metrics) = make_collector_with_cardinality("", "", "REG_ID", 2);
+
+        let mock = MockRpcClient::new()
+            .with_string_vec(
+                "REG_ID",
+                "get_all_names",
+                vec![
+                    "oracle".to_string(),
+                    "vault".to_string(),
+                    "price_feed".to_string(),
+                ],
+            )
+            .with_u32_vec("REG_ID", "versions", "oracle", vec![1, 2])
+            .with_u32_vec("REG_ID", "versions", "vault", vec![1])
+            .with_u32_vec("REG_ID", "versions", "price_feed", vec![1, 2, 3]);
+
+        let ok = collector.scrape_all(&mock).await;
+        assert!(ok);
+
+        // oracle and vault are under the cap.
+        let oracle_versions = metrics
+            .registry_version_count
+            .with_label_values(&["REG_ID", "oracle"])
+            .get();
+        assert_eq!(oracle_versions, 2.0);
+
+        let vault_versions = metrics
+            .registry_version_count
+            .with_label_values(&["REG_ID", "vault"])
+            .get();
+        assert_eq!(vault_versions, 1.0);
+
+        // price_feed should overflow into _other.
+        let other_versions = metrics
+            .registry_version_count
+            .with_label_values(&["REG_ID", "_other"])
+            .get();
+        assert_eq!(other_versions, 3.0);
+    }
+
+    #[tokio::test]
+    async fn test_cardinality_limit_zero_cap_all_overflow() {
+        let (collector, metrics) = make_collector_with_cardinality("CORE_ID", "", "", 0);
+
+        let mock = MockRpcClient::new()
+            .with_u64("CORE_ID", "total_routed", 10)
+            .with_string_vec(
+                "CORE_ID",
+                "get_all_routes",
+                vec!["r1".to_string(), "r2".to_string()],
+            )
+            .with_simulate(
+                "CORE_ID",
+                "get_route",
+                json!({ "results": [{ "retval": { "paused": false } }] }),
+            );
+
+        let ok = collector.scrape_all(&mock).await;
+        assert!(ok);
+
+        // With cap=0, both routes go to _other.
+        let other_paused = metrics
+            .core_route_paused
+            .with_label_values(&["CORE_ID", "_other"])
+            .get();
+        assert_eq!(other_paused, 0.0);
+    }
+
+    #[tokio::test]
+    async fn test_cardinality_limit_large_cap_no_overflow() {
+        let (collector, metrics) = make_collector_with_cardinality("CORE_ID", "", "", 1000);
+
+        let mock = MockRpcClient::new()
+            .with_u64("CORE_ID", "total_routed", 50)
+            .with_string_vec(
+                "CORE_ID",
+                "get_all_routes",
+                vec!["r1".to_string(), "r2".to_string(), "r3".to_string()],
+            )
+            .with_simulate(
+                "CORE_ID",
+                "get_route",
+                json!({ "results": [{ "retval": { "paused": false } }] }),
+            );
+
+        let ok = collector.scrape_all(&mock).await;
+        assert!(ok);
+
+        // All 3 routes should be accepted.
+        for route in ["r1", "r2", "r3"] {
+            let paused = metrics
+                .core_route_paused
+                .with_label_values(&["CORE_ID", route])
+                .get();
+            assert_eq!(paused, 0.0, "route {route} should be accepted");
+        }
     }
 }
 

@@ -32,6 +32,7 @@
 //! | `router_sse_events_total` | Counter | `contract` | Total SSE events received |
 
 mod auth;
+mod cardinality_limit;
 mod cli;
 mod collector;
 mod logging;
@@ -50,6 +51,7 @@ use clap::Parser;
 use tokio_util::sync::CancellationToken;
 use tracing::info;
 
+use cardinality_limit::LabelCardinalityLimiter;
 use cli::{Args, EventMode};
 use collector::Collector;
 use logging::init_logging;
@@ -93,6 +95,7 @@ async fn main() -> Result<()> {
         listen = %args.listen,
         scrape_interval_secs = args.scrape_interval_secs,
         event_mode = %args.event_mode,
+        max_cardinality = args.max_cardinality,
         "router-metrics-exporter starting"
     );
 
@@ -100,8 +103,11 @@ async fn main() -> Result<()> {
     let registry = prometheus::Registry::new();
     let router_metrics = RouterMetrics::new(&registry)?;
 
+    // ── Cardinality limiter ──────────────────────────────────────────────────
+    let cardinality_limiter = LabelCardinalityLimiter::new(args.max_cardinality);
+
     // ── Background scrape / SSE loop ──────────────────────────────────────────
-    let collector = Collector::new(args.clone(), router_metrics.clone());
+    let collector = Collector::new(args.clone(), router_metrics.clone(), cardinality_limiter);
 
     match args.event_mode {
         EventMode::Poll => {
