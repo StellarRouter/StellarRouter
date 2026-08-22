@@ -557,11 +557,7 @@ impl RouterExecution {
             .get(&DataKey::ExecHistory)
             .unwrap_or(Vec::new(&env));
         let len = history.len();
-        let take = if limit as u32 > len {
-            len
-        } else {
-            limit as u32
-        };
+        let take = if limit > len { len } else { limit };
         let mut result = Vec::new(&env);
         // Return newest-first: iterate from the end
         let mut i = len;
@@ -910,7 +906,10 @@ mod tests {
         client.transfer_admin(&admin, &new_admin);
         let event = env.events().all().last().unwrap().clone();
         let topic: Symbol = event.1.get(0).unwrap().into_val(&env);
-        assert_eq!(topic, Symbol::new(&env, router_common::EVENT_ADMIN_TRANSFERRED));
+        assert_eq!(
+            topic,
+            Symbol::new(&env, router_common::EVENT_ADMIN_TRANSFERRED)
+        );
     }
 
     #[test]

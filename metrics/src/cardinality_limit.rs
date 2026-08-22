@@ -39,6 +39,7 @@ use std::collections::HashSet;
 use std::sync::Arc;
 
 /// Default maximum number of distinct label-value combinations per metric.
+#[cfg(test)]
 pub const DEFAULT_MAX_CARDINALITY: usize = 100;
 
 /// Label value used when the cardinality cap is exceeded.
@@ -66,6 +67,7 @@ impl LabelCardinalityLimiter {
     }
 
     /// Return the configured max cardinality.
+    #[cfg(test)]
     pub fn max_cardinality(&self) -> usize {
         self.max_cardinality
     }
@@ -101,10 +103,11 @@ impl LabelCardinalityLimiter {
     /// The composite key is `"{parts.join('/')}"`.  The first part (typically
     /// the contract ID) is excluded from the cardinality check; only the
     /// user-controlled tail is considered.
+    #[cfg(test)]
     pub fn map_composite_label(&self, metric_name: &str, parts: &[&str]) -> Vec<String> {
         // Contract IDs are deployment-controlled; only the tail is user-controlled.
         // We join the full label set as a key but track cardinality on the tail.
-        let label_key = parts.join("/");
+        let _label_key = parts.join("/");
         let tail = parts.last().copied().unwrap_or("_unknown");
 
         // Check tail cardinality specifically.
@@ -149,19 +152,19 @@ impl LabelCardinalityLimiter {
     }
 
     /// Return the number of distinct label values currently tracked for a metric.
+    #[cfg(test)]
     pub fn tracked_count(&self, metric_name: &str) -> usize {
-        self.seen
-            .get(metric_name)
-            .map(|s| s.len())
-            .unwrap_or(0)
+        self.seen.get(metric_name).map(|s| s.len()).unwrap_or(0)
     }
 
     /// Reset tracked labels for a metric (useful for tests).
+    #[cfg(test)]
     pub fn reset(&self, metric_name: &str) {
         self.seen.remove(metric_name);
     }
 
     /// Reset all tracked labels (useful for tests).
+    #[cfg(test)]
     pub fn reset_all(&self) {
         self.seen.clear();
     }

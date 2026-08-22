@@ -844,7 +844,10 @@ async fn test_stats_response_has_expected_fields() {
     assert_eq!(parsed.active_subscriptions, 0);
     assert_eq!(parsed.unique_tx_ids, 0);
     // Capacity is the compile-time constant.
-    assert_eq!(parsed.broadcast_channel_capacity, crate::state::BROADCAST_CHANNEL_CAPACITY);
+    assert_eq!(
+        parsed.broadcast_channel_capacity,
+        crate::state::BROADCAST_CHANNEL_CAPACITY
+    );
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -992,7 +995,10 @@ async fn test_stats_reflects_active_subscriptions() {
     let body: serde_json::Value = resp.json().await.unwrap();
     assert_eq!(body["active_subscriptions"], 2);
     assert_eq!(body["unique_tx_ids"], 2);
-    assert_eq!(body["broadcast_channel_capacity"], crate::state::BROADCAST_CHANNEL_CAPACITY);
+    assert_eq!(
+        body["broadcast_channel_capacity"],
+        crate::state::BROADCAST_CHANNEL_CAPACITY
+    );
 }
 
 #[tokio::test]

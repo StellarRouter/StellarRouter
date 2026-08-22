@@ -54,8 +54,8 @@ pub enum DataKey {
     RoleExpiry(String, Address),
     BlacklistReason(Address),
     BlacklistExpiry(Address),
-    BlacklistCount,   // instance -> total distinct blacklisted addresses
-    AllRoles,         // instance -> Vec<String> of every role name ever granted
+    BlacklistCount, // instance -> total distinct blacklisted addresses
+    AllRoles,       // instance -> Vec<String> of every role name ever granted
 }
 
 // ── Errors ────────────────────────────────────────────────────────────────────
@@ -512,7 +512,11 @@ impl RouterAccess {
     /// Record a role name so it can be enumerated later via [`get_all_roles`].
     fn record_role_name(env: &Env, role: &String) {
         let key = DataKey::AllRoles;
-        let mut roles: Vec<String> = env.storage().instance().get(&key).unwrap_or_else(|| Vec::new(env));
+        let mut roles: Vec<String> = env
+            .storage()
+            .instance()
+            .get(&key)
+            .unwrap_or_else(|| Vec::new(env));
         if !roles.iter().any(|r| &r == role) {
             roles.push_back(role.clone());
             env.storage().instance().set(&key, &roles);

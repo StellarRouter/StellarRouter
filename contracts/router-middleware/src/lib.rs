@@ -1,4 +1,5 @@
 #![no_std]
+#![allow(clippy::too_many_arguments)]
 
 //! # router-middleware
 //!
@@ -812,8 +813,10 @@ impl RouterMiddleware {
         env.storage()
             .instance()
             .remove(&DataKey::CallLog(route.clone()));
-        env.events()
-            .publish((Symbol::new(&env, router_common::EVENT_CALL_LOG_CLEARED),), route);
+        env.events().publish(
+            (Symbol::new(&env, router_common::EVENT_CALL_LOG_CLEARED),),
+            route,
+        );
         Ok(())
     }
 

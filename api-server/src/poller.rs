@@ -22,7 +22,7 @@
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use tracing::{debug, error, info, warn};
+use tracing::{debug, info, warn};
 
 use crate::{
     state::AppState,
@@ -58,6 +58,7 @@ impl TxStatusPoller {
     }
 
     /// Create a poller with an explicit interval (useful for tests).
+    #[allow(dead_code)]
     pub fn with_interval_ms(state: AppState, interval_ms: u64) -> Self {
         Self { state, interval_ms }
     }
@@ -96,7 +97,11 @@ impl TxStatusPoller {
             return;
         }
 
-        info!(count = tx_ids.len(), "TxStatusPoller: polling {} tx(s)", tx_ids.len());
+        info!(
+            count = tx_ids.len(),
+            "TxStatusPoller: polling {} tx(s)",
+            tx_ids.len()
+        );
 
         for tx_id in tx_ids {
             match self.state.rpc.get_transaction_status(&tx_id).await {
@@ -133,7 +138,10 @@ impl TxStatusPoller {
 
 /// Returns `true` for states that will never change (no point polling again).
 fn is_terminal(status: TransactionStatus) -> bool {
-    matches!(status, TransactionStatus::Confirmed | TransactionStatus::Failed)
+    matches!(
+        status,
+        TransactionStatus::Confirmed | TransactionStatus::Failed
+    )
 }
 
 /// A short human-readable description for each status, forwarded as
@@ -180,7 +188,7 @@ fn seconds_to_iso8601(secs: u64) -> String {
 }
 
 /// Convert days since Unix epoch (1970-01-01) to (year, month, day).
-fn days_to_ymd(mut days: u64) -> (u64, u64, u64) {
+fn days_to_ymd(days: u64) -> (u64, u64, u64) {
     // Algorithm from https://howardhinnant.github.io/date_algorithms.html
     // "civil_from_days" — public domain.
     let z = days + 719_468;
@@ -215,18 +223,12 @@ mod tests {
 
     #[test]
     fn parse_poll_interval_uses_default_for_missing_value() {
-        assert_eq!(
-            parse_poll_interval_ms(None),
-            DEFAULT_POLL_INTERVAL_MS
-        );
+        assert_eq!(parse_poll_interval_ms(None), DEFAULT_POLL_INTERVAL_MS);
     }
 
     #[test]
     fn parse_poll_interval_uses_default_for_zero() {
-        assert_eq!(
-            parse_poll_interval_ms(Some("0")),
-            DEFAULT_POLL_INTERVAL_MS
-        );
+        assert_eq!(parse_poll_interval_ms(Some("0")), DEFAULT_POLL_INTERVAL_MS);
     }
 
     #[test]

@@ -43,3 +43,16 @@ chrono = { version = "0.4.41", features = ["serde"] }
 
 # Concurrency
 dashmap = { version = "6.1.0" }
+
+# WebSocket / SSE streaming
+futures-util = { version = "0.3" }
+
+# OpenAPI / Swagger
+utoipa = { version = "4.2.3", features = ["axum_extras"] }
+utoipa-swagger-ui = { version = "7.1.0", features = ["axum"] }
+
+# Async utilities
+tokio-util = { version = "0.7.15" }
+
+# Shared off-chain utilities
+router-off-chain-common = { path = "../router-off-chain-common" }

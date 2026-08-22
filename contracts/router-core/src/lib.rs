@@ -111,13 +111,13 @@ impl soroban_sdk::TryFromVal<soroban_sdk::Env, RouteRegisterInput> for soroban_s
         use soroban_sdk::{EnvBase, TryIntoVal, Val};
         const KEYS: [&str; 3] = ["address", "metadata", "name"];
         let vals: [Val; 3] = [
-            (&val.address)
+            val.address
                 .try_into_val(env)
                 .map_err(|_| soroban_sdk::ConversionError)?,
-            (&val.metadata)
+            val.metadata
                 .try_into_val(env)
                 .map_err(|_| soroban_sdk::ConversionError)?,
-            (&val.name)
+            val.name
                 .try_into_val(env)
                 .map_err(|_| soroban_sdk::ConversionError)?,
         ];
@@ -1918,11 +1918,7 @@ mod tests {
         let name = String::from_str(&env, "oracle");
         let addr = Address::generate(&env);
         let description = String::from_str(&env, "Oracle price feed");
-        let tags = vec![
-            &env,
-            Symbol::new(&env, "defi"),
-            Symbol::new(&env, "oracle"),
-        ];
+        let tags = vec![&env, Symbol::new(&env, "defi"), Symbol::new(&env, "oracle")];
         let owner = admin.clone();
 
         let metadata = Some(RouteMetadata {
@@ -3038,7 +3034,11 @@ mod tests {
         let addr2 = Address::generate(&env);
 
         let description = String::from_str(&env, "Oracle price feed");
-        let tags = vec![&env, String::from_str(&env, "defi"), String::from_str(&env, "oracle")];
+        let tags = vec![
+            &env,
+            String::from_str(&env, "defi"),
+            String::from_str(&env, "oracle"),
+        ];
         let metadata = Some(RouteMetadata {
             description: description.clone(),
             tags: tags.clone(),
@@ -3241,8 +3241,14 @@ mod tests {
         client.remove_routes_batch(&admin, &names);
 
         // Verify routes were removed
-        assert_eq!(client.try_resolve(&oracle), Err(Ok(RouterError::RouteNotFound)));
-        assert_eq!(client.try_resolve(&vault), Err(Ok(RouterError::RouteNotFound)));
+        assert_eq!(
+            client.try_resolve(&oracle),
+            Err(Ok(RouterError::RouteNotFound))
+        );
+        assert_eq!(
+            client.try_resolve(&vault),
+            Err(Ok(RouterError::RouteNotFound))
+        );
         assert_eq!(client.resolve(&swap), addr);
         assert_eq!(client.route_count(), 1);
     }

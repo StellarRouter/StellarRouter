@@ -165,12 +165,7 @@ impl SorobanRpcClient {
     ) -> Result<RpcResponse> {
         let mut attempt = 0u32;
         loop {
-            let result = self
-                .http
-                .post(endpoint)
-                .json(req_body)
-                .send()
-                .await;
+            let result = self.http.post(endpoint).json(req_body).send().await;
 
             match result {
                 Ok(response) => {
@@ -191,10 +186,9 @@ impl SorobanRpcClient {
                         tokio::time::sleep(delay).await;
                         continue;
                     }
-                    return response
-                        .json::<RpcResponse>()
-                        .await
-                        .with_context(|| format!("failed to parse JSON-RPC response from {endpoint}"));
+                    return response.json::<RpcResponse>().await.with_context(|| {
+                        format!("failed to parse JSON-RPC response from {endpoint}")
+                    });
                 }
                 Err(err) => {
                     if Self::is_retryable_error(&err) && attempt < self.max_retries {
@@ -346,9 +340,7 @@ impl SorobanRpcClient {
                 params,
             };
 
-            let resp = self
-                .post_with_failover(&req)
-                .await?;
+            let resp = self.post_with_failover(&req).await?;
 
             if let Some(err) = resp.error {
                 return Err(anyhow!("RPC error {}: {}", err.code, err.message));
@@ -602,6 +594,7 @@ impl XdrWriter {
     fn u32(&mut self, v: u32) {
         self.0.extend_from_slice(&v.to_be_bytes());
     }
+    #[allow(dead_code)]
     fn i64(&mut self, v: i64) {
         self.0.extend_from_slice(&v.to_be_bytes());
     }
@@ -622,6 +615,7 @@ impl XdrWriter {
 }
 
 // ScVal discriminants (Soroban protocol 21)
+#[allow(dead_code)]
 const SCV_STRING: u32 = 14;
 const SCV_SYMBOL: u32 = 15;
 const SCV_LEDGER_KEY_CONTRACT_INSTANCE: u32 = 20;
@@ -642,6 +636,7 @@ const CONTRACT_DATA_DURABILITY_PERSISTENT: u32 = 1;
 ///
 /// `args_xdr` items are treated as Soroban `ScVal::String` arguments
 /// (the only type currently needed for registry/core view functions).
+#[allow(dead_code)]
 fn build_invoke_xdr(contract_id: &str, function_name: &str, args_xdr: &[String]) -> Result<String> {
     let contract_hash = decode_contract_id(contract_id)
         .with_context(|| format!("invalid contract id '{contract_id}'"))?;
@@ -1028,7 +1023,6 @@ impl RpcClient for SorobanRpcClient {
 /// # Example
 /// ```rust
 /// use router_metrics_exporter::rpc::MockRpcClient;
-/// # use router_metrics_exporter::rpc::MockRpcClient;
 /// let mock = MockRpcClient::new()
 ///     .with_u64("CONTRACT", "total_routed", 42)
 ///     .with_string_vec("CONTRACT", "get_all_routes", vec![]);
@@ -1256,8 +1250,8 @@ mod tests {
         let contract = "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4";
         let xdr = build_invoke_xdr_from_strkey(contract, "total_routed", &[]).unwrap();
         // Must be valid base64 (decodes without error).
-        let bytes = router_off_chain_common::xdr::base64_decode(&xdr)
-            .expect("XDR must be valid base64");
+        let bytes =
+            router_off_chain_common::xdr::base64_decode(&xdr).expect("XDR must be valid base64");
         assert_eq!(&bytes[0..4], &[0, 0, 0, 2], "ENVELOPE_TYPE_TX discriminant");
     }
 
@@ -1458,16 +1452,14 @@ mod tests {
     /// that a future implementer gets an immediate signal when the function starts
     /// returning a real value instead.
     ///
-    /// When the stub is replaced with a working XDR implementation, remove this
-    /// test and replace it with one that asserts the correct base64-encoded output.
+    /// The XDR key is now fully implemented via `router-off-chain-common::xdr`.
     #[test]
-    fn instance_storage_key_xdr_is_unimplemented_stub() {
-        let err = instance_storage_key_xdr("CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4")
-            .unwrap_err();
-        assert!(
-            err.to_string().contains("not implemented"),
-            "expected stub error message, got: {err}"
-        );
+    fn instance_storage_key_xdr_returns_valid_base64() {
+        let result =
+            instance_storage_key_xdr("CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4")
+                .expect("should succeed");
+        // The result should be a non-empty base64 string
+        assert!(!result.is_empty(), "expected non-empty base64 XDR");
     }
 
     /// Verify that the client fails over to the next endpoint when the primary
@@ -1478,7 +1470,10 @@ mod tests {
         let app_a = axum::Router::new().route(
             "/",
             axum::routing::post(|| async {
-                (axum::http::StatusCode::INTERNAL_SERVER_ERROR, "server error")
+                (
+                    axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                    "server error",
+                )
             }),
         );
         let listener_a = tokio::net::TcpListener::bind("127.0.0.1:0")
@@ -1486,9 +1481,7 @@ mod tests {
             .expect("bind A");
         let addr_a = listener_a.local_addr().expect("local addr A");
         tokio::spawn(async move {
-            axum::serve(listener_a, app_a)
-                .await
-                .expect("serve A");
+            axum::serve(listener_a, app_a).await.expect("serve A");
         });
 
         // Server B: returns a valid JSON-RPC response
@@ -1510,9 +1503,7 @@ mod tests {
             .expect("bind B");
         let addr_b = listener_b.local_addr().expect("local addr B");
         tokio::spawn(async move {
-            axum::serve(listener_b, app_b)
-                .await
-                .expect("serve B");
+            axum::serve(listener_b, app_b).await.expect("serve B");
         });
 
         let client = SorobanRpcClient::new(
@@ -1539,7 +1530,10 @@ mod tests {
         let app_a = axum::Router::new().route(
             "/",
             axum::routing::post(|| async {
-                (axum::http::StatusCode::INTERNAL_SERVER_ERROR, "server error")
+                (
+                    axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                    "server error",
+                )
             }),
         );
         let listener_a = tokio::net::TcpListener::bind("127.0.0.1:0")
@@ -1547,16 +1541,17 @@ mod tests {
             .expect("bind A");
         let addr_a = listener_a.local_addr().expect("local addr A");
         tokio::spawn(async move {
-            axum::serve(listener_a, app_a)
-                .await
-                .expect("serve A");
+            axum::serve(listener_a, app_a).await.expect("serve A");
         });
 
         // Server B: also returns 500
         let app_b = axum::Router::new().route(
             "/",
             axum::routing::post(|| async {
-                (axum::http::StatusCode::INTERNAL_SERVER_ERROR, "server error")
+                (
+                    axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                    "server error",
+                )
             }),
         );
         let listener_b = tokio::net::TcpListener::bind("127.0.0.1:0")
@@ -1564,9 +1559,7 @@ mod tests {
             .expect("bind B");
         let addr_b = listener_b.local_addr().expect("local addr B");
         tokio::spawn(async move {
-            axum::serve(listener_b, app_b)
-                .await
-                .expect("serve B");
+            axum::serve(listener_b, app_b).await.expect("serve B");
         });
 
         let client = SorobanRpcClient::new(

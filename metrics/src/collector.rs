@@ -63,7 +63,11 @@ pub struct Collector {
 }
 
 impl Collector {
-    pub fn new(args: Args, metrics: RouterMetrics, cardinality_limiter: LabelCardinalityLimiter) -> Self {
+    pub fn new(
+        args: Args,
+        metrics: RouterMetrics,
+        cardinality_limiter: LabelCardinalityLimiter,
+    ) -> Self {
         Self {
             args,
             metrics,
@@ -340,7 +344,10 @@ impl Collector {
             .unwrap_or_default();
 
         for role in &roles {
-            match client.call_u32_vec(contract_id, "get_role_count", role).await {
+            match client
+                .call_u32_vec(contract_id, "get_role_count", role)
+                .await
+            {
                 Ok(counts) => {
                     let count = counts.first().copied().unwrap_or(0);
                     self.metrics
@@ -376,9 +383,7 @@ impl Collector {
         let start = Instant::now();
         info!(contract_id, "scraping router-timelock");
 
-        let pending = client
-            .call_u64(contract_id, "get_pending_op_count")
-            .await?;
+        let pending = client.call_u64(contract_id, "get_pending_op_count").await?;
         self.metrics
             .timelock_pending_operations
             .with_label_values(&[contract_id])

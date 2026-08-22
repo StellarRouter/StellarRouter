@@ -692,8 +692,8 @@ mod tests {
     fn build_invoke_xdr_from_strkey_matches_hash_path() {
         let hash = decode_contract_id(ZERO_CONTRACT).unwrap();
         let direct = build_invoke_xdr(&hash, "total_routed", &[]);
-        let strkey = build_invoke_xdr_from_strkey(ZERO_CONTRACT, "total_routed", &[])
-            .expect("from strkey");
+        let strkey =
+            build_invoke_xdr_from_strkey(ZERO_CONTRACT, "total_routed", &[]).expect("from strkey");
         assert_eq!(direct, strkey);
     }
 
