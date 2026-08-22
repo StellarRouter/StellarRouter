@@ -2,6 +2,7 @@
 name = "router-metrics-exporter"
 version = "0.1.0"
 edition = "2021"
+license = "MIT"
 description = "Prometheus/OpenTelemetry metrics exporter for the stellar-router suite"
 
 [[bin]]

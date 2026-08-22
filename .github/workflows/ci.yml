@@ -51,9 +51,21 @@ jobs:
       - name: Check compilation (all workspace crates — native target)
         run: cargo check --workspace
 
-      # Also check under the WASM target so cfg-gated soroban code is validated.
-      - name: Check compilation (all workspace crates — wasm32 target)
-        run: cargo check --workspace --target wasm32-unknown-unknown
+      # Check the on-chain crates under WASM so cfg-gated Soroban code is
+      # validated without trying to compile native-only Axum/Tokio crates.
+      - name: Check compilation (on-chain crates — wasm32 target)
+        run: >
+          cargo check
+          --target wasm32-unknown-unknown
+          -p router-core
+          -p router-registry
+          -p router-access
+          -p router-middleware
+          -p router-timelock
+          -p router-multicall
+          -p router-execution
+          -p router-quote
+          -p liquidity-plugin-example-fixed-rate
 
       # Clippy across all workspace crates.
       - name: Run clippy (all workspace crates)
