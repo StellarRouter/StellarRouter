@@ -26,7 +26,7 @@ const VERSION_CONTRACT: u8 = 2 << 3; // 0x10 → first char 'C'
 const VERSION_ACCOUNT: u8 = 6 << 3; // 0x30 → first char 'G'
 
 /// CRC-16/XModem used by Stellar strkey checksums.
-fn crc16(data: &[u8]) -> u16 {
+pub fn crc16(data: &[u8]) -> u16 {
     let mut crc: u16 = 0;
     for &b in data {
         crc ^= (b as u16) << 8;
