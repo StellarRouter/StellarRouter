@@ -12,7 +12,7 @@ path = "src/main.rs"
 # HTTP server
 axum = { version = "0.7.9", features = ["tokio", "ws"] }
 tokio = { version = "1.44.2", features = ["full"] }
-tokio-tungstenite = { version = "0.23.2" }
+tokio-tungstenite = { version = "0.24" }
 
 # Serialization
 serde = { version = "1.0.219", features = ["derive"] }

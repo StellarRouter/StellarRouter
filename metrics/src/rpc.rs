@@ -165,7 +165,6 @@ impl SorobanRpcClient {
     ) -> Result<RpcResponse> {
         let mut attempt = 0u32;
         loop {
-            let result = self.http.post(&self.rpc_url).json(req_body).send().await;
             let result = self
                 .http
                 .post(endpoint)
@@ -277,10 +276,7 @@ impl SorobanRpcClient {
             params: invoke_params,
         };
 
-        let resp = self.post_with_retry(&req).await?;
-        let resp = self
-            .post_with_failover(&req)
-            .await?;
+        let resp = self.post_with_failover(&req).await?;
 
         if let Some(err) = resp.error {
             return Err(anyhow!("RPC error {}: {}", err.code, err.message));
@@ -298,10 +294,7 @@ impl SorobanRpcClient {
             params: json!({ "keys": keys_xdr }),
         };
 
-        let resp = self.post_with_retry(&req).await?;
-        let resp = self
-            .post_with_failover(&req)
-            .await?;
+        let resp = self.post_with_failover(&req).await?;
 
         if let Some(err) = resp.error {
             return Err(anyhow!("RPC error {}: {}", err.code, err.message));
@@ -495,7 +488,11 @@ fn crc16(data: &[u8]) -> u16 {
 }
 
 /// Decode a Stellar contract strkey (C…) into its 32-byte hash.
-pub fn decode_contract_id(strkey: &str) -> Result<[u8; 32]> {
+///
+/// This is the local fallback implementation.  Prefer
+/// [`router_off_chain_common::xdr::decode_contract_id`] in new code.
+#[allow(dead_code)]
+fn decode_contract_id_local(strkey: &str) -> Result<[u8; 32]> {
     if strkey.len() != 56 {
         return Err(anyhow!("strkey must be 56 chars, got {}", strkey.len()));
     }
@@ -1438,7 +1435,6 @@ mod tests {
             axum::serve(listener, app).await.unwrap();
         });
 
-        let client = SorobanRpcClient::new(format!("http://{addr}"), 5).expect("build client");
         let client =
             SorobanRpcClient::new(vec![format!("http://{addr}")], 5).expect("build client");
 

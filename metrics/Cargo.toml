@@ -21,7 +21,7 @@ serde = { version = "1.0.219", features = ["derive"] }
 serde_json = { version = "1.0.140" }
 
 # HTTP client (for RPC calls)
-reqwest = { version = "0.12.15", features = ["json", "rustls-tls"], default-features = false }
+reqwest = { version = "0.12.15", features = ["json", "rustls-tls", "stream"], default-features = false }
 
 # Logging
 tracing = { version = "0.1.41" }
@@ -45,9 +45,15 @@ dashmap = { version = "6.1.0" }
 # Time
 tokio-util = { version = "0.7.15" }
 
+# SSE streaming
+futures-util = { version = "0.3" }
+
+# Shared off-chain utilities
+router-off-chain-common = { path = "../router-off-chain-common" }
+
 # OpenAPI/Swagger
 utoipa = { version = "4.2.3", features = ["axum_extras"] }
-utoipa-swagger-ui = { version = "7.1.1", features = ["axum"] }
+utoipa-swagger-ui = { version = "7.1.0", features = ["axum"] }
 
 [dev-dependencies]
 tower = { version = "0.5.3" }

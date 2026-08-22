@@ -1388,7 +1388,8 @@ mod tests {
 
         let mut args = collector.args.clone();
         args.access_contract_id = "ACCESS_ID".to_string();
-        let collector = Collector::new(args, metrics.clone());
+        let limiter = LabelCardinalityLimiter::new(args.max_cardinality);
+        let collector = Collector::new(args, metrics.clone(), limiter);
 
         let mock = MockRpcClient::new()
             .with_u64("ACCESS_ID", "get_blacklist_count", 4)
@@ -1432,7 +1433,8 @@ mod tests {
 
         let mut args = collector.args.clone();
         args.timelock_contract_id = "TIMELOCK_ID".to_string();
-        let collector = Collector::new(args, metrics.clone());
+        let limiter = LabelCardinalityLimiter::new(args.max_cardinality);
+        let collector = Collector::new(args, metrics.clone(), limiter);
 
         let mock = MockRpcClient::new().with_u64("TIMELOCK_ID", "get_pending_op_count", 12);
 
@@ -1455,7 +1457,8 @@ mod tests {
 
         let mut args = collector.args.clone();
         args.multicall_contract_id = "MULTI_ID".to_string();
-        let collector = Collector::new(args, metrics.clone());
+        let limiter = LabelCardinalityLimiter::new(args.max_cardinality);
+        let collector = Collector::new(args, metrics.clone(), limiter);
 
         let make_event = |success: bool, ledger: u32| ContractEvent {
             contract_id: "MULTI_ID".to_string(),
@@ -1509,7 +1512,8 @@ mod tests {
 
         let mut args = collector.args.clone();
         args.multicall_contract_id = "MULTI_ID".to_string();
-        let collector = Collector::new(args, metrics.clone());
+        let limiter = LabelCardinalityLimiter::new(args.max_cardinality);
+        let collector = Collector::new(args, metrics.clone(), limiter);
 
         let make_event = |success: bool, ledger: u32| ContractEvent {
             contract_id: "MULTI_ID".to_string(),
@@ -1797,15 +1801,24 @@ mod tests {
         let metrics = RouterMetrics::new(&reg).unwrap();
         let args = Args {
             rpc_url: String::new(),
+            rpc_urls: vec![],
             network_passphrase: String::new(),
             core_contract_id: core.to_string(),
             middleware_contract_id: middleware.to_string(),
             registry_contract_id: registry_id.to_string(),
             quote_contract_id: String::new(),
             execution_contract_id: String::new(),
+            access_contract_id: String::new(),
+            timelock_contract_id: String::new(),
+            multicall_contract_id: String::new(),
             scrape_interval_secs: 15,
             listen: "0.0.0.0:9090".to_string(),
             rpc_timeout_secs: 10,
+            event_mode: crate::cli::EventMode::Poll,
+            horizon_url: "https://horizon-testnet.stellar.org".to_string(),
+            sse_max_reconnects: 10,
+            sse_reconnect_delay_ms: 1000,
+            sse_reconnect_max_delay_ms: 30_000,
             max_cardinality,
         };
         let limiter = LabelCardinalityLimiter::new(max_cardinality);
