@@ -51,10 +51,6 @@ struct Args {
     #[arg(long, env = "SOROBAN_RPC_URL")]
     rpc_url: String,
 
-    /// Router execution contract ID
-    #[arg(long, env = "ROUTER_EXECUTION_CONTRACT_ID")]
-    execution_contract_id: String,
-
     /// Router core contract ID (for GET /routes)
     #[arg(long, env = "ROUTER_CORE_CONTRACT_ID", default_value = "")]
     router_core_contract_id: String,
@@ -108,7 +104,6 @@ async fn main() -> Result<()> {
 
     let state = AppState::new(
         args.rpc_url,
-        args.execution_contract_id,
         args.router_core_contract_id,
         auth_config.clone(),
         fee_config,

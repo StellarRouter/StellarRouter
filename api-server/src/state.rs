@@ -14,8 +14,6 @@ pub const BROADCAST_CHANNEL_CAPACITY: usize = 1000;
 #[derive(Clone)]
 pub struct AppState {
     pub rpc: SorobanRpcClient,
-    #[allow(dead_code)]
-    pub execution_contract_id: String,
     pub router_core_contract_id: String,
     #[allow(dead_code)]
     pub auth_config: AuthConfig,
@@ -26,7 +24,6 @@ pub struct AppState {
 impl AppState {
     pub fn new(
         rpc_url: String,
-        execution_contract_id: String,
         router_core_contract_id: String,
         auth_config: AuthConfig,
         fee_config: FeeConfig,
@@ -34,7 +31,6 @@ impl AppState {
         let (tx_status_tx, _) = broadcast::channel(BROADCAST_CHANNEL_CAPACITY);
         Self {
             rpc: SorobanRpcClient::new(rpc_url, Some(router_core_contract_id.clone()), fee_config),
-            execution_contract_id,
             router_core_contract_id,
             auth_config,
             tx_status_tx,
