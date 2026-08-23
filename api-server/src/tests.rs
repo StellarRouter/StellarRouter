@@ -33,6 +33,7 @@ fn test_app() -> Router {
         // calls fail fast and the heuristic fallback is exercised.
         "http://127.0.0.1:19999".to_string(),
         "".to_string(),
+        auth,
         "".to_string(),
         FeeConfig::default(),
     );
@@ -79,6 +80,7 @@ async fn spawn_ws_server() -> (std::net::SocketAddr, AppState) {
     let state = AppState::new(
         "http://localhost:1".to_string(),
         "".to_string(),
+        auth.clone(),
         "".to_string(),
         FeeConfig::default(),
     );
@@ -952,6 +954,12 @@ async fn spawn_ws_server_with_rpc(rpc_url: String) -> (SocketAddr, AppState) {
     use axum::routing::get;
     use tokio::net::TcpListener;
 
+    let auth = AuthConfig {
+        enabled: false,
+        api_key: None,
+    };
+
+    let state = AppState::new(rpc_url, "".to_string(), auth, FeeConfig::default());
     let state = AppState::new(
         rpc_url,
         "".to_string(),
@@ -988,6 +996,10 @@ async fn test_stats_reflects_active_subscriptions() {
     let state = AppState::new(
         "http://localhost:1".to_string(),
         "".to_string(),
+        AuthConfig {
+            enabled: false,
+            api_key: None,
+        },
         "".to_string(),
         FeeConfig::default(),
     );
@@ -1146,6 +1158,11 @@ async fn test_poller_keeps_polling_non_terminal_transactions() {
     });
 
     let rpc_url = format!("http://{}", rpc_addr);
+    let auth = AuthConfig {
+        enabled: false,
+        api_key: None,
+    };
+    let state = AppState::new(rpc_url, "".into(), auth, FeeConfig::default());
     let state = AppState::new(rpc_url, "".into(), "".into(), FeeConfig::default());
 
     // Register one subscription manually (simulates a WS client subscribing).
