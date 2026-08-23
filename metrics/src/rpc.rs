@@ -475,69 +475,8 @@ impl SorobanRpcClient {
 
 // ── Strkey decode ─────────────────────────────────────────────────────────────
 
-const BASE32_ALPHA: &[u8; 32] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
-const VERSION_CONTRACT: u8 = 2 << 3; // 0x10 → first char 'C'
-
-/// CRC-16/XModem used by Stellar strkey checksums.
-fn crc16(data: &[u8]) -> u16 {
-    let mut crc: u16 = 0;
-    for &b in data {
-        crc ^= (b as u16) << 8;
-        for _ in 0..8 {
-            crc = if crc & 0x8000 != 0 {
-                (crc << 1) ^ 0x1021
-            } else {
-                crc << 1
-            };
-        }
-    }
-    crc
-}
-
-/// Decode a Stellar contract strkey (C…) into its 32-byte hash.
-pub fn decode_contract_id(strkey: &str) -> Result<[u8; 32]> {
-    if strkey.len() != 56 {
-        return Err(anyhow!("strkey must be 56 chars, got {}", strkey.len()));
-    }
-    let mut lookup = [0xFFu8; 256];
-    for (i, &c) in BASE32_ALPHA.iter().enumerate() {
-        lookup[c as usize] = i as u8;
-    }
-    let mut bits: u64 = 0;
-    let mut bit_count: u32 = 0;
-    let mut decoded: Vec<u8> = Vec::with_capacity(35);
-    for &ch in strkey.as_bytes() {
-        let v = lookup[ch as usize];
-        if v == 0xFF {
-            return Err(anyhow!("invalid base32 character '{}'", ch as char));
-        }
-        bits = (bits << 5) | v as u64;
-        bit_count += 5;
-        if bit_count >= 8 {
-            bit_count -= 8;
-            decoded.push((bits >> bit_count) as u8);
-        }
-    }
-    if decoded.len() != 35 {
-        return Err(anyhow!(
-            "strkey decoded to {} bytes, expected 35",
-            decoded.len()
-        ));
-    }
-    let version = decoded[0];
-    if version != VERSION_CONTRACT {
-        return Err(anyhow!(
-            "expected contract strkey (C…), got version 0x{version:02x}"
-        ));
-    }
-    let payload: [u8; 32] = decoded[1..33].try_into().unwrap();
-    let stored_crc = u16::from_le_bytes([decoded[33], decoded[34]]);
-    let actual_crc = crc16(&decoded[..33]);
-    if actual_crc != stored_crc {
-        return Err(anyhow!("strkey checksum mismatch"));
-    }
-    Ok(payload)
-}
+// Now using decode_contract_id from router-off-chain-common
+pub use router_off_chain_common::xdr::decode_contract_id;
 
 // ── Base64 ────────────────────────────────────────────────────────────────────
 

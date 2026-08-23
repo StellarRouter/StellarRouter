@@ -43,3 +43,6 @@ chrono = { version = "0.4.41", features = ["serde"] }
 
 # Concurrency
 dashmap = { version = "6.1.0" }
+
+# Shared utilities
+router-off-chain-common = { path = "../router-off-chain-common" }
