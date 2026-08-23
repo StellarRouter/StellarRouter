@@ -262,9 +262,9 @@ impl RouterQuote {
         requests: Vec<QuoteRequest>,
     ) -> Result<QuoteResponse, QuoteError> {
         let quotes = Self::get_quotes(env.clone(), requests)?;
-        let mut best_quote = quotes.get(0).unwrap();
+        let mut best_quote = quotes.get(0).ok_or(QuoteError::NoQuotesProvided)?;
         for i in 1..quotes.len() {
-            let quote = quotes.get(i).unwrap();
+            let quote = quotes.get(i).ok_or(QuoteError::NoQuotesProvided)?;
             if quote.amount_out > best_quote.amount_out {
                 best_quote = quote;
             }
