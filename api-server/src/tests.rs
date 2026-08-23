@@ -28,18 +28,12 @@ use crate::{
 const VALID_CONTRACT_ID: &str = "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4";
 
 fn test_app() -> Router {
-    let auth = AuthConfig {
-        enabled: false,
-        api_key: None,
-    };
-
     let state = AppState::new(
         // Use a localhost port that immediately refuses connections so RPC
         // calls fail fast and the heuristic fallback is exercised.
         "http://127.0.0.1:19999".to_string(),
         "".to_string(),
         "".to_string(),
-        auth,
         FeeConfig::default(),
     );
 
@@ -82,16 +76,10 @@ async fn spawn_ws_server() -> (std::net::SocketAddr, AppState) {
     use axum::routing::get;
     use tokio::net::TcpListener;
 
-    let auth = AuthConfig {
-        enabled: false,
-        api_key: None,
-    };
-
     let state = AppState::new(
         "http://localhost:1".to_string(),
         "".to_string(),
         "".to_string(),
-        auth.clone(),
         FeeConfig::default(),
     );
 
@@ -964,16 +952,10 @@ async fn spawn_ws_server_with_rpc(rpc_url: String) -> (SocketAddr, AppState) {
     use axum::routing::get;
     use tokio::net::TcpListener;
 
-    let auth = AuthConfig {
-        enabled: false,
-        api_key: None,
-    };
-
     let state = AppState::new(
         rpc_url,
         "".to_string(),
         "".to_string(),
-        auth,
         FeeConfig::default(),
     );
 
@@ -1007,10 +989,6 @@ async fn test_stats_reflects_active_subscriptions() {
         "http://localhost:1".to_string(),
         "".to_string(),
         "".to_string(),
-        AuthConfig {
-            enabled: false,
-            api_key: None,
-        },
         FeeConfig::default(),
     );
 
@@ -1168,11 +1146,7 @@ async fn test_poller_keeps_polling_non_terminal_transactions() {
     });
 
     let rpc_url = format!("http://{}", rpc_addr);
-    let auth = AuthConfig {
-        enabled: false,
-        api_key: None,
-    };
-    let state = AppState::new(rpc_url, "".into(), "".into(), auth, FeeConfig::default());
+    let state = AppState::new(rpc_url, "".into(), "".into(), FeeConfig::default());
 
     // Register one subscription manually (simulates a WS client subscribing).
     state.add_subscriber("pending_tx".to_string());
