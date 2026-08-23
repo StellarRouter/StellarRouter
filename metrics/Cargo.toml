@@ -52,9 +52,6 @@ tokio-util = { version = "0.7.15" }
 # SSE streaming
 futures-util = { version = "0.3" }
 
-# Shared off-chain utilities
-router-off-chain-common = { path = "../router-off-chain-common" }
-
 # OpenAPI/Swagger
 utoipa = { version = "4.2.3", features = ["axum_extras"] }
 utoipa-swagger-ui = { version = "7.1.0", features = ["axum"] }
