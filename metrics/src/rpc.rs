@@ -59,16 +59,9 @@ struct GetLedgerEntriesResult {
 /// A single event returned by `getEvents`.
 #[derive(Debug, Deserialize, Clone)]
 pub struct ContractEvent {
-    /// The contract that emitted the event.
-    #[serde(rename = "contractId")]
-    #[allow(dead_code)]
-    pub contract_id: String,
     /// Ledger sequence number in which this event was emitted.
     #[serde(default)]
     pub ledger: u32,
-    /// Event topic symbols (decoded from XDR).
-    #[allow(dead_code)]
-    pub topic: Vec<serde_json::Value>,
     /// Event value (decoded from XDR).
     pub value: serde_json::Value,
 }
@@ -77,9 +70,6 @@ pub struct ContractEvent {
 #[derive(Debug, Deserialize)]
 struct GetEventsResult {
     events: Option<Vec<ContractEvent>>,
-    #[serde(rename = "latestLedger")]
-    #[allow(dead_code)]
-    latest_ledger: Option<u64>,
 }
 
 // ── Client ────────────────────────────────────────────────────────────────────
