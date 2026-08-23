@@ -54,6 +54,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `decode_contract_id`, `base64_encode`, or the `build_invoke_xdr` helper.
 
 ### Added
+- **Metric cardinality limits**: Configurable cap on distinct label values per high-cardinality metric (`--max-cardinality` / `ROUTER_MAX_CARDINALITY`, default: 100). When the cap is exceeded, overflow values are grouped into an `_other` bucket to prevent Prometheus label explosion. Affects: `router_core_route_paused`, `router_middleware_circuit_open`, `router_middleware_failure_count`, `router_middleware_route_calls_total`, `router_middleware_route_failures_total`, `router_registry_version_count`. See README.md for details.
 - **Real-time event streaming via Stellar SSE** (`--event-mode sse` / `ROUTER_EVENT_MODE=sse`):
   - New `EventMode` CLI flag (`poll` | `sse`) and companion env var `ROUTER_EVENT_MODE`.
   - `--horizon-url` / `ROUTER_HORIZON_URL` — Horizon base URL for SSE subscriptions.
@@ -72,6 +73,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Automatic failover with per-endpoint retry budgets when an endpoint is unreachable.
   - Backward compatible: `--rpc-url` / `ROUTER_RPC_URL` still works as a single endpoint.
 
+### Fixed
+- Fixed pre-existing unclosed delimiter in `rpc.rs` (`retry_on_transient_failure_mock` test)
+- Fixed pre-existing syntax error in `server.rs` (`ready_handler` function)
+
 ### Planned
 - Support for custom metric labels via configuration
 - Support for scraping `router-access` contract metrics (role counts, blacklist size)
@@ -81,5 +86,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Helm chart for Kubernetes deployment
 - Integration with Stellar Horizon for transaction-level metrics
 - Proper XDR encoding/decoding using `stellar-xdr` crate
-- Metric cardinality limits to prevent label explosion
+- Support for multiple network endpoints (failover)
 - Metric aggregation across multiple contract instances

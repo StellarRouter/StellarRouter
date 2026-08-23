@@ -159,6 +159,12 @@ Options:
       [env: ROUTER_SSE_RECONNECT_MAX_DELAY_MS]
       [default: 30000]
 
+  --max-cardinality <N>
+      Maximum distinct label values per high-cardinality metric
+      (per-route, per-name). Overflow values are grouped into _other.
+      [env: ROUTER_MAX_CARDINALITY]
+      [default: 100]
+
   -h, --help
       Print help
 
@@ -335,6 +341,61 @@ Each contract scrape is timed and any error increments the `router_scrape_errors
 - **Poll mode latency**: In poll mode, metrics are updated on the scrape interval (default 15s). Enable SSE mode (`ROUTER_EVENT_MODE=sse`) for near-real-time event updates.
 - **XDR encoding**: The current implementation uses JSON-RPC simulation results. For production deployments with complex data types, integrate the `stellar-xdr` crate for proper XDR encoding/decoding.
 - **SSE state-based metrics**: In SSE mode, state-based metrics (total_routed, circuit breaker state) are only updated during the bootstrap poll and on reconnect — not continuously like event-based metrics. Run both modes simultaneously (poll for state, SSE for events) if you need continuous state freshness.
+
+## Metric Cardinality Limits
+
+Prometheus label cardinality explosion is a well-known operational hazard. Metrics that carry per-route or per-name labels (`router_core_route_paused`, `router_middleware_circuit_open`, `router_middleware_failure_count`, `router_middleware_route_calls_total`, `router_middleware_route_failures_total`, `router_registry_version_count`) can grow unboundedly if new routes/names are created on-chain.
+
+The exporter includes a **cardinality limiter** that caps the number of distinct label values tracked per metric. When the cap is exceeded, new values are redirected to a single `_other` bucket, preventing unbounded memory growth.
+
+### Configuration
+
+| Flag | Env Var | Default | Description |
+|------|---------|---------|-------------|
+| `--max-cardinality` | `ROUTER_MAX_CARDINALITY` | `100` | Max distinct label values per high-cardinality metric |
+
+### Affected Metrics
+
+The following metrics are subject to cardinality limiting:
+
+| Metric | Label Being Limited |
+|--------|---------------------|
+| `router_core_route_paused` | `route` |
+| `router_middleware_circuit_open` | `route` |
+| `router_middleware_failure_count` | `route` |
+| `router_middleware_route_calls_total` | `route` |
+| `router_middleware_route_failures_total` | `route` |
+| `router_registry_version_count` | `name` |
+
+### Behavior When Cap Is Exceeded
+
+1. The first N distinct label values (default: 100) are tracked normally as separate Prometheus time-series.
+2. Any additional distinct label values beyond the cap are **all mapped to `_other`**.
+3. The `_other` bucket accumulates the values (gauges are set, counters are incremented) from all overflow labels.
+4. The `contract` label is **never** subject to limiting — contract IDs are deployment-controlled and bounded.
+
+### Example
+
+```bash
+# Set a higher cardinality limit (e.g., 500 routes per contract)
+export ROUTER_MAX_CARDINALITY=500
+./target/release/router-metrics-exporter
+
+# Or via CLI flag
+./target/release/router-metrics-exporter --max-cardinality 500
+```
+
+### Prometheus Queries for Overflow Monitoring
+
+You can monitor cardinality and detect overflow in Prometheus:
+
+```promql
+# Count distinct route label values for a metric
+count(count by (route) (router_core_route_paused{contract="CBGTG..."}))
+
+# Check if the _other bucket has any values (indicates overflow)
+router_core_route_paused{contract="CBGTG...", route="_other"}
+```
 
 ## OpenTelemetry Support
 

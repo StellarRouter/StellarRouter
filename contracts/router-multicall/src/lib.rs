@@ -1,4 +1,5 @@
 #![no_std]
+#![allow(clippy::explicit_counter_loop)]
 
 //! # router-multicall
 //!

@@ -63,6 +63,7 @@ pub struct SseEvent {
 
     /// Contract that emitted this event (strkey format).
     #[serde(rename = "contractId", default)]
+    #[allow(dead_code)]
     pub contract_id: String,
 
     /// Decoded topic symbols (e.g. `["post_call"]`).
@@ -207,10 +208,7 @@ impl SseSubscriber {
             match self.connect_and_stream(&url).await {
                 Ok(()) => {
                     // Stream ended cleanly (e.g. server closed connection).
-                    warn!(
-                        contract_id,
-                        "SSE stream ended — reconnecting"
-                    );
+                    warn!(contract_id, "SSE stream ended — reconnecting");
                 }
                 Err(e) => {
                     warn!(contract_id, error = %e, "SSE stream error — reconnecting");
@@ -441,7 +439,11 @@ impl SseSubscriber {
             }
 
             other => {
-                debug!(contract_id, topic = other, "SSE event with unrecognised topic — ignoring");
+                debug!(
+                    contract_id,
+                    topic = other,
+                    "SSE event with unrecognised topic — ignoring"
+                );
             }
         }
     }
@@ -686,10 +688,7 @@ mod tests {
         sub.dispatch_event_block(&lines);
 
         assert_eq!(
-            metrics
-                .sse_events_total
-                .with_label_values(&["C1"])
-                .get(),
+            metrics.sse_events_total.with_label_values(&["C1"]).get(),
             1.0
         );
         assert_eq!(
@@ -774,8 +773,7 @@ mod tests {
         let metrics = RouterMetrics::new(&reg).unwrap();
         let cancel = CancellationToken::new();
 
-        let sub =
-            SseSubscriber::new(config, "C1", metrics.clone(), cancel.clone()).unwrap();
+        let sub = SseSubscriber::new(config, "C1", metrics.clone(), cancel.clone()).unwrap();
 
         // run() should terminate on its own after max_reconnects exceeded.
         tokio::time::timeout(Duration::from_secs(5), sub.run())
@@ -793,10 +791,7 @@ mod tests {
         );
 
         // Connected gauge should be 0 after termination.
-        assert_eq!(
-            metrics.sse_connected.with_label_values(&["C1"]).get(),
-            0.0
-        );
+        assert_eq!(metrics.sse_connected.with_label_values(&["C1"]).get(), 0.0);
     }
 
     /// Verify that the subscriber stops immediately when cancelled before any
@@ -826,7 +821,10 @@ mod tests {
 
         // No reconnects should have happened.
         assert_eq!(
-            metrics.sse_reconnects_total.with_label_values(&["C1"]).get(),
+            metrics
+                .sse_reconnects_total
+                .with_label_values(&["C1"])
+                .get(),
             0.0
         );
     }
@@ -848,8 +846,7 @@ mod tests {
         let metrics = RouterMetrics::new(&reg).unwrap();
         let cancel = CancellationToken::new();
 
-        let sub =
-            SseSubscriber::new(config, "C1", metrics.clone(), cancel.clone()).unwrap();
+        let sub = SseSubscriber::new(config, "C1", metrics.clone(), cancel.clone()).unwrap();
 
         // Cancel after a short delay so the subscriber is mid-backoff.
         tokio::spawn(async move {
@@ -965,10 +962,7 @@ mod tests {
         ]);
 
         let config = sse_config_from_args(&args);
-        assert_eq!(
-            config.horizon_url,
-            "https://horizon-testnet.stellar.org"
-        );
+        assert_eq!(config.horizon_url, "https://horizon-testnet.stellar.org");
         assert_eq!(config.max_reconnects, 5);
         assert_eq!(config.base_delay, Duration::from_millis(500));
         assert_eq!(config.max_delay, Duration::from_millis(15000));

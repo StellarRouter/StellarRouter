@@ -208,3 +208,4 @@ mod tests {
         assert!(!api_keys_equal("", "not-empty"));
         assert!(!api_keys_equal("not-empty", ""));
     }
+}

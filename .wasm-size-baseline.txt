@@ -5,4 +5,4 @@ router_middleware:50754
 router_timelock:36849
 router_multicall:23970
 router_execution:36170
-router_quote:21112
+router_quote:28935

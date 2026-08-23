@@ -54,8 +54,8 @@ pub enum DataKey {
     RoleExpiry(String, Address),
     BlacklistReason(Address),
     BlacklistExpiry(Address),
-    BlacklistCount,   // instance -> total distinct blacklisted addresses
-    AllRoles,         // instance -> Vec<String> of every role name ever granted
+    BlacklistCount, // instance -> total distinct blacklisted addresses
+    AllRoles,       // instance -> Vec<String> of every role name ever granted
 }
 
 // ── Errors ────────────────────────────────────────────────────────────────────
@@ -512,7 +512,11 @@ impl RouterAccess {
     /// Record a role name so it can be enumerated later via [`get_all_roles`].
     fn record_role_name(env: &Env, role: &String) {
         let key = DataKey::AllRoles;
-        let mut roles: Vec<String> = env.storage().instance().get(&key).unwrap_or_else(|| Vec::new(env));
+        let mut roles: Vec<String> = env
+            .storage()
+            .instance()
+            .get(&key)
+            .unwrap_or_else(|| Vec::new(env));
         if !roles.iter().any(|r| &r == role) {
             roles.push_back(role.clone());
             env.storage().instance().set(&key, &roles);
@@ -1079,7 +1083,6 @@ mod tests {
 
         let expires_at = env.ledger().timestamp() + 100;
         client.grant_role(&admin, &user, &role, &Some(expires_at));
-        client.grant_role(&admin, &user, &role, &Some(100));
 
         client.revoke_role(&admin, &role, &user);
 
@@ -1321,7 +1324,6 @@ mod tests {
         let user = Address::generate(&env);
         let expires_at = env.ledger().timestamp() + 9999;
         client.grant_role(&admin, &user, &role, &Some(expires_at));
-        client.grant_role(&admin, &user, &role, &Some(9999));
         assert!(client.has_role(&role, &user));
         client.expire_role(&admin, &role, &user);
         assert!(!client.has_role(&role, &user));
@@ -1378,7 +1380,6 @@ mod tests {
 
         let expires_at = env.ledger().timestamp() + 10;
         client.grant_role(&admin, &user, &role, &Some(expires_at));
-        client.grant_role(&admin, &user, &role, &Some(10));
 
         let members_before = client.get_role_members(&role, &0, &50);
         assert!(members_before.contains(&user));
