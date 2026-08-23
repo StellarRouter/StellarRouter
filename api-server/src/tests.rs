@@ -447,6 +447,61 @@ async fn test_simulate_response_has_fee_fields() {
 }
 
 #[tokio::test]
+async fn test_simulate_route_breakdown_populated_when_route_details_provided() {
+    let app = test_app();
+    let body = json!({
+        "target": VALID_CONTRACT_ID,
+        "function": "transfer",
+        "route_details": {
+            "name": "swap",
+            "version": 2,
+        },
+    });
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/simulate")
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&body).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let parsed: SimulateResponse = serde_json::from_slice(&bytes).unwrap();
+    let breakdown = parsed.route_breakdown.expect("route_breakdown expected");
+    assert_eq!(breakdown.route_name, "swap");
+    assert_eq!(breakdown.version, 2);
+    assert_eq!(breakdown.target_contract, VALID_CONTRACT_ID);
+    assert_eq!(breakdown.function, "transfer");
+}
+
+#[tokio::test]
+async fn test_simulate_route_breakdown_absent_without_route_details() {
+    let app = test_app();
+    let body = json!({ "target": VALID_CONTRACT_ID, "function": "transfer" });
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/simulate")
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&body).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let parsed: SimulateResponse = serde_json::from_slice(&bytes).unwrap();
+    assert!(parsed.route_breakdown.is_none());
+}
+
+#[tokio::test]
 async fn test_simulate_surge_pricing_at_high_load() {
     let app = test_app();
     let body = json!({
