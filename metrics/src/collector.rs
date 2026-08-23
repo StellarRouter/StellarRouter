@@ -1169,9 +1169,7 @@ mod tests {
         let (collector, metrics) = make_collector_full("", "", "", "QUOTE_ID", "");
 
         let make_event = |topic: &str, ledger: u32| ContractEvent {
-            contract_id: "QUOTE_ID".to_string(),
             ledger,
-            topic: vec![serde_json::json!(topic)],
             value: serde_json::json!({}),
         };
 
@@ -1216,9 +1214,7 @@ mod tests {
         let (collector, metrics) = make_collector_full("", "", "", "QUOTE_ID", "");
 
         let make_event = |topic: &str, ledger: u32| ContractEvent {
-            contract_id: "QUOTE_ID".to_string(),
             ledger,
-            topic: vec![serde_json::json!(topic)],
             value: serde_json::json!({}),
         };
 
@@ -1262,9 +1258,7 @@ mod tests {
         let (collector, metrics) = make_collector_full("", "", "", "", "EXEC_ID");
 
         let make_event = |topic: &str, ledger: u32| ContractEvent {
-            contract_id: "EXEC_ID".to_string(),
             ledger,
-            topic: vec![serde_json::json!(topic)],
             value: serde_json::json!({}),
         };
 
@@ -1323,9 +1317,7 @@ mod tests {
         let (collector, metrics) = make_collector_full("", "", "", "", "EXEC_ID");
 
         let make_event = |topic: &str, ledger: u32| ContractEvent {
-            contract_id: "EXEC_ID".to_string(),
             ledger,
-            topic: vec![serde_json::json!(topic)],
             value: serde_json::json!({}),
         };
 
@@ -1466,9 +1458,7 @@ mod tests {
         let collector = Collector::new(args, metrics.clone(), limiter);
 
         let make_event = |success: bool, ledger: u32| ContractEvent {
-            contract_id: "MULTI_ID".to_string(),
             ledger,
-            topic: vec![serde_json::json!("call_result")],
             value: json!([{"address": "CALLER"}, {"address": "TARGET"}, "fn", success]),
         };
 
@@ -1521,9 +1511,7 @@ mod tests {
         let collector = Collector::new(args, metrics.clone(), limiter);
 
         let make_event = |success: bool, ledger: u32| ContractEvent {
-            contract_id: "MULTI_ID".to_string(),
             ledger,
-            topic: vec![serde_json::json!("call_result")],
             value: json!([{"address": "CALLER"}, {"address": "TARGET"}, "fn", success]),
         };
 
@@ -1568,17 +1556,13 @@ mod tests {
     fn test_extract_call_result_success() {
         use crate::rpc::ContractEvent;
         let ev = ContractEvent {
-            contract_id: "MULTI_ID".to_string(),
             ledger: 100,
-            topic: vec![serde_json::json!("call_result")],
             value: json!([{"address": "C"}, {"address": "T"}, "fn", true]),
         };
         assert_eq!(extract_call_result_success(&ev), Some(true));
 
         let ev2 = ContractEvent {
-            contract_id: "MULTI_ID".to_string(),
             ledger: 101,
-            topic: vec![serde_json::json!("call_result")],
             value: json!({ "success": false }),
         };
         assert_eq!(extract_call_result_success(&ev2), Some(false));
@@ -1642,9 +1626,7 @@ mod tests {
     fn test_extract_post_call_data_success() {
         use crate::rpc::ContractEvent;
         let event = ContractEvent {
-            contract_id: "MW_ID".to_string(),
             ledger: 100,
-            topic: vec![serde_json::json!("post_call")],
             value: json!({ "route": "oracle", "success": true }),
         };
         assert_eq!(
@@ -1657,9 +1639,7 @@ mod tests {
     fn test_extract_post_call_data_failure() {
         use crate::rpc::ContractEvent;
         let event = ContractEvent {
-            contract_id: "MW_ID".to_string(),
             ledger: 101,
-            topic: vec![serde_json::json!("post_call")],
             value: json!({ "route": "vault", "success": false }),
         };
         assert_eq!(
@@ -1672,9 +1652,7 @@ mod tests {
     fn test_extract_post_call_data_nested() {
         use crate::rpc::ContractEvent;
         let event = ContractEvent {
-            contract_id: "MW_ID".to_string(),
             ledger: 102,
-            topic: vec![serde_json::json!("post_call")],
             value: json!({
                 "value": ["caller_address", "oracle", true]
             }),
@@ -1689,9 +1667,7 @@ mod tests {
     fn test_extract_post_call_data_invalid() {
         use crate::rpc::ContractEvent;
         let event = ContractEvent {
-            contract_id: "MW_ID".to_string(),
             ledger: 103,
-            topic: vec![serde_json::json!("post_call")],
             value: json!({ "invalid": "data" }),
         };
         assert_eq!(extract_post_call_data(&event), None);
@@ -1703,9 +1679,7 @@ mod tests {
         let (collector, metrics) = make_collector("", "MW_ID", "");
 
         let make_event = |route: &str, success: bool, ledger: u32| ContractEvent {
-            contract_id: "MW_ID".to_string(),
             ledger,
-            topic: vec![serde_json::json!("post_call")],
             value: json!({ "route": route, "success": success }),
         };
 
@@ -1748,9 +1722,7 @@ mod tests {
         let (collector, metrics) = make_collector("", "MW_ID", "");
 
         let make_event = |route: &str, success: bool, ledger: u32| ContractEvent {
-            contract_id: "MW_ID".to_string(),
             ledger,
-            topic: vec![serde_json::json!("post_call")],
             value: json!({ "route": route, "success": success }),
         };
 
