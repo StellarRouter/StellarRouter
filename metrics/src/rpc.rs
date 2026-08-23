@@ -527,6 +527,8 @@ fn decode_contract_id_local(strkey: &str) -> Result<[u8; 32]> {
     }
     Ok(payload)
 }
+// Now using decode_contract_id from router-off-chain-common
+pub use router_off_chain_common::xdr::decode_contract_id;
 
 // ── Base64 ────────────────────────────────────────────────────────────────────
 

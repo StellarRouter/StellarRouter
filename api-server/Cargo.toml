@@ -60,3 +60,5 @@ router-off-chain-common = { path = "../router-off-chain-common" }
 
 [dev-dependencies]
 tower = { version = "0.5.3" }
+# Shared utilities
+router-off-chain-common = { path = "../router-off-chain-common" }
