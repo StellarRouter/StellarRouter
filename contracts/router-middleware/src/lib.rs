@@ -2065,6 +2065,33 @@ mod tests {
     }
 
     #[test]
+    fn test_route_config_returns_configured_route() {
+        let (env, admin, client) = setup();
+        let route = String::from_str(&env, "oracle/get_price");
+        client.configure_route(&admin, &route, &5, &60, &true, &3, &120, &10);
+
+        let config = client.route_config(&route).unwrap();
+        assert_eq!(
+            config,
+            RouteConfig {
+                max_calls_per_window: 5,
+                window_seconds: 60,
+                enabled: true,
+                failure_threshold: 3,
+                recovery_window_seconds: 120,
+                log_retention: 10,
+            }
+        );
+    }
+
+    #[test]
+    fn test_route_config_none_when_unconfigured() {
+        let (env, _admin, client) = setup();
+        let route = String::from_str(&env, "oracle/get_price");
+        assert!(client.route_config(&route).is_none());
+    }
+
+    #[test]
     fn test_get_call_log_filtered_with_ring_buffer_wraparound() {
         let (env, admin, client) = setup();
         let route = String::from_str(&env, "oracle/get_price");
