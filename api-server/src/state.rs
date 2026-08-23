@@ -3,7 +3,6 @@ use std::sync::Arc;
 use tokio::sync::broadcast;
 
 use crate::{
-    auth::AuthConfig,
     rpc::{FeeConfig, SorobanRpcClient},
     types::TransactionStatusEvent,
 };
@@ -17,8 +16,6 @@ pub struct AppState {
     #[allow(dead_code)]
     pub execution_contract_id: String,
     pub router_core_contract_id: String,
-    #[allow(dead_code)]
-    pub auth_config: AuthConfig,
     pub tx_status_tx: broadcast::Sender<TransactionStatusEvent>,
     pub tx_subscribers: Arc<DashMap<String, usize>>,
 }
@@ -28,7 +25,6 @@ impl AppState {
         rpc_url: String,
         execution_contract_id: String,
         router_core_contract_id: String,
-        auth_config: AuthConfig,
         fee_config: FeeConfig,
     ) -> Self {
         let (tx_status_tx, _) = broadcast::channel(BROADCAST_CHANNEL_CAPACITY);
@@ -36,7 +32,6 @@ impl AppState {
             rpc: SorobanRpcClient::new(rpc_url, Some(router_core_contract_id.clone()), fee_config),
             execution_contract_id,
             router_core_contract_id,
-            auth_config,
             tx_status_tx,
             tx_subscribers: Arc::new(DashMap::new()),
         }
