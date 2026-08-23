@@ -105,7 +105,6 @@ async fn main() -> Result<()> {
     let state = AppState::new(
         args.rpc_url,
         args.router_core_contract_id,
-        auth_config.clone(),
         fee_config,
     );
 
