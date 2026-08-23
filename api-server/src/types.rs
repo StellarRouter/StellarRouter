@@ -41,6 +41,8 @@ pub struct SimulateResponse {
     pub success: bool,
     pub estimated_fees: FeeEstimate,
     pub simulation: SimulationDetail,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub route_breakdown: Option<RouteBreakdown>,
     pub message: String,
 }
 
@@ -60,7 +62,6 @@ pub struct SimulationDetail {
     pub would_succeed: bool,
 }
 
-#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RouteBreakdown {
     pub route_name: String,
