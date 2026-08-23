@@ -129,9 +129,122 @@ pub struct SubscribeMessage {
     pub tx_id: String,
 }
 
-#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WsMessage {
     pub msg_type: String,
     pub data: serde_json::Value,
+}
+
+impl WsMessage {
+    pub fn new(msg_type: impl Into<String>, data: serde_json::Value) -> Self {
+        Self {
+            msg_type: msg_type.into(),
+            data,
+        }
+    }
+
+    pub fn subscribed(tx_id: String) -> Self {
+        Self::new(
+            "subscribed",
+            serde_json::json!({
+                "tx_id": tx_id,
+                "status": "subscribed",
+            }),
+        )
+    }
+
+    pub fn unsubscribed(tx_id: String) -> Self {
+        Self::new("unsubscribed", serde_json::json!({ "tx_id": tx_id }))
+    }
+
+    pub fn status_update(event: &TransactionStatusEvent) -> Self {
+        Self::new(
+            "status_update",
+            serde_json::json!({
+                "tx_id": event.tx_id,
+                "status": event.status,
+                "timestamp": event.timestamp,
+                "message": event.message,
+            }),
+        )
+    }
+
+    pub fn error(message: impl Into<String>) -> Self {
+        Self::new(
+            "error",
+            serde_json::json!({
+                "message": message.into()
+            }),
+        )
+    }
+
+    pub fn to_json_string(&self) -> String {
+        serde_json::to_string(self).unwrap_or_else(|_| {
+            r#"{"msg_type":"error","data":{"message":"Failed to serialize message"}}"#.to_string()
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ws_message_subscribed_creates_correct_structure() {
+        let msg = WsMessage::subscribed("tx123".to_string());
+        assert_eq!(msg.msg_type, "subscribed");
+        assert_eq!(msg.data["tx_id"], "tx123");
+        assert_eq!(msg.data["status"], "subscribed");
+    }
+
+    #[test]
+    fn ws_message_unsubscribed_creates_correct_structure() {
+        let msg = WsMessage::unsubscribed("tx456".to_string());
+        assert_eq!(msg.msg_type, "unsubscribed");
+        assert_eq!(msg.data["tx_id"], "tx456");
+    }
+
+    #[test]
+    fn ws_message_status_update_creates_correct_structure() {
+        let event = TransactionStatusEvent {
+            tx_id: "tx789".to_string(),
+            status: TransactionStatus::Confirmed,
+            timestamp: "2024-01-01T00:00:00Z".to_string(),
+            message: Some("Transaction confirmed".to_string()),
+        };
+
+        let msg = WsMessage::status_update(&event);
+        assert_eq!(msg.msg_type, "status_update");
+        assert_eq!(msg.data["tx_id"], "tx789");
+        assert_eq!(msg.data["status"], "CONFIRMED");
+        assert_eq!(msg.data["timestamp"], "2024-01-01T00:00:00Z");
+        assert_eq!(msg.data["message"], "Transaction confirmed");
+    }
+
+    #[test]
+    fn ws_message_error_creates_correct_structure() {
+        let msg = WsMessage::error("Something went wrong");
+        assert_eq!(msg.msg_type, "error");
+        assert_eq!(msg.data["message"], "Something went wrong");
+    }
+
+    #[test]
+    fn ws_message_serializes_to_valid_json() {
+        let msg = WsMessage::new("test_type", serde_json::json!({"key": "value"}));
+        let json_str = msg.to_json_string();
+        
+        let parsed: serde_json::Value = serde_json::from_str(&json_str).unwrap();
+        assert_eq!(parsed["msg_type"], "test_type");
+        assert_eq!(parsed["data"]["key"], "value");
+    }
+
+    #[test]
+    fn ws_message_deserializes_from_json() {
+        let json = r#"{"msg_type":"subscribed","data":{"tx_id":"tx999","status":"subscribed"}}"#;
+        let msg: WsMessage = serde_json::from_str(json).unwrap();
+        
+        assert_eq!(msg.msg_type, "subscribed");
+        assert_eq!(msg.data["tx_id"], "tx999");
+        assert_eq!(msg.data["status"], "subscribed");
+    }
 }
