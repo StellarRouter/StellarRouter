@@ -225,6 +225,10 @@ impl XdrWriter {
     pub fn i64(&mut self, v: i64) {
         self.0.extend_from_slice(&v.to_be_bytes());
     }
+    /// Write a big-endian `u64`.
+    pub fn u64(&mut self, v: u64) {
+        self.0.extend_from_slice(&v.to_be_bytes());
+    }
 
     /// Write `data` followed by zero-padding to the next 4-byte boundary.
     pub fn opaque_fixed(&mut self, data: &[u8]) {
@@ -284,6 +288,10 @@ impl<'a> XdrReader<'a> {
     pub fn u32(&mut self) -> Result<u32> {
         Ok(u32::from_be_bytes(self.take(4)?.try_into().unwrap()))
     }
+    /// Read a big-endian `u64`.
+    pub fn u64(&mut self) -> Result<u64> {
+        Ok(u64::from_be_bytes(self.take(8)?.try_into().unwrap()))
+    }
     /// Read an XDR boolean (a `u32` that is non-zero).
     pub fn bool(&mut self) -> Result<bool> {
         Ok(self.u32()? != 0)
@@ -314,11 +322,18 @@ impl<'a> XdrReader<'a> {
 
 const SCV_BOOL: u32 = 0;
 const SCV_VOID: u32 = 1;
+/// ScVal::U32 discriminant.
+pub const SCV_U32: u32 = 3;
+/// ScVal::U64 discriminant.
+pub const SCV_U64: u32 = 5;
 const SCV_STRING: u32 = 14;
 const SCV_SYMBOL: u32 = 15;
 const SCV_VEC: u32 = 16;
 const SCV_MAP: u32 = 17;
 const SCV_ADDRESS: u32 = 18;
+
+/// LedgerEntryType discriminant for ContractData entries.
+pub const LEDGER_ENTRY_TYPE_CONTRACT_DATA: u32 = 6;
 
 const SC_ADDR_ACCOUNT: u32 = 0; // AccountID (PublicKey)
 const SC_ADDR_CONTRACT: u32 = 1; // Hash(32)
@@ -594,10 +609,10 @@ fn skip_scval_body(r: &mut XdrReader, t: u32) -> Result<()> {
                 }
             }
         }
-        3 | 4 => {
+        SCV_U32 | 4 => {
             r.u32()?;
         } // U32 / I32
-        5..=8 => {
+        SCV_U64..=8 => {
             r.take(8)?;
         } // U64 / I64 / Timepoint / Duration
         9 | 10 => {
@@ -614,9 +629,60 @@ fn skip_scval_body(r: &mut XdrReader, t: u32) -> Result<()> {
     Ok(())
 }
 
-fn skip_scval(r: &mut XdrReader) -> Result<()> {
+pub fn skip_scval(r: &mut XdrReader) -> Result<()> {
     let t = r.u32()?;
     skip_scval_body(r, t)
+}
+
+/// Extract a `u64` from a base64-encoded XDR blob that is either:
+///
+/// - A bare `ScVal` (production RPCs that return the entry value directly), or
+/// - A full `LedgerEntryData::ContractData` XDR (standard Soroban RPC
+///   `getLedgerEntries` response).
+///
+/// Both `ScVal::U64` (discriminant 5) and `ScVal::U32` (discriminant 3) are
+/// accepted — the router-execution contract stores `max_retries` as a `u32`.
+///
+/// # XDR layout handled
+/// ```text
+/// // Bare ScVal
+/// u32 discriminant   // SCV_U64=5 or SCV_U32=3
+/// [u32 | u64] value
+///
+/// // LedgerEntryData::ContractData
+/// u32(6)             — LEDGER_ENTRY_TYPE_CONTRACT_DATA
+/// ScAddress          — skipped
+/// ScVal key          — skipped
+/// ScVal val          — SCV_U64 | SCV_U32  ← extracted
+/// u32 durability     — (remaining fields skipped implicitly)
+/// ```
+pub fn extract_u64_from_xdr(xdr_b64: &str) -> Result<u64> {
+    let bytes = base64_decode(xdr_b64)?;
+    let mut r = XdrReader::new(&bytes);
+    let discriminant = r.u32()?;
+
+    match discriminant {
+        SCV_U64 => r.u64(),
+        SCV_U32 => r.u32().map(|v| v as u64),
+        LEDGER_ENTRY_TYPE_CONTRACT_DATA => {
+            // ScAddress: type discriminant + 32-byte hash
+            r.u32()?;
+            r.take(32)?;
+            // ScVal key — skip to reach the val ScVal
+            skip_scval(&mut r)?;
+            // ScVal val — read the u64/u32 directly
+            let val_type = r.u32()?;
+            match val_type {
+                SCV_U64 => r.u64(),
+                SCV_U32 => r.u32().map(|v| v as u64),
+                other => Err(anyhow!(
+                    "expected ScVal::U64 or ScVal::U32 in ContractDataEntry, got {}",
+                    other
+                )),
+            }
+        }
+        other => Err(anyhow!("unexpected XDR discriminant {}", other)),
+    }
 }
 
 // ── Unit tests ────────────────────────────────────────────────────────────────
@@ -816,5 +882,68 @@ mod tests {
         assert!(decode_contract_id(&re).is_ok());
         // The CRC embedded in ZERO_CONTRACT must match what we compute.
         let _ = crc; // used implicitly via round-trip
+    }
+
+    #[test]
+    fn extract_u64_from_bare_scval_u64() {
+        let mut w = XdrWriter::new();
+        w.u32(SCV_U64);
+        w.u64(42);
+        let enc = base64_encode(&w.into_bytes());
+        assert_eq!(extract_u64_from_xdr(&enc).unwrap(), 42);
+    }
+
+    #[test]
+    fn extract_u64_from_bare_scval_u32() {
+        let mut w = XdrWriter::new();
+        w.u32(SCV_U32);
+        w.u32(7);
+        let enc = base64_encode(&w.into_bytes());
+        assert_eq!(extract_u64_from_xdr(&enc).unwrap(), 7);
+    }
+
+    #[test]
+    fn extract_u64_from_contract_data_wrapped_u32() {
+        let hash = decode_contract_id(ZERO_CONTRACT).unwrap();
+        let mut w = XdrWriter::new();
+        // LedgerEntryData::ContractData
+        w.u32(LEDGER_ENTRY_TYPE_CONTRACT_DATA);
+        // SCAddress::Contract
+        w.u32(SC_ADDR_CONTRACT);
+        w.opaque_fixed(&hash);
+        // key: ScVal::Symbol("MaxRetries")
+        w.u32(SCV_SYMBOL);
+        w.opaque_var(b"MaxRetries");
+        // val: ScVal::U32(3)
+        w.u32(SCV_U32);
+        w.u32(3);
+        // durability: Persistent
+        w.u32(1);
+        // ext: void
+        w.u32(0);
+        let enc = base64_encode(&w.into_bytes());
+        assert_eq!(extract_u64_from_xdr(&enc).unwrap(), 3);
+    }
+
+    #[test]
+    fn extract_u64_from_contract_data_wrapped_u64() {
+        let hash = decode_contract_id(ZERO_CONTRACT).unwrap();
+        let mut w = XdrWriter::new();
+        w.u32(LEDGER_ENTRY_TYPE_CONTRACT_DATA);
+        w.u32(SC_ADDR_CONTRACT);
+        w.opaque_fixed(&hash);
+        w.u32(SCV_SYMBOL);
+        w.opaque_var(b"MaxRetries");
+        w.u32(SCV_U64);
+        w.u64(99);
+        w.u32(1);
+        w.u32(0);
+        let enc = base64_encode(&w.into_bytes());
+        assert_eq!(extract_u64_from_xdr(&enc).unwrap(), 99);
+    }
+
+    #[test]
+    fn extract_u64_from_invalid_xdr_fails() {
+        assert!(extract_u64_from_xdr("not-valid-xdr").is_err());
     }
 }
