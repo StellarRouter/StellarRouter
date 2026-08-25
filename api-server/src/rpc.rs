@@ -141,6 +141,9 @@ pub struct SorobanRpcClient {
     pub router_core_contract_id: Option<String>,
     fee_config: FeeConfig,
     http: reqwest::Client,
+    /// Configured request timeout (mirrors what was passed to `with_timeout`).
+    /// Stored so callers can inspect it in tests.
+    pub rpc_timeout: std::time::Duration,
 }
 
 #[derive(Serialize)]
@@ -216,16 +219,48 @@ pub struct FeeBreakdown {
 }
 
 impl SorobanRpcClient {
+    /// Connect timeout applied to every request regardless of `rpc_timeout_secs`.
+    const CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
     pub fn new(
         rpc_url: impl Into<String>,
         router_core_contract_id: Option<String>,
         fee_config: FeeConfig,
     ) -> Self {
+        Self::with_timeout(rpc_url, router_core_contract_id, fee_config, 10)
+    }
+
+    /// Build a client whose HTTP requests are bounded by `rpc_timeout_secs`.
+    ///
+    /// Two independent timeouts are applied:
+    /// - **connect timeout** – hardcoded to 5 s; limits TCP + TLS handshake time.
+    /// - **request timeout** – `rpc_timeout_secs`; limits the full round-trip
+    ///   (including waiting for the response body). Configurable via the
+    ///   `RPC_TIMEOUT_SECS` environment variable / `--rpc-timeout-secs` CLI flag.
+    ///
+    /// Without these limits every `simulateTransaction`, `get_all_routes`, and
+    /// `get_route` call can hang indefinitely when the upstream Soroban RPC
+    /// node stalls, tying up Tokio tasks and exhausting the connection pool
+    /// under load. The existing heuristic fallback in `simulate()` only fires
+    /// on an `Err`, not on an indefinite hang, so a timeout is the only guard.
+    pub fn with_timeout(
+        rpc_url: impl Into<String>,
+        router_core_contract_id: Option<String>,
+        fee_config: FeeConfig,
+        rpc_timeout_secs: u64,
+    ) -> Self {
+        let rpc_timeout = std::time::Duration::from_secs(rpc_timeout_secs);
+        let http = reqwest::Client::builder()
+            .connect_timeout(Self::CONNECT_TIMEOUT)
+            .timeout(rpc_timeout)
+            .build()
+            .expect("failed to build reqwest HTTP client");
         Self {
             rpc_url: rpc_url.into(),
             router_core_contract_id,
             fee_config,
-            http: reqwest::Client::new(),
+            http,
+            rpc_timeout,
         }
     }
 
@@ -504,6 +539,40 @@ mod tests {
 
     fn client_with(fee_config: FeeConfig) -> SorobanRpcClient {
         SorobanRpcClient::new("http://127.0.0.1:0", None, fee_config)
+    }
+
+    // ── Timeout configuration ────────────────────────────────────────────────
+
+    /// `with_timeout` must store exactly the duration derived from
+    /// `rpc_timeout_secs` so callers can assert it without performing a live
+    /// network request.  Fixes: SorobanRpcClient's HTTP client has no request
+    /// timeout (issue #97).
+    #[test]
+    fn with_timeout_stores_configured_duration() {
+        let client = SorobanRpcClient::with_timeout(
+            "http://127.0.0.1:0",
+            None,
+            FeeConfig::default(),
+            30,
+        );
+        assert_eq!(
+            client.rpc_timeout,
+            std::time::Duration::from_secs(30),
+            "rpc_timeout must equal the value passed to with_timeout"
+        );
+    }
+
+    /// The convenience `new()` constructor must apply the same timeout
+    /// semantics as `with_timeout`; it must not silently revert to an
+    /// unbounded `reqwest::Client::new()`.
+    #[test]
+    fn new_constructor_applies_default_timeout() {
+        let client = SorobanRpcClient::new("http://127.0.0.1:0", None, FeeConfig::default());
+        // Default is 10 s — must be non-zero and finite.
+        assert!(
+            !client.rpc_timeout.is_zero(),
+            "default constructor must set a non-zero timeout"
+        );
     }
 
     #[test]

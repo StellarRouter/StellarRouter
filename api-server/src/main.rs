@@ -54,6 +54,17 @@ struct Args {
     /// Router core contract ID (for GET /routes)
     #[arg(long, env = "ROUTER_CORE_CONTRACT_ID", default_value = "")]
     router_core_contract_id: String,
+
+    /// Total request timeout for every Soroban RPC call, in seconds.
+    ///
+    /// Caps the full round-trip time (connect + send + receive body) for each
+    /// `simulateTransaction`, `get_all_routes`, and `get_route` call.  Without
+    /// this limit a stalled upstream node hangs the handling task indefinitely,
+    /// exhausting the Tokio thread pool under load.  The connect timeout is
+    /// fixed at 5 s; this flag controls the overall per-request deadline.
+    /// Defaults to 10 s. Override via `RPC_TIMEOUT_SECS`.
+    #[arg(long, env = "RPC_TIMEOUT_SECS", default_value = "10")]
+    rpc_timeout_secs: u64,
 }
 
 #[tokio::main]
@@ -102,7 +113,7 @@ async fn main() -> Result<()> {
         "Router fee-estimation config loaded"
     );
 
-    let state = AppState::new(args.rpc_url, args.router_core_contract_id, fee_config);
+    let state = AppState::new(args.rpc_url, args.router_core_contract_id, fee_config, args.rpc_timeout_secs);
 
     // Spawn the RPC polling producer. It queries the Soroban RPC for each
     // actively-subscribed transaction and forwards status updates into the
