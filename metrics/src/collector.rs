@@ -39,7 +39,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
+use router_off_chain_common::xdr::extract_u64_from_xdr;
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
@@ -838,12 +839,28 @@ impl Collector {
             .await?;
 
         // MaxRetries is a config value in instance storage, not event-based.
-        let max_retries_key = encode_contract_data_key(contract_id, "MaxRetries");
-        let max_retries_entries = client
-            .get_ledger_entries(vec![max_retries_key])
-            .await
-            .unwrap_or_default();
-        let max_retries = extract_u64_from_entry(&max_retries_entries, "MaxRetries").unwrap_or(0);
+        let max_retries = match encode_contract_data_key(contract_id, "MaxRetries") {
+            Ok(key) => {
+                let entries = client
+                    .get_ledger_entries(vec![key])
+                    .await
+                    .unwrap_or_default();
+                match extract_u64_from_entry(&entries) {
+                    Some(n) => n,
+                    None => {
+                        warn!(
+                            contract_id,
+                            "MaxRetries ledger entry not found or unparseable"
+                        );
+                        0
+                    }
+                }
+            }
+            Err(e) => {
+                warn!(contract_id, "failed to encode MaxRetries ledger key: {e:#}");
+                0
+            }
+        };
 
         let max_ledger = result_events
             .iter()
@@ -903,43 +920,50 @@ impl Collector {
 
 /// Encode a `ContractData` ledger key for a named instance-storage entry.
 ///
-/// Produces a string key that the mock client can match on. In production
-/// Build the base64-encoded XDR `LedgerKey::ContractData` for a named persistent
-/// storage entry belonging to `contract_id`.
+/// Produces a base64-encoded XDR `LedgerKey::ContractData` for a named persistent
+/// storage entry belonging to `contract_id`.  The key `ScVal` is an `ScVal::Symbol`
+/// (e.g. `"MaxRetries"`).
 ///
-/// The key is an `ScVal::Symbol` containing `storage_key`.  This is the format
-/// expected by `getLedgerEntries` when reading individual persistent storage
-/// slots directly (without simulation).
-///
-/// Falls back to a plain `"<contract_id>:<storage_key>"` string if the
-/// contract id cannot be decoded (e.g., in unit tests that use synthetic ids).
-fn encode_contract_data_key(contract_id: &str, storage_key: &str) -> String {
+/// Unlike the previous placeholder implementation (`format!("{contract_id}:{storage_key}")`),
+/// this delegates to `rpc::named_storage_key_xdr`, which builds the real XDR key
+/// via the `router-off-chain-common` XDR primitives.  Returning `Result` (rather
+/// than silently falling back to a non-XDR placeholder string) ensures that an
+/// invalid contract id surfaces as an explicit error in the caller instead of
+/// producing a key that will silently never match a real ledger entry.
+fn encode_contract_data_key(contract_id: &str, storage_key: &str) -> Result<String> {
     crate::rpc::named_storage_key_xdr(contract_id, storage_key)
-        .unwrap_or_else(|_| format!("{contract_id}:{storage_key}"))
+        .with_context(|| format!("contract id '{contract_id}' is not a valid strkey"))
 }
 
-/// Extract a `u64` value from a `getLedgerEntries` response for the given key name.
+/// Extract a `u64` value from a `getLedgerEntries` response.
 ///
-/// The RPC server returns entries with a `xdr` field containing base64-encoded
-/// `LedgerEntryData` XDR. In the JSON-decoded representation (used by some RPC
-/// versions) the value is available directly. We try both paths.
-fn extract_u64_from_entry(entries: &[crate::rpc::LedgerEntry], key_name: &str) -> Option<u64> {
+/// The RPC server returns entries with:
+/// - `key`: base64-encoded XDR of the `LedgerKey` (not used for value extraction).
+/// - `xdr`: the entry value, which may be a plain integer string (mock path),
+///   a JSON-encoded `ScVal` (some RPC versions), or a base64-encoded XDR blob
+///   containing either a bare `ScVal::U64`/`ScVal::U32` or a full
+///   `LedgerEntryData::ContractData` wrapping it.
+///
+/// All paths are attempted so that mock tests and real production responses are
+/// both handled.
+fn extract_u64_from_entry(entries: &[crate::rpc::LedgerEntry]) -> Option<u64> {
     for entry in entries {
-        // The key field encodes the storage key name; we match by suffix.
-        if entry.key.ends_with(key_name) || entry.key.contains(key_name) {
-            // Try to parse the xdr field as a plain u64 (mock / JSON path).
-            if let Ok(n) = entry.xdr.parse::<u64>() {
+        // Mock / legacy JSON path: plain integer string.
+        if let Ok(n) = entry.xdr.parse::<u64>() {
+            return Some(n);
+        }
+        // Mock / JSON path: `{"u64": <n>}` or bare number.
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&entry.xdr) {
+            if let Some(n) = v.get("u64").and_then(|n| n.as_u64()) {
                 return Some(n);
             }
-            // Try JSON-decoded path: `{"u64": <n>}`.
-            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&entry.xdr) {
-                if let Some(n) = v.get("u64").and_then(|n| n.as_u64()) {
-                    return Some(n);
-                }
-                if let Some(n) = v.as_u64() {
-                    return Some(n);
-                }
+            if let Some(n) = v.as_u64() {
+                return Some(n);
             }
+        }
+        // Production path: base64-encoded XDR (bare ScVal or LedgerEntryData).
+        if let Ok(n) = extract_u64_from_xdr(&entry.xdr) {
+            return Some(n);
         }
     }
     None
@@ -1255,16 +1279,28 @@ mod tests {
     #[tokio::test]
     async fn test_scrape_execution_uses_events() {
         use crate::rpc::{ContractEvent, LedgerEntry};
-        let (collector, metrics) = make_collector_full("", "", "", "", "EXEC_ID");
+        use router_off_chain_common::xdr::{base64_encode, XdrWriter, SCV_U32};
+
+        const ZERO_CONTRACT: &str = "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4";
+        let (collector, metrics) = make_collector_full("", "", "", "", ZERO_CONTRACT);
 
         let make_event = |topic: &str, ledger: u32| ContractEvent {
             ledger,
             value: serde_json::json!({}),
         };
 
+        let max_retries_key =
+            encode_contract_data_key(ZERO_CONTRACT, "MaxRetries").expect("valid strkey key");
+
+        // Encode MaxRetries value as ScVal::U32, matching the contract's storage type.
+        let mut w = XdrWriter::new();
+        w.u32(SCV_U32);
+        w.u32(3);
+        let xdr_value = base64_encode(&w.into_bytes());
+
         let mock = MockRpcClient::new()
             .with_events(
-                "EXEC_ID",
+                ZERO_CONTRACT,
                 "execution_result",
                 vec![
                     make_event("execution_result", 200),
@@ -1273,15 +1309,15 @@ mod tests {
                 ],
             )
             .with_events(
-                "EXEC_ID",
+                ZERO_CONTRACT,
                 "execution_error",
                 vec![make_event("execution_error", 203)],
             )
             .with_ledger_entries(
-                "EXEC_ID:MaxRetries",
+                &max_retries_key,
                 vec![LedgerEntry {
-                    key: "EXEC_ID:MaxRetries".to_string(),
-                    xdr: "3".to_string(),
+                    key: max_retries_key.clone(),
+                    xdr: xdr_value,
                 }],
             );
 
@@ -1291,21 +1327,21 @@ mod tests {
         assert_eq!(
             metrics
                 .execution_total_executions
-                .with_label_values(&["EXEC_ID"])
+                .with_label_values(&[ZERO_CONTRACT])
                 .get(),
             3.0
         );
         assert_eq!(
             metrics
                 .execution_total_errors
-                .with_label_values(&["EXEC_ID"])
+                .with_label_values(&[ZERO_CONTRACT])
                 .get(),
             1.0
         );
         assert_eq!(
             metrics
                 .execution_max_retries
-                .with_label_values(&["EXEC_ID"])
+                .with_label_values(&[ZERO_CONTRACT])
                 .get(),
             3.0
         );
@@ -1314,19 +1350,30 @@ mod tests {
     #[tokio::test]
     async fn test_scrape_execution_increments_on_second_scrape() {
         use crate::rpc::{ContractEvent, LedgerEntry};
-        let (collector, metrics) = make_collector_full("", "", "", "", "EXEC_ID");
+        use router_off_chain_common::xdr::{base64_encode, XdrWriter, SCV_U32};
+
+        const ZERO_CONTRACT: &str = "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4";
+        let (collector, metrics) = make_collector_full("", "", "", "", ZERO_CONTRACT);
 
         let make_event = |topic: &str, ledger: u32| ContractEvent {
             ledger,
             value: serde_json::json!({}),
         };
 
+        let max_retries_key =
+            encode_contract_data_key(ZERO_CONTRACT, "MaxRetries").expect("valid strkey key");
+
+        let mut w = XdrWriter::new();
+        w.u32(SCV_U32);
+        w.u32(2);
+        let xdr_value = base64_encode(&w.into_bytes());
+
         let make_max_retries = || {
             MockRpcClient::new().with_ledger_entries(
-                "EXEC_ID:MaxRetries",
+                &max_retries_key,
                 vec![LedgerEntry {
-                    key: "EXEC_ID:MaxRetries".to_string(),
-                    xdr: "2".to_string(),
+                    key: max_retries_key.clone(),
+                    xdr: xdr_value.clone(),
                 }],
             )
         };
@@ -1334,14 +1381,14 @@ mod tests {
         // First scrape: 5 results, 1 error at ledger 300.
         let mock1 = make_max_retries()
             .with_events(
-                "EXEC_ID",
+                ZERO_CONTRACT,
                 "execution_result",
                 (0..5)
                     .map(|_| make_event("execution_result", 300))
                     .collect(),
             )
             .with_events(
-                "EXEC_ID",
+                ZERO_CONTRACT,
                 "execution_error",
                 vec![make_event("execution_error", 300)],
             );
@@ -1350,14 +1397,14 @@ mod tests {
         // Second scrape: 2 new results at ledger 301.
         let mock2 = make_max_retries()
             .with_events(
-                "EXEC_ID",
+                ZERO_CONTRACT,
                 "execution_result",
                 vec![
                     make_event("execution_result", 301),
                     make_event("execution_result", 301),
                 ],
             )
-            .with_events("EXEC_ID", "execution_error", vec![]);
+            .with_events(ZERO_CONTRACT, "execution_error", vec![]);
         let ok = collector.scrape_all(&mock2).await;
         assert!(ok);
 
@@ -1365,7 +1412,7 @@ mod tests {
         assert_eq!(
             metrics
                 .execution_total_executions
-                .with_label_values(&["EXEC_ID"])
+                .with_label_values(&[ZERO_CONTRACT])
                 .get(),
             7.0
         );
@@ -1373,9 +1420,166 @@ mod tests {
         assert_eq!(
             metrics
                 .execution_total_errors
-                .with_label_values(&["EXEC_ID"])
+                .with_label_values(&[ZERO_CONTRACT])
                 .get(),
             1.0
+        );
+    }
+
+    /// When no ledger entry is returned for the MaxRetries key, the metric
+    /// should default to 0 rather than silently hiding the failure.
+    #[tokio::test]
+    async fn test_scrape_execution_max_retries_missing_entry_defaults_to_zero() {
+        use crate::rpc::ContractEvent;
+        const ZERO_CONTRACT: &str = "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4";
+        let (collector, metrics) = make_collector_full("", "", "", "", ZERO_CONTRACT);
+
+        let make_event = |topic: &str, ledger: u32| ContractEvent {
+            ledger,
+            value: serde_json::json!({}),
+        };
+
+        // Events are configured but no ledger entries → max_retries should be 0.
+        let mock = MockRpcClient::new()
+            .with_events(
+                ZERO_CONTRACT,
+                "execution_result",
+                vec![make_event("execution_result", 200)],
+            )
+            .with_events(ZERO_CONTRACT, "execution_error", vec![]);
+
+        let ok = collector.scrape_all(&mock).await;
+        assert!(ok);
+
+        assert_eq!(
+            metrics
+                .execution_max_retries
+                .with_label_values(&[ZERO_CONTRACT])
+                .get(),
+            0.0
+        );
+    }
+
+    /// Verify that a `ScVal::U64` value (bare ScVal XDR, as returned by some RPC
+    /// versions) is correctly extracted from the ledger entry.
+    #[tokio::test]
+    async fn test_scrape_execution_max_retries_u64_xdr_value() {
+        use crate::rpc::{ContractEvent, LedgerEntry};
+        use router_off_chain_common::xdr::{base64_encode, XdrWriter, SCV_U64};
+
+        const ZERO_CONTRACT: &str = "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4";
+        let (collector, metrics) = make_collector_full("", "", "", "", ZERO_CONTRACT);
+
+        let make_event = |topic: &str, ledger: u32| ContractEvent {
+            ledger,
+            value: serde_json::json!({}),
+        };
+
+        let max_retries_key =
+            encode_contract_data_key(ZERO_CONTRACT, "MaxRetries").expect("valid strkey key");
+
+        let mut w = XdrWriter::new();
+        w.u32(SCV_U64);
+        w.u64(7);
+        let xdr_value = base64_encode(&w.into_bytes());
+
+        let mock = MockRpcClient::new()
+            .with_events(
+                ZERO_CONTRACT,
+                "execution_result",
+                vec![make_event("execution_result", 200)],
+            )
+            .with_events(ZERO_CONTRACT, "execution_error", vec![])
+            .with_ledger_entries(
+                &max_retries_key,
+                vec![LedgerEntry {
+                    key: max_retries_key.clone(),
+                    xdr: xdr_value,
+                }],
+            );
+
+        let ok = collector.scrape_all(&mock).await;
+        assert!(ok);
+
+        assert_eq!(
+            metrics
+                .execution_max_retries
+                .with_label_values(&[ZERO_CONTRACT])
+                .get(),
+            7.0
+        );
+    }
+
+    /// Verify that a `ScVal::U32` wrapped inside a full `LedgerEntryData::ContractData`
+    /// XDR is correctly extracted — this is the production RPC response format.
+    #[tokio::test]
+    async fn test_scrape_execution_max_retries_wrapped_in_contract_data() {
+        use crate::rpc::{ContractEvent, LedgerEntry};
+        use router_off_chain_common::xdr::{
+            base64_encode, decode_contract_id, XdrWriter, LEDGER_ENTRY_TYPE_CONTRACT_DATA, SCV_U32,
+        };
+
+        // ScVal::Symbol discriminant and SCAddress/ContractDataDurability values
+        // are not exported from the xdr module; use literals (Soroban protocol 21).
+        const SCV_SYMBOL: u32 = 15;
+        const SC_ADDRESS_TYPE_CONTRACT: u32 = 1;
+        const CONTRACT_DATA_DURABILITY_PERSISTENT: u32 = 1;
+
+        const ZERO_CONTRACT: &str = "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4";
+        let (collector, metrics) = make_collector_full("", "", "", "", ZERO_CONTRACT);
+
+        let make_event = |topic: &str, ledger: u32| ContractEvent {
+            ledger,
+            value: serde_json::json!({}),
+        };
+
+        // Build a full LedgerEntryData::ContractData containing an ScVal::U32 value.
+        let hash = decode_contract_id(ZERO_CONTRACT).unwrap();
+        let mut w = XdrWriter::new();
+        // LedgerEntryData discriminant
+        w.u32(LEDGER_ENTRY_TYPE_CONTRACT_DATA);
+        // SCAddress::Contract
+        w.u32(SC_ADDRESS_TYPE_CONTRACT);
+        w.opaque_fixed(&hash);
+        // key ScVal::Symbol("MaxRetries")
+        w.u32(SCV_SYMBOL);
+        w.opaque_var(b"MaxRetries");
+        // val ScVal::U32(4)
+        w.u32(SCV_U32);
+        w.u32(4);
+        // ContractDataDurability::Persistent
+        w.u32(CONTRACT_DATA_DURABILITY_PERSISTENT);
+        // ext: void
+        w.u32(0);
+        let xdr_value = base64_encode(&w.into_bytes());
+
+        let max_retries_key =
+            encode_contract_data_key(ZERO_CONTRACT, "MaxRetries").expect("valid strkey key");
+
+        let mock = MockRpcClient::new()
+            .with_events(
+                ZERO_CONTRACT,
+                "execution_result",
+                vec![make_event("execution_result", 200)],
+            )
+            .with_events(ZERO_CONTRACT, "execution_error", vec![])
+            .with_ledger_entries(
+                &max_retries_key,
+                vec![LedgerEntry {
+                    key: max_retries_key.clone(),
+                    xdr: xdr_value,
+                }],
+            );
+
+        let ok = collector.scrape_all(&mock).await;
+        assert!(ok);
+
+        assert_eq!(
+            metrics
+                .execution_max_retries
+                .with_label_values(&[ZERO_CONTRACT])
+                .get(),
+            4.0
         );
     }
 
