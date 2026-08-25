@@ -8,9 +8,10 @@
 //!
 //! | Variable | Default | Description |
 //! |----------|---------|-------------|
-//! | `ROUTER_API_KEY` | — | API key for authentication. If unset, authentication is disabled. |
+//! | `ROUTER_API_KEY` | — | API key for authentication. Required when `ROUTER_AUTH_ENABLED=true`. |
 //! | `ROUTER_AUTH_ENABLED` | `false` | Set to `"true"` to require authentication. |
 
+use anyhow::{bail, Result};
 use axum::{
     extract::Request,
     http::{HeaderMap, StatusCode},
@@ -19,7 +20,6 @@ use axum::{
 };
 use std::env;
 use subtle::ConstantTimeEq;
-use tracing::warn;
 
 /// Authentication configuration.
 #[derive(Clone, Debug)]
@@ -33,10 +33,17 @@ pub struct AuthConfig {
 impl AuthConfig {
     /// Load authentication configuration from environment variables.
     ///
-    /// Authentication is only active when **both** `ROUTER_AUTH_ENABLED=true` and
-    /// `ROUTER_API_KEY` is set. If auth is enabled but no key is configured a
-    /// warning is emitted and authentication is silently disabled.
-    pub fn from_env() -> Self {
+    /// Returns `Ok(AuthConfig)` when the configuration is valid:
+    /// - `ROUTER_AUTH_ENABLED` is absent or `"false"` (auth disabled), or
+    /// - `ROUTER_AUTH_ENABLED=true` **and** `ROUTER_API_KEY` is set (auth enabled).
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` if `ROUTER_AUTH_ENABLED=true` but `ROUTER_API_KEY` is not
+    /// set. Silently degrading to an unauthenticated server in this case would
+    /// create a dangerous misconfiguration that is easy to miss in production
+    /// logs, so the server refuses to start instead.
+    pub fn from_env() -> Result<Self> {
         let enabled = env::var("ROUTER_AUTH_ENABLED")
             .map(|v| v.to_lowercase() == "true")
             .unwrap_or(false);
@@ -44,16 +51,17 @@ impl AuthConfig {
         let api_key = env::var("ROUTER_API_KEY").ok();
 
         if enabled && api_key.is_none() {
-            warn!(
-                "Authentication enabled but ROUTER_API_KEY not set. \
-                 Authentication will be disabled."
+            bail!(
+                "ROUTER_AUTH_ENABLED=true but ROUTER_API_KEY is not set. \
+                 Set ROUTER_API_KEY to a secret value or disable auth by \
+                 setting ROUTER_AUTH_ENABLED=false."
             );
         }
 
-        AuthConfig {
+        Ok(AuthConfig {
             enabled: enabled && api_key.is_some(),
             api_key,
-        }
+        })
     }
 }
 

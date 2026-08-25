@@ -82,7 +82,7 @@ async fn main() -> Result<()> {
     info!("Listen address: {}", args.listen);
     info!("RPC URL: {}", args.rpc_url);
 
-    let auth_config = AuthConfig::from_env();
+    let auth_config = AuthConfig::from_env().context("invalid auth configuration")?;
     info!("Router auth enabled: {}", auth_config.enabled);
 
     let rate_limit_config = RateLimitConfig::from_env()?;
