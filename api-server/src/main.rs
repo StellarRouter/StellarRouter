@@ -102,11 +102,7 @@ async fn main() -> Result<()> {
         "Router fee-estimation config loaded"
     );
 
-    let state = AppState::new(
-        args.rpc_url,
-        args.router_core_contract_id,
-        fee_config,
-    );
+    let state = AppState::new(args.rpc_url, args.router_core_contract_id, fee_config);
 
     // Spawn the RPC polling producer. It queries the Soroban RPC for each
     // actively-subscribed transaction and forwards status updates into the

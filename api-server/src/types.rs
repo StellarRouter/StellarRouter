@@ -232,7 +232,7 @@ mod tests {
     fn ws_message_serializes_to_valid_json() {
         let msg = WsMessage::new("test_type", serde_json::json!({"key": "value"}));
         let json_str = msg.to_json_string();
-        
+
         let parsed: serde_json::Value = serde_json::from_str(&json_str).unwrap();
         assert_eq!(parsed["msg_type"], "test_type");
         assert_eq!(parsed["data"]["key"], "value");
@@ -242,7 +242,7 @@ mod tests {
     fn ws_message_deserializes_from_json() {
         let json = r#"{"msg_type":"subscribed","data":{"tx_id":"tx999","status":"subscribed"}}"#;
         let msg: WsMessage = serde_json::from_str(json).unwrap();
-        
+
         assert_eq!(msg.msg_type, "subscribed");
         assert_eq!(msg.data["tx_id"], "tx999");
         assert_eq!(msg.data["status"], "subscribed");

@@ -19,11 +19,7 @@ pub struct AppState {
 }
 
 impl AppState {
-    pub fn new(
-        rpc_url: String,
-        router_core_contract_id: String,
-        fee_config: FeeConfig,
-    ) -> Self {
+    pub fn new(rpc_url: String, router_core_contract_id: String, fee_config: FeeConfig) -> Self {
         let (tx_status_tx, _) = broadcast::channel(BROADCAST_CHANNEL_CAPACITY);
         Self {
             rpc: SorobanRpcClient::new(rpc_url, Some(router_core_contract_id.clone()), fee_config),
