@@ -2345,6 +2345,57 @@ mod tests {
         assert!(client.try_pre_call(&caller, &route).is_ok());
     }
 
+    // ── Issue #161: get_rate_limit_stats ──────────────────────────────────────
+
+    #[test]
+    fn test_get_rate_limit_stats_none_before_any_calls() {
+        let (env, admin, client) = setup();
+        let route = String::from_str(&env, "oracle/get_price");
+        let caller = Address::generate(&env);
+        client.configure_route(&admin, &route, &2, &60, &true, &0, &0, &0);
+
+        assert_eq!(client.get_rate_limit_stats(&route, &caller), None);
+    }
+
+    #[test]
+    fn test_get_rate_limit_stats_tracks_successful_calls() {
+        let (env, admin, client) = setup();
+        let route = String::from_str(&env, "oracle/get_price");
+        let caller = Address::generate(&env);
+        env.ledger().set_timestamp(1_000);
+        client.configure_route(&admin, &route, &3, &60, &true, &0, &0, &0);
+
+        client.pre_call(&caller, &route);
+        client.pre_call(&caller, &route);
+
+        let stats = client.get_rate_limit_stats(&route, &caller).unwrap();
+        assert_eq!(stats.calls_in_window, 2);
+        assert_eq!(stats.window_start, 1_000);
+        assert_eq!(stats.total_violations, 0);
+    }
+
+    #[test]
+    fn test_get_rate_limit_stats_after_rate_limit_violation() {
+        let (env, admin, client) = setup();
+        let route = String::from_str(&env, "oracle/get_price");
+        let caller = Address::generate(&env);
+        env.ledger().set_timestamp(1_000);
+        client.configure_route(&admin, &route, &2, &60, &true, &0, &0, &0);
+
+        client.pre_call(&caller, &route);
+        client.pre_call(&caller, &route);
+        assert_eq!(
+            client.try_pre_call(&caller, &route),
+            Err(Ok(MiddlewareError::RateLimitExceeded))
+        );
+        assert!(client.record_rate_limit_violation(&route, &caller));
+
+        let stats = client.get_rate_limit_stats(&route, &caller).unwrap();
+        assert_eq!(stats.calls_in_window, 2);
+        assert_eq!(stats.window_start, 1_000);
+        assert_eq!(stats.total_violations, 1);
+    }
+
     // ── Issue #162: get_route_rate_limit_stats ────────────────────────────────
 
     #[test]
