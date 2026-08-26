@@ -1780,4 +1780,60 @@ mod tests {
         assert_eq!(results.get(0).unwrap(), Err(AccessError::Blacklisted));
         assert_eq!(results.get(1).unwrap(), Err(AccessError::Blacklisted));
     }
+
+    // ── Issue #159: bulk_revoke_role tests ───────────────────────────────────
+
+    #[test]
+    fn test_bulk_revoke_role_empty_targets() {
+        let (env, admin, client) = setup();
+        let role = String::from_str(&env, "operator");
+        let targets = soroban_sdk::Vec::new(&env);
+        // No targets to process, so the all-or-nothing call trivially succeeds.
+        client.bulk_revoke_role(&admin, &role, &targets);
+    }
+
+    #[test]
+    fn test_bulk_revoke_role_all_succeed() {
+        let (env, admin, client) = setup();
+        let role = String::from_str(&env, "operator");
+        let u1 = Address::generate(&env);
+        let u2 = Address::generate(&env);
+        client.grant_role(&admin, &u1, &role, &None);
+        client.grant_role(&admin, &u2, &role, &None);
+        let targets = soroban_sdk::vec![&env, u1.clone(), u2.clone()];
+        client.bulk_revoke_role(&admin, &role, &targets);
+        assert!(!client.has_role(&role, &u1));
+        assert!(!client.has_role(&role, &u2));
+    }
+
+    #[test]
+    fn test_bulk_revoke_role_unauthorized_fails() {
+        let (env, admin, client) = setup();
+        let role = String::from_str(&env, "operator");
+        let u1 = Address::generate(&env);
+        client.grant_role(&admin, &u1, &role, &None);
+        let attacker = Address::generate(&env);
+        let targets = soroban_sdk::vec![&env, u1.clone()];
+        let result = client.try_bulk_revoke_role(&attacker, &role, &targets);
+        assert_eq!(result, Err(Ok(AccessError::Unauthorized)));
+        // Unauthorized call must not have revoked anything.
+        assert!(client.has_role(&role, &u1));
+    }
+
+    #[test]
+    fn test_bulk_revoke_role_partial_failure_rolls_back_all() {
+        let (env, admin, client) = setup();
+        let role = String::from_str(&env, "operator");
+        let u1 = Address::generate(&env);
+        let u2 = Address::generate(&env); // never granted the role
+        client.grant_role(&admin, &u1, &role, &None);
+        let targets = soroban_sdk::vec![&env, u1.clone(), u2.clone()];
+
+        // u1 is processed (and would be revoked) before the loop hits u2 and
+        // errors out. Because bulk_revoke_role is all-or-nothing, the whole
+        // invocation must revert -- u1's role grant must survive untouched.
+        let result = client.try_bulk_revoke_role(&admin, &role, &targets);
+        assert_eq!(result, Err(Ok(AccessError::RoleNotFound)));
+        assert!(client.has_role(&role, &u1));
+    }
 }
