@@ -1,3 +1,4 @@
+.PHONY: test-all lint fmt-check audit deny build-wasm coverage
 .PHONY: test-all lint build-wasm coverage
 .PHONY: test-all lint audit build-wasm
 
@@ -6,6 +7,11 @@ test-all:
 
 lint:
 	cargo clippy --all-targets --all-features -- -D warnings
+
+# Checks formatting matches CI (cargo fmt --all --check in .github/workflows/ci.yml).
+# Exits non-zero if any file would be reformatted.
+fmt-check:
+	cargo fmt --all --check
 
 # Checks for vulnerabilities in the dependency tree (matches the CI security audit).
 # Prerequisite: cargo install cargo-audit
@@ -16,6 +22,15 @@ lint:
 # For more details on configuration, see .github/workflows/security-audit.yml
 audit:
 	cargo audit
+
+# Checks licenses, bans, advisories, and sources in the dependency tree
+# (matches the CI cargo deny step in .github/workflows/security-audit.yml).
+# Prerequisite: cargo install cargo-deny
+#
+# Usage:
+#   make deny
+deny:
+	cargo deny check
 
 build-wasm:
 	cargo build --target wasm32-unknown-unknown --release
