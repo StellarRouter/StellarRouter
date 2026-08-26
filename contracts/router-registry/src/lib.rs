@@ -403,11 +403,11 @@ impl RouterRegistry {
         let versions = Self::get_versions_list(&env, &name);
 
         // If no constraint, delegate to get_latest (uses cache).
-        if constraint.is_none() {
+        let constraint_str = if let Some(constraint_str) = constraint {
+            constraint_str
+        } else {
             return Self::get_latest(env.clone(), name);
-        }
-
-        let constraint_str = constraint.unwrap();
+        };
 
         if versions.is_empty() {
             return Err(RegistryError::NotFound);
