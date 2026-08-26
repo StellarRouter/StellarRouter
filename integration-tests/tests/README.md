@@ -121,4 +121,4 @@ let core = fixture.router_core.as_ref().unwrap();
 
 ## Documentation
 
-See [INTEGRATION_TESTS.md](../INTEGRATION_TESTS.md) for comprehensive documentation.
+See [INTEGRATION_TESTS.md](../../INTEGRATION_TESTS.md) for comprehensive documentation.

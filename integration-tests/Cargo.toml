@@ -2,6 +2,7 @@
 name = "integration-tests"
 version = "0.1.0"
 edition = "2021"
+license = "MIT"
 publish = false
 
 [lib]
@@ -19,6 +20,14 @@ path = "tests/cross_contract_tests.rs"
 name = "failure_scenarios"
 path = "tests/failure_scenarios.rs"
 
+[[test]]
+name = "quote_execution_tests"
+path = "tests/quote_execution_tests.rs"
+
+[[test]]
+name = "liquidity_plugin_tests"
+path = "tests/liquidity_plugin_tests.rs"
+
 [dependencies]
 
 [dev-dependencies]
@@ -33,3 +42,5 @@ router-timelock  = { path = "../contracts/router-timelock" }
 router-multicall = { path = "../contracts/router-multicall" }
 router-execution = { path = "../contracts/router-execution" }
 router-quote     = { path = "../contracts/router-quote" }
+router-common    = { path = "../contracts/router-common" }
+liquidity-plugin-example-fixed-rate = { path = "../contracts/liquidity-plugin-example-fixed-rate" }

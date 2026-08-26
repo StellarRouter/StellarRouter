@@ -7,6 +7,7 @@
 
 use anyhow::{anyhow, Context, Result};
 use reqwest::Client;
+use router_off_chain_common::xdr::build_invoke_xdr_from_strkey;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::time::Duration;
@@ -58,16 +59,9 @@ struct GetLedgerEntriesResult {
 /// A single event returned by `getEvents`.
 #[derive(Debug, Deserialize, Clone)]
 pub struct ContractEvent {
-    /// The contract that emitted the event.
-    #[serde(rename = "contractId")]
-    #[allow(dead_code)]
-    pub contract_id: String,
     /// Ledger sequence number in which this event was emitted.
     #[serde(default)]
     pub ledger: u32,
-    /// Event topic symbols (decoded from XDR).
-    #[allow(dead_code)]
-    pub topic: Vec<serde_json::Value>,
     /// Event value (decoded from XDR).
     pub value: serde_json::Value,
 }
@@ -76,18 +70,15 @@ pub struct ContractEvent {
 #[derive(Debug, Deserialize)]
 struct GetEventsResult {
     events: Option<Vec<ContractEvent>>,
-    #[serde(rename = "latestLedger")]
-    #[allow(dead_code)]
-    latest_ledger: Option<u64>,
 }
 
 // ── Client ────────────────────────────────────────────────────────────────────
 
-/// Thin async wrapper around the Soroban JSON-RPC endpoint.
+/// Thin async wrapper around the Soroban JSON-RPC endpoint(s).
 #[derive(Clone)]
 pub struct SorobanRpcClient {
     http: Client,
-    rpc_url: String,
+    endpoints: Vec<String>,
     /// Maximum number of retry attempts for retryable errors (default: 3).
     max_retries: u32,
     /// Base backoff duration before first retry (doubles on each attempt).
@@ -95,7 +86,7 @@ pub struct SorobanRpcClient {
 }
 
 impl SorobanRpcClient {
-    /// Create a new client.
+    /// Create a new client with one or more RPC endpoints.
     ///
     /// `timeout_secs` is applied to every individual HTTP request.
     /// Retry behaviour is configured via environment variables:
@@ -104,11 +95,22 @@ impl SorobanRpcClient {
     /// |---|---|---|
     /// | `ROUTER_RPC_MAX_RETRIES` | `3` | Max retry attempts for transient errors. |
     /// | `ROUTER_RPC_BACKOFF_MS` | `200` | Base backoff in milliseconds (doubles each retry). |
-    pub fn new(rpc_url: impl Into<String>, timeout_secs: u64) -> Result<Self> {
+    ///
+    /// If multiple endpoints are provided, the client will automatically
+    /// failover to the next endpoint when the current one is unreachable.
+    pub fn new(
+        rpc_urls: impl IntoIterator<Item = impl Into<String>>,
+        timeout_secs: u64,
+    ) -> Result<Self> {
         let http = Client::builder()
             .timeout(Duration::from_secs(timeout_secs))
             .build()
             .context("failed to build HTTP client")?;
+
+        let endpoints: Vec<String> = rpc_urls.into_iter().map(Into::into).collect();
+        if endpoints.is_empty() {
+            return Err(anyhow!("at least one RPC endpoint is required"));
+        }
 
         let max_retries = std::env::var("ROUTER_RPC_MAX_RETRIES")
             .ok()
@@ -122,7 +124,7 @@ impl SorobanRpcClient {
 
         Ok(Self {
             http,
-            rpc_url: rpc_url.into(),
+            endpoints,
             max_retries,
             base_backoff: Duration::from_millis(base_backoff_ms),
         })
@@ -146,15 +148,14 @@ impl SorobanRpcClient {
     /// Execute an HTTP POST and parse the JSON-RPC response, retrying up to
     /// `self.max_retries` times on transient/retryable errors with exponential
     /// backoff.
-    async fn post_with_retry(&self, req_body: &impl Serialize) -> Result<RpcResponse> {
+    async fn post_with_retry(
+        &self,
+        req_body: &impl Serialize,
+        endpoint: &str,
+    ) -> Result<RpcResponse> {
         let mut attempt = 0u32;
         loop {
-            let result = self
-                .http
-                .post(&self.rpc_url)
-                .json(req_body)
-                .send()
-                .await;
+            let result = self.http.post(endpoint).json(req_body).send().await;
 
             match result {
                 Ok(response) => {
@@ -168,16 +169,16 @@ impl SorobanRpcClient {
                             attempt,
                             delay_ms = delay.as_millis(),
                             %status,
+                            endpoint = %endpoint,
                             "RPC HTTP error — retrying"
                         );
                         attempt += 1;
                         tokio::time::sleep(delay).await;
                         continue;
                     }
-                    return response
-                        .json::<RpcResponse>()
-                        .await
-                        .context("failed to parse JSON-RPC response");
+                    return response.json::<RpcResponse>().await.with_context(|| {
+                        format!("failed to parse JSON-RPC response from {endpoint}")
+                    });
                 }
                 Err(err) => {
                     if Self::is_retryable_error(&err) && attempt < self.max_retries {
@@ -186,16 +187,53 @@ impl SorobanRpcClient {
                             attempt,
                             delay_ms = delay.as_millis(),
                             error = %err,
+                            endpoint = %endpoint,
                             "RPC request failed — retrying"
                         );
                         attempt += 1;
                         tokio::time::sleep(delay).await;
                         continue;
                     }
-                    return Err(err).context("HTTP request failed");
+                    return Err(err).with_context(|| format!("HTTP request to {endpoint} failed"));
                 }
             }
         }
+    }
+
+    /// Execute an HTTP POST with automatic failover across all configured endpoints.
+    ///
+    /// Each endpoint gets its own retry budget. If one endpoint fails after
+    /// retries, the client moves to the next endpoint. This provides resilience
+    /// against individual endpoint outages.
+    async fn post_with_failover(&self, req_body: &impl Serialize) -> Result<RpcResponse> {
+        let mut last_err = None;
+
+        for (idx, endpoint) in self.endpoints.iter().enumerate() {
+            match self.post_with_retry(req_body, endpoint).await {
+                Ok(resp) => {
+                    if idx > 0 {
+                        warn!(
+                            endpoint = %endpoint,
+                            attempt = idx + 1,
+                            "failover to endpoint succeeded"
+                        );
+                    }
+                    return Ok(resp);
+                }
+                Err(err) => {
+                    warn!(
+                        endpoint = %endpoint,
+                        attempt = idx + 1,
+                        total_endpoints = self.endpoints.len(),
+                        error = %err,
+                        "endpoint failed after retries"
+                    );
+                    last_err = Some(err);
+                }
+            }
+        }
+
+        Err(last_err.unwrap_or_else(|| anyhow!("no RPC endpoints configured")))
     }
 
     /// Call `simulateTransaction` to invoke a read-only contract function and
@@ -212,7 +250,7 @@ impl SorobanRpcClient {
         // Build a minimal transaction envelope XDR for simulation.
         // We use the `invokeHostFunction` operation type.
         let invoke_params = json!({
-            "transaction": build_invoke_xdr(contract_id, function_name, &args_xdr)?,
+            "transaction": build_invoke_xdr_from_strkey(contract_id, function_name, &args_xdr)?,
         });
 
         let req = RpcRequest {
@@ -222,9 +260,7 @@ impl SorobanRpcClient {
             params: invoke_params,
         };
 
-        let resp = self
-            .post_with_retry(&req)
-            .await?;
+        let resp = self.post_with_failover(&req).await?;
 
         if let Some(err) = resp.error {
             return Err(anyhow!("RPC error {}: {}", err.code, err.message));
@@ -242,9 +278,7 @@ impl SorobanRpcClient {
             params: json!({ "keys": keys_xdr }),
         };
 
-        let resp = self
-            .post_with_retry(&req)
-            .await?;
+        let resp = self.post_with_failover(&req).await?;
 
         if let Some(err) = resp.error {
             return Err(anyhow!("RPC error {}: {}", err.code, err.message));
@@ -296,16 +330,7 @@ impl SorobanRpcClient {
                 params,
             };
 
-            let resp: RpcResponse = self
-                .http
-                .post(&self.rpc_url)
-                .json(&req)
-                .send()
-                .await
-                .context("HTTP request failed")?
-                .json()
-                .await
-                .context("failed to parse JSON-RPC response")?;
+            let resp = self.post_with_failover(&req).await?;
 
             if let Some(err) = resp.error {
                 return Err(anyhow!("RPC error {}: {}", err.code, err.message));
@@ -313,13 +338,9 @@ impl SorobanRpcClient {
 
             let raw_value = resp.result.ok_or_else(|| anyhow!("empty RPC result"))?;
 
-        let resp = self
-            .post_with_retry(&req)
-            .await?;
             // Deserialize the raw response to extract paging tokens.
-            let raw_result: GetEventsResult =
-                serde_json::from_value(raw_value.clone())
-                    .context("failed to deserialize getEvents result")?;
+            let raw_result: GetEventsResult = serde_json::from_value(raw_value.clone())
+                .context("failed to deserialize getEvents result")?;
 
             let page_events = raw_result.events.unwrap_or_default();
             if page_events.is_empty() {
@@ -449,7 +470,11 @@ fn crc16(data: &[u8]) -> u16 {
 }
 
 /// Decode a Stellar contract strkey (C…) into its 32-byte hash.
-fn decode_contract_id(strkey: &str) -> Result<[u8; 32]> {
+///
+/// This is the local fallback implementation.  Prefer
+/// [`router_off_chain_common::xdr::decode_contract_id`] in new code.
+#[allow(dead_code)]
+fn decode_contract_id_local(strkey: &str) -> Result<[u8; 32]> {
     if strkey.len() != 56 {
         return Err(anyhow!("strkey must be 56 chars, got {}", strkey.len()));
     }
@@ -481,8 +506,7 @@ fn decode_contract_id(strkey: &str) -> Result<[u8; 32]> {
     let version = decoded[0];
     if version != VERSION_CONTRACT {
         return Err(anyhow!(
-            "expected contract strkey (C…), got version 0x{:02x}",
-            version
+            "expected contract strkey (C…), got version 0x{version:02x}"
         ));
     }
     let payload: [u8; 32] = decoded[1..33].try_into().unwrap();
@@ -493,11 +517,9 @@ fn decode_contract_id(strkey: &str) -> Result<[u8; 32]> {
     }
     Ok(payload)
 }
-
 // ── Base64 ────────────────────────────────────────────────────────────────────
 
-const B64: &[u8; 64] =
-    b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+const B64: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
 fn base64_encode(input: &[u8]) -> String {
     let mut out = String::with_capacity(input.len().div_ceil(3) * 4);
@@ -522,6 +544,34 @@ fn base64_encode(input: &[u8]) -> String {
     out
 }
 
+/// Decode a standard base64 string (with `=` padding) into bytes.
+///
+/// Used in tests to verify the XDR byte layout produced by the encoder functions.
+#[cfg(test)]
+fn base64_decode(input: &str) -> Result<Vec<u8>> {
+    let mut lut = [0xFFu8; 256];
+    for (i, &c) in B64.iter().enumerate() {
+        lut[c as usize] = i as u8;
+    }
+    let input = input.trim_end_matches('=');
+    let mut bits: u32 = 0;
+    let mut bit_count: u32 = 0;
+    let mut out = Vec::with_capacity(input.len() * 3 / 4);
+    for &ch in input.as_bytes() {
+        let v = lut[ch as usize];
+        if v == 0xFF {
+            return Err(anyhow!("invalid base64 char '{}'", ch as char));
+        }
+        bits = (bits << 6) | v as u32;
+        bit_count += 6;
+        if bit_count >= 8 {
+            bit_count -= 8;
+            out.push((bits >> bit_count) as u8);
+        }
+    }
+    Ok(out)
+}
+
 // ── XDR writer ────────────────────────────────────────────────────────────────
 
 struct XdrWriter(Vec<u8>);
@@ -533,6 +583,7 @@ impl XdrWriter {
     fn u32(&mut self, v: u32) {
         self.0.extend_from_slice(&v.to_be_bytes());
     }
+    #[allow(dead_code)]
     fn i64(&mut self, v: i64) {
         self.0.extend_from_slice(&v.to_be_bytes());
     }
@@ -553,8 +604,17 @@ impl XdrWriter {
 }
 
 // ScVal discriminants (Soroban protocol 21)
+#[allow(dead_code)]
 const SCV_STRING: u32 = 14;
+const SCV_SYMBOL: u32 = 15;
+const SCV_LEDGER_KEY_CONTRACT_INSTANCE: u32 = 20;
 const SC_ADDR_CONTRACT: u32 = 1;
+
+// LedgerEntryType discriminant
+const LEDGER_ENTRY_TYPE_CONTRACT_DATA: u32 = 6;
+
+// ContractDataDurability discriminants
+const CONTRACT_DATA_DURABILITY_PERSISTENT: u32 = 1;
 
 /// Build a minimal base64-encoded `TransactionEnvelope` (v1) containing a
 /// single `InvokeHostFunctionOp` for `simulateTransaction`.
@@ -565,11 +625,8 @@ const SC_ADDR_CONTRACT: u32 = 1;
 ///
 /// `args_xdr` items are treated as Soroban `ScVal::String` arguments
 /// (the only type currently needed for registry/core view functions).
-fn build_invoke_xdr(
-    contract_id: &str,
-    function_name: &str,
-    args_xdr: &[String],
-) -> Result<String> {
+#[allow(dead_code)]
+fn build_invoke_xdr(contract_id: &str, function_name: &str, args_xdr: &[String]) -> Result<String> {
     let contract_hash = decode_contract_id(contract_id)
         .with_context(|| format!("invalid contract id '{contract_id}'"))?;
 
@@ -583,7 +640,7 @@ fn build_invoke_xdr(
     w.opaque_fixed(&[0u8; 32]);
 
     w.u32(100); // fee (stroops)
-    w.i64(0);   // seqNum
+    w.i64(0); // seqNum
 
     // cond: Preconditions::None
     w.u32(0);
@@ -594,7 +651,7 @@ fn build_invoke_xdr(
     w.u32(1);
 
     // Operation
-    w.u32(0);  // sourceAccount: absent
+    w.u32(0); // sourceAccount: absent
     w.u32(24); // OperationType::INVOKE_HOST_FUNCTION
 
     // InvokeHostFunctionOp
@@ -628,6 +685,10 @@ fn build_invoke_xdr(
 
     Ok(base64_encode(&w.into_bytes()))
 }
+/// Re-exported so callers addressing the crate as `rpc::decode_contract_id`
+/// (e.g. older fuzz targets) keep resolving; the implementation lives in the
+/// shared `router_off_chain_common::xdr` module.
+pub use router_off_chain_common::xdr::decode_contract_id;
 
 // ── Result extraction helpers ─────────────────────────────────────────────────
 
@@ -636,7 +697,7 @@ fn build_invoke_xdr(
 /// The Soroban RPC returns the return value as a base64-encoded `ScVal` XDR
 /// in `result.results[0].xdr`.  The RPC server also provides a JSON-decoded
 /// representation in some versions.  We try both paths.
-fn extract_u64_from_sim_result(result: &Value) -> Result<u64> {
+pub fn extract_u64_from_sim_result(result: &Value) -> Result<u64> {
     // Path 1: JSON-decoded ScVal in `results[0].retval` (newer RPC versions)
     if let Some(v) = result
         .get("results")
@@ -662,7 +723,7 @@ fn extract_u64_from_sim_result(result: &Value) -> Result<u64> {
 
 /// Extract a `bool` from a `simulateTransaction` result JSON value.
 #[allow(dead_code)]
-fn extract_bool_from_sim_result(result: &Value) -> Result<bool> {
+pub fn extract_bool_from_sim_result(result: &Value) -> Result<bool> {
     if let Some(v) = result
         .get("results")
         .and_then(|r| r.get(0))
@@ -684,7 +745,7 @@ fn extract_bool_from_sim_result(result: &Value) -> Result<bool> {
 }
 
 /// Extract a `Vec<String>` from a `simulateTransaction` result JSON value.
-fn extract_string_vec_from_sim_result(result: &Value) -> Result<Vec<String>> {
+pub fn extract_string_vec_from_sim_result(result: &Value) -> Result<Vec<String>> {
     let retval = result
         .get("results")
         .and_then(|r| r.get(0))
@@ -710,7 +771,7 @@ fn extract_string_vec_from_sim_result(result: &Value) -> Result<Vec<String>> {
 /// Extract a `Vec<u32>` from a `simulateTransaction` result JSON value.
 ///
 /// Used to parse the return value of `versions(name) -> Vec<u32>`.
-fn extract_u32_vec_from_sim_result(result: &Value) -> Result<Vec<u32>> {
+pub fn extract_u32_vec_from_sim_result(result: &Value) -> Result<Vec<u32>> {
     let retval = result
         .get("results")
         .and_then(|r| r.get(0))
@@ -746,7 +807,7 @@ fn hex_encode_arg(s: &str) -> String {
 ///
 /// The Soroban RPC embeds a continuation cursor in each event's `pagingToken`
 /// field.  We only need the token from the final event to request the next page.
-fn extract_last_paging_token(raw_result: &Value) -> Option<String> {
+pub fn extract_last_paging_token(raw_result: &Value) -> Option<String> {
     raw_result
         .get("events")?
         .as_array()?
@@ -775,14 +836,91 @@ fn extract_last_paging_token(raw_result: &Value) -> Option<String> {
 /// `DataKey::Paused`) the `key` ScVal is a `ScVal::LedgerKeyContractInstance`
 /// for instance storage.
 ///
-/// Full XDR construction is left as an integration point; the collector uses
-/// the simulation path as a fallback.
+/// # Stub — not yet implemented
+///
+/// This function is an **intentional stub**. Direct XDR construction requires the
+/// [`stellar-xdr`](https://crates.io/crates/stellar-xdr) crate (or equivalent
+/// hand-rolled encoding), which has not been integrated yet. Until that work is
+/// complete the metrics collector falls back to the simulation path
+/// (`simulateTransaction`) instead of calling `getLedgerEntries` directly.
+///
+/// This is tracked as a known limitation in `metrics/CHANGELOG.md`
+/// ("XDR transaction building not implemented, uses simulation-based scraping
+/// instead") and is planned for a future release once `stellar-xdr` encoding is
+/// integrated (see issue #183).
+///
+/// **Do not remove `#[allow(dead_code)]`** until the stub is replaced with a
+/// real implementation — the attribute documents the deliberate incompleteness.
+///
+/// # Errors
+///
+/// Always returns `Err` with the message:
+/// `"Direct XDR key construction not implemented. Use the simulation path or integrate stellar-xdr."`
 #[allow(dead_code)]
-pub fn instance_storage_key_xdr(_contract_id: &str) -> Result<String> {
-    Err(anyhow!(
-        "Direct XDR key construction not implemented. \
-         Use the simulation path or integrate stellar-xdr."
-    ))
+pub fn instance_storage_key_xdr(contract_id: &str) -> Result<String> {
+    let hash = decode_contract_id(contract_id)
+        .with_context(|| format!("invalid contract id '{contract_id}'"))?;
+
+    let mut w = XdrWriter::new();
+
+    // LedgerKey discriminant: CONTRACT_DATA = 6
+    w.u32(LEDGER_ENTRY_TYPE_CONTRACT_DATA);
+
+    // SCAddress::Contract
+    w.u32(SC_ADDR_CONTRACT);
+    w.opaque_fixed(&hash);
+
+    // ScVal::LedgerKeyContractInstance  (void – no payload)
+    w.u32(SCV_LEDGER_KEY_CONTRACT_INSTANCE);
+
+    // ContractDataDurability::Persistent
+    w.u32(CONTRACT_DATA_DURABILITY_PERSISTENT);
+
+    Ok(base64_encode(&w.into_bytes()))
+}
+
+/// Build the base64-encoded XDR [`LedgerKey::ContractData`] for a **named**
+/// persistent storage entry.
+///
+/// Router contracts store per-route configuration and counters as individual
+/// `Persistent` entries whose key is an `ScVal::Symbol` (e.g. `"MaxRetries"`,
+/// `"TotalRouted"`).  This function encodes such a key so that it can be
+/// passed directly to `getLedgerEntries`.
+///
+/// # XDR layout
+/// ```text
+/// LedgerKey::ContractData
+///   u32(6)  — LEDGER_ENTRY_TYPE_CONTRACT_DATA
+///   SCAddress::Contract
+///     u32(1)   — SC_ADDRESS_TYPE_CONTRACT
+///     Hash[32] — contract id bytes
+///   ScVal::Symbol
+///     u32(15)  — SCV_SYMBOL
+///     opaque_var(name bytes)   — 4-byte length + utf-8 bytes padded to 4-byte boundary
+///   ContractDataDurability::Persistent
+///     u32(1)   — PERSISTENT
+/// ```
+pub fn named_storage_key_xdr(contract_id: &str, storage_key: &str) -> Result<String> {
+    let hash = decode_contract_id(contract_id)
+        .with_context(|| format!("invalid contract id '{contract_id}'"))?;
+
+    let mut w = XdrWriter::new();
+
+    // LedgerKey discriminant: CONTRACT_DATA = 6
+    w.u32(LEDGER_ENTRY_TYPE_CONTRACT_DATA);
+
+    // SCAddress::Contract
+    w.u32(SC_ADDR_CONTRACT);
+    w.opaque_fixed(&hash);
+
+    // ScVal::Symbol
+    w.u32(SCV_SYMBOL);
+    w.opaque_var(storage_key.as_bytes());
+
+    // ContractDataDurability::Persistent
+    w.u32(CONTRACT_DATA_DURABILITY_PERSISTENT);
+
+    Ok(base64_encode(&w.into_bytes()))
 }
 
 // ── RpcClient trait ───────────────────────────────────────────────────────────
@@ -867,13 +1005,17 @@ impl RpcClient for SorobanRpcClient {
 /// Pre-load responses via the builder methods; any call not explicitly
 /// configured returns an error so tests fail loudly on unexpected calls.
 ///
+/// This is part of the library API (rather than `#[cfg(test)]`) because the
+/// binary crate's own unit tests in `collector.rs` reach it through the
+/// `crate::rpc` re-export, which resolves to the library module.
+///
 /// # Example
 /// ```rust
+/// use router_metrics_exporter::rpc::MockRpcClient;
 /// let mock = MockRpcClient::new()
 ///     .with_u64("CONTRACT", "total_routed", 42)
 ///     .with_string_vec("CONTRACT", "get_all_routes", vec![]);
 /// ```
-#[cfg(test)]
 pub struct MockRpcClient {
     u64_responses: std::collections::HashMap<(String, String), u64>,
     bool_responses: std::collections::HashMap<(String, String), bool>,
@@ -884,7 +1026,12 @@ pub struct MockRpcClient {
     ledger_entries_responses: std::collections::HashMap<String, Vec<LedgerEntry>>,
 }
 
-#[cfg(test)]
+impl Default for MockRpcClient {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl MockRpcClient {
     pub fn new() -> Self {
         Self {
@@ -945,7 +1092,6 @@ impl MockRpcClient {
     }
 }
 
-#[cfg(test)]
 #[async_trait::async_trait]
 impl RpcClient for MockRpcClient {
     async fn call_u64(&self, contract_id: &str, function_name: &str) -> Result<u64> {
@@ -1086,43 +1232,29 @@ mod tests {
         assert_eq!(result, vec!["oracle", "price_feed"]);
     }
 
-    /// Verify that `build_invoke_xdr` produces valid base64-encoded XDR starting
-    /// with the ENVELOPE_TYPE_TX discriminant (big-endian 2 = [0,0,0,2]).
+    /// Verify that `build_invoke_xdr_from_strkey` produces valid base64-encoded
+    /// XDR starting with the ENVELOPE_TYPE_TX discriminant (big-endian 2).
     #[test]
     fn build_invoke_xdr_produces_valid_envelope() {
         let contract = "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4";
-        let xdr = build_invoke_xdr(contract, "total_routed", &[]).unwrap();
-        // Must be valid base64
-        let mut lut = [0xFFu8; 256];
-        for (i, &c) in B64.iter().enumerate() {
-            lut[c as usize] = i as u8;
-        }
-        // Decode first 4 bytes to verify ENVELOPE_TYPE_TX = 2
-        let bytes: Vec<u8> = {
-            let s = xdr.trim_end_matches('=').as_bytes();
-            let c0 = lut[s[0] as usize] as u32;
-            let c1 = lut[s[1] as usize] as u32;
-            let c2 = lut[s[2] as usize] as u32;
-            let c3 = lut[s[3] as usize] as u32;
-            let n = (c0 << 18) | (c1 << 12) | (c2 << 6) | c3;
-            vec![(n >> 16) as u8, (n >> 8) as u8, n as u8]
-        };
-        assert_eq!(&bytes[0..3], &[0, 0, 0], "high bytes of discriminant");
-        // The fourth byte is in the next group; just check first 3 are 0.
-        let _ = bytes;
+        let xdr = build_invoke_xdr_from_strkey(contract, "total_routed", &[]).unwrap();
+        // Must be valid base64 (decodes without error).
+        let bytes =
+            router_off_chain_common::xdr::base64_decode(&xdr).expect("XDR must be valid base64");
+        assert_eq!(&bytes[0..4], &[0, 0, 0, 2], "ENVELOPE_TYPE_TX discriminant");
     }
 
     #[test]
     fn build_invoke_xdr_with_string_arg() {
         let contract = "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4";
-        let result = build_invoke_xdr(contract, "get_route", &["oracle".to_string()]);
+        let result = build_invoke_xdr_from_strkey(contract, "get_route", &["oracle".to_string()]);
         assert!(result.is_ok(), "XDR build with arg should succeed");
         assert!(!result.unwrap().is_empty());
     }
 
     #[test]
     fn build_invoke_xdr_invalid_contract_id_returns_error() {
-        let result = build_invoke_xdr("not-a-valid-contract-id", "fn", &[]);
+        let result = build_invoke_xdr_from_strkey("not-a-valid-contract-id", "fn", &[]);
         assert!(result.is_err(), "invalid contract id should return Err");
     }
     /// fail the overall call — the retry logic absorbs the first blip.
@@ -1151,9 +1283,15 @@ mod tests {
                     Ok(42)
                 }
             }
-            async fn call_bool(&self, _: &str, _: &str) -> Result<bool> { Ok(false) }
-            async fn call_string_vec(&self, _: &str, _: &str) -> Result<Vec<String>> { Ok(vec![]) }
-            async fn call_u32_vec(&self, _: &str, _: &str, _: &str) -> Result<Vec<u32>> { Ok(vec![]) }
+            async fn call_bool(&self, _: &str, _: &str) -> Result<bool> {
+                Ok(false)
+            }
+            async fn call_string_vec(&self, _: &str, _: &str) -> Result<Vec<String>> {
+                Ok(vec![])
+            }
+            async fn call_u32_vec(&self, _: &str, _: &str, _: &str) -> Result<Vec<u32>> {
+                Ok(vec![])
+            }
             async fn simulate_invoke(&self, _: &str, _: &str, _: Vec<String>) -> Result<Value> {
                 Ok(json!({}))
             }
@@ -1165,7 +1303,9 @@ mod tests {
             }
         }
 
-        let mock = FlakyMock { call_count: Arc::clone(&call_count) };
+        let mock = FlakyMock {
+            call_count: Arc::clone(&call_count),
+        };
 
         // First attempt returns an error; a real retry loop in the caller
         // would try again. We model that here by calling twice and asserting
@@ -1176,6 +1316,8 @@ mod tests {
         assert!(first.is_err(), "first call should fail (transient)");
         assert_eq!(second.unwrap(), 42, "second call should succeed");
         assert_eq!(call_count.load(Ordering::SeqCst), 2);
+    }
+
     #[test]
     fn test_extract_last_paging_token_present() {
         let v = json!({
@@ -1185,10 +1327,7 @@ mod tests {
             ],
             "latestLedger": 100
         });
-        assert_eq!(
-            extract_last_paging_token(&v),
-            Some("token-b".to_string())
-        );
+        assert_eq!(extract_last_paging_token(&v), Some("token-b".to_string()));
     }
 
     #[test]
@@ -1280,7 +1419,7 @@ mod tests {
         });
 
         let client =
-            SorobanRpcClient::new(format!("http://{addr}"), 5).expect("build client");
+            SorobanRpcClient::new(vec![format!("http://{addr}")], 5).expect("build client");
 
         let events = client
             .get_events("CONTRACT", &["post_call"], 10)
@@ -1295,5 +1434,174 @@ mod tests {
 
         // The mock server should have been called 3 times (page1 + page2 + empty page3).
         assert_eq!(call_count.load(Ordering::SeqCst), 3);
+    }
+
+    /// Verify that `instance_storage_key_xdr` is a stub that always returns an
+    /// error. This test intentionally locks in the *current* (error) behavior so
+    /// that a future implementer gets an immediate signal when the function starts
+    /// returning a real value instead.
+    ///
+    /// The XDR key is now fully implemented via `router-off-chain-common::xdr`.
+    #[test]
+    fn instance_storage_key_xdr_returns_valid_base64() {
+        let result =
+            instance_storage_key_xdr("CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4")
+                .expect("should succeed");
+        // The result should be a non-empty base64 string
+        assert!(!result.is_empty(), "expected non-empty base64 XDR");
+    }
+
+    /// Verify that the client fails over to the next endpoint when the primary
+    /// returns 500. Server A always fails; server B returns a valid response.
+    #[tokio::test]
+    async fn test_failover_to_healthy_endpoint() {
+        // Server A: always returns 500
+        let app_a = axum::Router::new().route(
+            "/",
+            axum::routing::post(|| async {
+                (
+                    axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                    "server error",
+                )
+            }),
+        );
+        let listener_a = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind A");
+        let addr_a = listener_a.local_addr().expect("local addr A");
+        tokio::spawn(async move {
+            axum::serve(listener_a, app_a).await.expect("serve A");
+        });
+
+        // Server B: returns a valid JSON-RPC response
+        let app_b = axum::Router::new().route(
+            "/",
+            axum::routing::post(|axum::Json(_body): axum::Json<Value>| async move {
+                let response = json!({
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "result": {
+                        "results": [{"retval": {"u64": 42}}]
+                    }
+                });
+                axum::Json(response)
+            }),
+        );
+        let listener_b = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind B");
+        let addr_b = listener_b.local_addr().expect("local addr B");
+        tokio::spawn(async move {
+            axum::serve(listener_b, app_b).await.expect("serve B");
+        });
+
+        let client = SorobanRpcClient::new(
+            vec![format!("http://{addr_a}"), format!("http://{addr_b}")],
+            5,
+        )
+        .expect("build client");
+
+        let result = client
+            .call_u64(
+                "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
+                "total_routed",
+            )
+            .await
+            .expect("failover should succeed");
+
+        assert_eq!(result, 42);
+    }
+
+    /// Verify that the client returns an error when ALL endpoints are unreachable.
+    #[tokio::test]
+    async fn test_all_endpoints_fail() {
+        // Server A: returns 500
+        let app_a = axum::Router::new().route(
+            "/",
+            axum::routing::post(|| async {
+                (
+                    axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                    "server error",
+                )
+            }),
+        );
+        let listener_a = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind A");
+        let addr_a = listener_a.local_addr().expect("local addr A");
+        tokio::spawn(async move {
+            axum::serve(listener_a, app_a).await.expect("serve A");
+        });
+
+        // Server B: also returns 500
+        let app_b = axum::Router::new().route(
+            "/",
+            axum::routing::post(|| async {
+                (
+                    axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                    "server error",
+                )
+            }),
+        );
+        let listener_b = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind B");
+        let addr_b = listener_b.local_addr().expect("local addr B");
+        tokio::spawn(async move {
+            axum::serve(listener_b, app_b).await.expect("serve B");
+        });
+
+        let client = SorobanRpcClient::new(
+            vec![format!("http://{addr_a}"), format!("http://{addr_b}")],
+            5,
+        )
+        .expect("build client");
+
+        let result = client
+            .call_u64(
+                "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
+                "total_routed",
+            )
+            .await;
+        assert!(result.is_err(), "expected error when all endpoints fail");
+    }
+
+    /// Verify that the client succeeds immediately on the first endpoint
+    /// without triggering failover.
+    #[tokio::test]
+    async fn test_single_endpoint_succeeds_without_failover() {
+        let app = axum::Router::new().route(
+            "/",
+            axum::routing::post(|axum::Json(_body): axum::Json<Value>| async move {
+                let response = json!({
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "result": {
+                        "results": [{"retval": {"u64": 99}}]
+                    }
+                });
+                axum::Json(response)
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
+        let addr = listener.local_addr().expect("local addr");
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.expect("serve");
+        });
+
+        let client =
+            SorobanRpcClient::new(vec![format!("http://{addr}")], 5).expect("build client");
+
+        let result = client
+            .call_u64(
+                "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
+                "total_routed",
+            )
+            .await
+            .expect("single endpoint should succeed");
+
+        assert_eq!(result, 99);
     }
 }

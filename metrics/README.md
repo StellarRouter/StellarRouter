@@ -21,9 +21,23 @@ Soroban smart contracts run inside the Stellar network as WASM and cannot open s
 | `router_middleware_circuit_open` | Gauge | `contract`, `route` | 1 if the circuit breaker is open |
 | `router_middleware_failure_count` | Gauge | `contract`, `route` | Consecutive failure count |
 | `router_registry_total_names` | Gauge | `contract` | Total contract names registered |
+| `router_quote_total_generated` | Counter | `contract` | Cumulative `quote_generated` events |
+| `router_quote_total_fee_estimated` | Counter | `contract` | Cumulative `fee_estimated` events |
+| `router_execution_total_executions` | Counter | `contract` | Cumulative executions recorded |
+| `router_execution_total_errors` | Counter | `contract` | Cumulative execution errors recorded |
+| `router_execution_max_retries` | Gauge | `contract` | Configured max retries |
+| `router_access_role_member_count` | Gauge | `contract`, `role` | Indexed members ever added per role (`get_role_count`) |
+| `router_access_blacklist_size` | Gauge | `contract` | Distinct addresses on the blacklist (`get_blacklist_count`) |
+| `router_timelock_pending_operations` | Gauge | `contract` | Pending time-locked operations (`get_pending_op_count`) |
+| `router_multicall_total_batches` | Gauge | `contract` | Total batches submitted (`total_batches`) |
+| `router_multicall_batch_success_total` | Counter | `contract` | Cumulative successful calls (`call_result` events) |
+| `router_multicall_batch_failure_total` | Counter | `contract` | Cumulative failed calls (`call_result` events) |
 | `router_scrape_duration_seconds` | Histogram | `contract` | Time spent scraping each contract |
 | `router_scrape_errors_total` | Counter | `contract` | Number of failed scrape attempts |
 | `router_up` | Gauge | — | 1 if the last scrape cycle succeeded |
+| `router_sse_connected` | Gauge | `contract` | 1 if the SSE stream is active (SSE mode only) |
+| `router_sse_reconnects_total` | Counter | `contract` | Total SSE reconnect attempts (SSE mode only) |
+| `router_sse_events_total` | Counter | `contract` | Total SSE events received (SSE mode only) |
 
 ## Installation
 
@@ -65,6 +79,10 @@ Options:
       [env: ROUTER_RPC_URL]
       [default: https://soroban-testnet.stellar.org]
 
+  --rpc-urls <URLS>...
+      Soroban RPC endpoint URLs for failover (comma-separated or repeat flag)
+      [env: ROUTER_RPC_URLS]
+
   --network-passphrase <PASSPHRASE>
       Stellar network passphrase (used to decode XDR correctly)
       [env: ROUTER_NETWORK_PASSPHRASE]
@@ -85,6 +103,21 @@ Options:
       [env: ROUTER_REGISTRY_CONTRACT_ID]
       [default: ]
 
+  --access-contract-id <CONTRACT_ID>
+      Contract ID of the deployed router-access contract
+      [env: ROUTER_ACCESS_CONTRACT_ID]
+      [default: ]
+
+  --timelock-contract-id <CONTRACT_ID>
+      Contract ID of the deployed router-timelock contract
+      [env: ROUTER_TIMELOCK_CONTRACT_ID]
+      [default: ]
+
+  --multicall-contract-id <CONTRACT_ID>
+      Contract ID of the deployed router-multicall contract
+      [env: ROUTER_MULTICALL_CONTRACT_ID]
+      [default: ]
+
   --scrape-interval-secs <SECONDS>
       How often (in seconds) to poll the Soroban RPC for fresh data
       [env: ROUTER_SCRAPE_INTERVAL_SECS]
@@ -100,12 +133,109 @@ Options:
       [env: ROUTER_RPC_TIMEOUT_SECS]
       [default: 10]
 
+  --event-mode <MODE>
+      Event ingestion mode: poll (default) or sse
+      [env: ROUTER_EVENT_MODE]
+      [default: poll]
+      [possible values: poll, sse]
+
+  --horizon-url <URL>
+      Stellar Horizon base URL for SSE subscriptions (sse mode only)
+      [env: ROUTER_HORIZON_URL]
+      [default: https://horizon-testnet.stellar.org]
+
+  --sse-max-reconnects <N>
+      Maximum SSE reconnect attempts before giving up (0 = unlimited)
+      [env: ROUTER_SSE_MAX_RECONNECTS]
+      [default: 10]
+
+  --sse-reconnect-delay-ms <MS>
+      Base reconnect back-off delay in milliseconds (doubles each attempt)
+      [env: ROUTER_SSE_RECONNECT_DELAY_MS]
+      [default: 1000]
+
+  --sse-reconnect-max-delay-ms <MS>
+      Maximum reconnect back-off delay in milliseconds
+      [env: ROUTER_SSE_RECONNECT_MAX_DELAY_MS]
+      [default: 30000]
+
+  --max-cardinality <N>
+      Maximum distinct label values per high-cardinality metric
+      (per-route, per-name). Overflow values are grouped into _other.
+      [env: ROUTER_MAX_CARDINALITY]
+      [default: 100]
+
   -h, --help
       Print help
 
   -V, --version
       Print version
 ```
+
+## Event Modes
+
+The exporter supports two event ingestion modes, selectable via `--event-mode` or
+`ROUTER_EVENT_MODE`.
+
+### Poll mode (default)
+
+```bash
+export ROUTER_EVENT_MODE=poll          # or omit — poll is the default
+export ROUTER_SCRAPE_INTERVAL_SECS=15  # how often to scrape
+```
+
+The exporter calls `simulateTransaction` / `getEvents` on the Soroban RPC every
+`scrape_interval_secs` seconds. This is the original behaviour and works with any
+Soroban RPC endpoint without needing a Horizon server.
+
+### SSE mode
+
+```bash
+export ROUTER_EVENT_MODE=sse
+export ROUTER_HORIZON_URL=https://horizon-testnet.stellar.org
+export ROUTER_SSE_MAX_RECONNECTS=10       # 0 = unlimited
+export ROUTER_SSE_RECONNECT_DELAY_MS=1000
+export ROUTER_SSE_RECONNECT_MAX_DELAY_MS=30000
+```
+
+In SSE mode the exporter:
+
+1. Performs a **bootstrap poll** at startup (same as poll mode) so all state-based
+   metrics (total_routed, circuit breaker state, etc.) are populated immediately.
+2. Spawns one SSE subscriber per configured contract that connects to the
+   `GET /events?contractId={id}&cursor=now` Horizon endpoint.
+3. Updates event-based metrics (quote_generated, post_call, execution_result, …)
+   in near-real-time as events arrive — no waiting for the next scrape interval.
+4. **Automatically reconnects** with exponential back-off if the stream drops.
+
+The reconnect back-off follows `delay = min(base * 2^attempt, max_delay)`.
+After `sse_max_reconnects` failed attempts (when > 0), the subscriber exits and
+`router_sse_connected` stays at 0 — state-based metrics (populated by the
+bootstrap poll) remain visible.
+
+#### SSE health Prometheus queries
+
+```promql
+# Is the SSE stream connected?
+router_sse_connected{contract="CBGTG..."}
+
+# Reconnect rate (spikes indicate network instability)
+rate(router_sse_reconnects_total{contract="CBGTG..."}[5m])
+
+# Event throughput
+rate(router_sse_events_total{contract="CBGTG..."}[1m])
+```
+
+### RPC Failover
+
+```bash
+export ROUTER_RPC_URLS="https://primary.example.com,https://secondary.example.com"
+export ROUTER_SCRAPE_INTERVAL_SECS=15
+```
+
+When multiple RPC endpoints are provided, the exporter automatically fails over to the next endpoint if the current one becomes unreachable. Each endpoint gets its own retry budget (controlled by `ROUTER_RPC_MAX_RETRIES` and `ROUTER_RPC_BACKOFF_MS`). If all endpoints fail, the scrape cycle is marked as failed and `router_up` is set to `0`.
+
+The exporter treats each failed endpoint as a health-check failure and moves traffic to healthy endpoints without manual intervention.
 
 ### Example: Testnet deployment
 
@@ -114,6 +244,9 @@ export ROUTER_RPC_URL="https://soroban-testnet.stellar.org"
 export ROUTER_CORE_CONTRACT_ID="CBGTG...YOUR_CONTRACT_ID"
 export ROUTER_MIDDLEWARE_CONTRACT_ID="CBGTG...YOUR_CONTRACT_ID"
 export ROUTER_REGISTRY_CONTRACT_ID="CBGTG...YOUR_CONTRACT_ID"
+export ROUTER_ACCESS_CONTRACT_ID="CBGTG...YOUR_CONTRACT_ID"
+export ROUTER_TIMELOCK_CONTRACT_ID="CBGTG...YOUR_CONTRACT_ID"
+export ROUTER_MULTICALL_CONTRACT_ID="CBGTG...YOUR_CONTRACT_ID"
 export ROUTER_SCRAPE_INTERVAL_SECS=30
 export ROUTER_LISTEN="0.0.0.0:9090"
 
@@ -127,6 +260,9 @@ export ROUTER_RPC_URL="https://soroban-mainnet.stellar.org"
 export ROUTER_NETWORK_PASSPHRASE="Public Global Stellar Network ; September 2015"
 export ROUTER_CORE_CONTRACT_ID="CBGTG...YOUR_CONTRACT_ID"
 export ROUTER_MIDDLEWARE_CONTRACT_ID="CBGTG...YOUR_CONTRACT_ID"
+export ROUTER_ACCESS_CONTRACT_ID="CBGTG...YOUR_CONTRACT_ID"
+export ROUTER_TIMELOCK_CONTRACT_ID="CBGTG...YOUR_CONTRACT_ID"
+export ROUTER_MULTICALL_CONTRACT_ID="CBGTG...YOUR_CONTRACT_ID"
 export ROUTER_SCRAPE_INTERVAL_SECS=60
 
 ./target/release/router-metrics-exporter
@@ -202,8 +338,64 @@ Each contract scrape is timed and any error increments the `router_scrape_errors
 ### Limitations
 
 - **No transaction-level latency**: The exporter tracks scrape latency (off-chain polling time), not on-chain transaction latency. For transaction-level metrics, use Stellar Horizon's transaction history API.
-- **No real-time events**: Metrics are updated on the scrape interval (default 15s), not in real-time. For real-time monitoring, consider streaming Stellar ledger events via Horizon.
+- **Poll mode latency**: In poll mode, metrics are updated on the scrape interval (default 15s). Enable SSE mode (`ROUTER_EVENT_MODE=sse`) for near-real-time event updates.
 - **XDR encoding**: The current implementation uses JSON-RPC simulation results. For production deployments with complex data types, integrate the `stellar-xdr` crate for proper XDR encoding/decoding.
+- **SSE state-based metrics**: In SSE mode, state-based metrics (total_routed, circuit breaker state) are only updated during the bootstrap poll and on reconnect — not continuously like event-based metrics. Run both modes simultaneously (poll for state, SSE for events) if you need continuous state freshness.
+
+## Metric Cardinality Limits
+
+Prometheus label cardinality explosion is a well-known operational hazard. Metrics that carry per-route or per-name labels (`router_core_route_paused`, `router_middleware_circuit_open`, `router_middleware_failure_count`, `router_middleware_route_calls_total`, `router_middleware_route_failures_total`, `router_registry_version_count`) can grow unboundedly if new routes/names are created on-chain.
+
+The exporter includes a **cardinality limiter** that caps the number of distinct label values tracked per metric. When the cap is exceeded, new values are redirected to a single `_other` bucket, preventing unbounded memory growth.
+
+### Configuration
+
+| Flag | Env Var | Default | Description |
+|------|---------|---------|-------------|
+| `--max-cardinality` | `ROUTER_MAX_CARDINALITY` | `100` | Max distinct label values per high-cardinality metric |
+
+### Affected Metrics
+
+The following metrics are subject to cardinality limiting:
+
+| Metric | Label Being Limited |
+|--------|---------------------|
+| `router_core_route_paused` | `route` |
+| `router_middleware_circuit_open` | `route` |
+| `router_middleware_failure_count` | `route` |
+| `router_middleware_route_calls_total` | `route` |
+| `router_middleware_route_failures_total` | `route` |
+| `router_registry_version_count` | `name` |
+
+### Behavior When Cap Is Exceeded
+
+1. The first N distinct label values (default: 100) are tracked normally as separate Prometheus time-series.
+2. Any additional distinct label values beyond the cap are **all mapped to `_other`**.
+3. The `_other` bucket accumulates the values (gauges are set, counters are incremented) from all overflow labels.
+4. The `contract` label is **never** subject to limiting — contract IDs are deployment-controlled and bounded.
+
+### Example
+
+```bash
+# Set a higher cardinality limit (e.g., 500 routes per contract)
+export ROUTER_MAX_CARDINALITY=500
+./target/release/router-metrics-exporter
+
+# Or via CLI flag
+./target/release/router-metrics-exporter --max-cardinality 500
+```
+
+### Prometheus Queries for Overflow Monitoring
+
+You can monitor cardinality and detect overflow in Prometheus:
+
+```promql
+# Count distinct route label values for a metric
+count(count by (route) (router_core_route_paused{contract="CBGTG..."}))
+
+# Check if the _other bucket has any values (indicates overflow)
+router_core_route_paused{contract="CBGTG...", route="_other"}
+```
 
 ## OpenTelemetry Support
 

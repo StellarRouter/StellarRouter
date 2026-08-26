@@ -57,6 +57,30 @@ pub fn validate_route_name(name: &str) -> Result<(), ValidationError> {
     Ok(())
 }
 
+/// Validate a function name.
+///
+/// A valid function name is non-empty, at most 64 characters, and contains only
+/// ASCII alphanumeric characters, underscores (`_`), or hyphens (`-`).
+pub fn validate_function_name(name: &str) -> Result<(), ValidationError> {
+    if name.is_empty() {
+        return Err(ValidationError::new("function name must not be empty"));
+    }
+    if name.len() > 64 {
+        return Err(ValidationError::new(
+            "function name must be 64 characters or fewer",
+        ));
+    }
+    if !name
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+    {
+        return Err(ValidationError::new(
+            "function name must contain only alphanumeric characters, underscores, or hyphens",
+        ));
+    }
+    Ok(())
+}
+
 /// Validate a scrape interval in seconds.
 ///
 /// Must be between 1 and 3600 (inclusive).
@@ -119,6 +143,30 @@ mod tests {
         assert!(validate_contract_id(&id).is_err());
     }
 
+    #[test]
+    fn contract_id_with_multibyte_utf8_rejected() {
+        // "é" (U+00E9) encodes to 2 bytes in UTF-8, so this string is exactly
+        // 56 bytes long but only 55 characters. It slips past the byte-length
+        // gate (`id.len() == 56`) and must be caught by the ASCII-alphanumeric
+        // check instead. This locks in the rejection behavior for inputs where
+        // `.len()` (bytes) and `.chars().count()` diverge.
+        let id = format!("C{}\u{00e9}", "A".repeat(53));
+        assert_eq!(id.len(), 56, "byte length should satisfy the length gate");
+        assert_eq!(
+            id.chars().count(),
+            55,
+            "char count diverges from byte length for multi-byte input"
+        );
+        assert!(validate_contract_id(&id).is_err());
+    }
+
+    #[test]
+    fn contract_id_with_emoji_rejected() {
+        // A 4-byte emoji is multi-byte UTF-8 and is never ASCII alphanumeric.
+        let id = format!("C{}\u{1f680}", "A".repeat(54));
+        assert!(validate_contract_id(&id).is_err());
+    }
+
     // ── validate_route_name ───────────────────────────────────────────────────
 
     #[test]
@@ -156,6 +204,38 @@ mod tests {
     #[test]
     fn too_large_scrape_interval_rejected() {
         assert!(validate_scrape_interval(3601).is_err());
+    }
+
+    // ── validate_function_name ───────────────────────────────────────────────
+
+    #[test]
+    fn valid_function_name() {
+        assert!(validate_function_name("transfer").is_ok());
+    }
+
+    #[test]
+    fn valid_function_name_with_underscore() {
+        assert!(validate_function_name("transfer_from").is_ok());
+    }
+
+    #[test]
+    fn valid_function_name_with_hyphen() {
+        assert!(validate_function_name("transfer-v2").is_ok());
+    }
+
+    #[test]
+    fn empty_function_name_rejected() {
+        assert!(validate_function_name("").is_err());
+    }
+
+    #[test]
+    fn long_function_name_rejected() {
+        assert!(validate_function_name(&"a".repeat(65)).is_err());
+    }
+
+    #[test]
+    fn function_name_with_spaces_rejected() {
+        assert!(validate_function_name("bad name").is_err());
     }
 
     // ── validate_listen_addr ──────────────────────────────────────────────────

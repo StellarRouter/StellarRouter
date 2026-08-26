@@ -72,6 +72,27 @@ pub struct RouterMetrics {
     /// Configured maximum retries read from on-chain storage.
     pub execution_max_retries: GaugeVec,
 
+    // ── router-access ──────────────────────────────────────────────────────────
+    /// Number of indexed members ever added for a given role (`get_role_count`).
+    pub access_role_member_count: GaugeVec,
+
+    /// Number of distinct addresses currently stored on the blacklist.
+    pub access_blacklist_size: GaugeVec,
+
+    // ── router-timelock ─────────────────────────────────────────────────────────
+    /// Number of pending time-locked operations currently queued.
+    pub timelock_pending_operations: GaugeVec,
+
+    // ── router-multicall ────────────────────────────────────────────────────────
+    /// Total number of batches submitted to the multicall contract (`total_batches`).
+    pub multicall_total_batches: GaugeVec,
+
+    /// Cumulative number of successful calls observed in `call_result` events.
+    pub multicall_batch_success_total: CounterVec,
+
+    /// Cumulative number of failed calls observed in `call_result` events.
+    pub multicall_batch_failure_total: CounterVec,
+
     // ── exporter health ───────────────────────────────────────────────────────
     /// Time (seconds) spent scraping a single contract during the last cycle.
     pub scrape_duration_seconds: HistogramVec,
@@ -81,6 +102,16 @@ pub struct RouterMetrics {
 
     /// 1 if the most recent full scrape cycle completed without errors.
     pub up: Gauge,
+
+    // ── SSE health ────────────────────────────────────────────────────────────
+    /// 1 if the SSE connection for a contract is currently established, 0 otherwise.
+    pub sse_connected: GaugeVec,
+
+    /// Total number of SSE reconnect attempts per contract since process start.
+    pub sse_reconnects_total: CounterVec,
+
+    /// Total number of SSE events received per contract since process start.
+    pub sse_events_total: CounterVec,
 }
 
 impl RouterMetrics {
@@ -191,6 +222,48 @@ impl RouterMetrics {
             registry
         )?;
 
+        let access_role_member_count = register_gauge_vec_with_registry!(
+            "router_access_role_member_count",
+            "Number of indexed members ever added for a role in router-access (get_role_count)",
+            &["contract", "role"],
+            registry
+        )?;
+
+        let access_blacklist_size = register_gauge_vec_with_registry!(
+            "router_access_blacklist_size",
+            "Number of distinct addresses currently stored on the router-access blacklist",
+            &["contract"],
+            registry
+        )?;
+
+        let timelock_pending_operations = register_gauge_vec_with_registry!(
+            "router_timelock_pending_operations",
+            "Number of pending time-locked operations currently queued in router-timelock",
+            &["contract"],
+            registry
+        )?;
+
+        let multicall_total_batches = register_gauge_vec_with_registry!(
+            "router_multicall_total_batches",
+            "Total number of batches submitted to router-multicall (total_batches)",
+            &["contract"],
+            registry
+        )?;
+
+        let multicall_batch_success_total = register_counter_vec_with_registry!(
+            "router_multicall_batch_success_total",
+            "Cumulative number of successful calls observed in router-multicall call_result events",
+            &["contract"],
+            registry
+        )?;
+
+        let multicall_batch_failure_total = register_counter_vec_with_registry!(
+            "router_multicall_batch_failure_total",
+            "Cumulative number of failed calls observed in router-multicall call_result events",
+            &["contract"],
+            registry
+        )?;
+
         let scrape_duration_seconds = register_histogram_vec_with_registry!(
             "router_scrape_duration_seconds",
             "Time in seconds spent scraping a single router contract",
@@ -212,6 +285,27 @@ impl RouterMetrics {
             registry
         )?;
 
+        let sse_connected = register_gauge_vec_with_registry!(
+            "router_sse_connected",
+            "1 if the SSE connection for a contract is currently established, 0 otherwise",
+            &["contract"],
+            registry
+        )?;
+
+        let sse_reconnects_total = register_counter_vec_with_registry!(
+            "router_sse_reconnects_total",
+            "Total number of SSE reconnect attempts per contract since process start",
+            &["contract"],
+            registry
+        )?;
+
+        let sse_events_total = register_counter_vec_with_registry!(
+            "router_sse_events_total",
+            "Total number of SSE events received per contract since process start",
+            &["contract"],
+            registry
+        )?;
+
         Ok(Self {
             core_total_routed,
             core_paused,
@@ -228,9 +322,18 @@ impl RouterMetrics {
             execution_total_executions,
             execution_total_errors,
             execution_max_retries,
+            access_role_member_count,
+            access_blacklist_size,
+            timelock_pending_operations,
+            multicall_total_batches,
+            multicall_batch_success_total,
+            multicall_batch_failure_total,
             scrape_duration_seconds,
             scrape_errors_total,
             up,
+            sse_connected,
+            sse_reconnects_total,
+            sse_events_total,
         })
     }
 }

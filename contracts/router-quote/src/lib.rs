@@ -222,7 +222,7 @@ impl RouterQuote {
             price_impact_bps,
         };
         env.events().publish(
-            (Symbol::new(&env, "quote_calculated"),),
+            (Symbol::new(&env, router_common::EVENT_QUOTE_GENERATED),),
             (request.route, amount_out, fee_amount, price_impact_bps),
         );
         Ok(response)
@@ -262,9 +262,9 @@ impl RouterQuote {
         requests: Vec<QuoteRequest>,
     ) -> Result<QuoteResponse, QuoteError> {
         let quotes = Self::get_quotes(env.clone(), requests)?;
-        let mut best_quote = quotes.get(0).unwrap();
+        let mut best_quote = quotes.get(0).ok_or(QuoteError::NoQuotesProvided)?;
         for i in 1..quotes.len() {
-            let quote = quotes.get(i).unwrap();
+            let quote = quotes.get(i).ok_or(QuoteError::NoQuotesProvided)?;
             if quote.amount_out > best_quote.amount_out {
                 best_quote = quote;
             }
@@ -381,7 +381,7 @@ impl RouterQuote {
         Self::require_admin(&env, &current)?;
         env.storage().instance().set(&DataKey::Admin, &new_admin);
         env.events().publish(
-            (Symbol::new(&env, "admin_transferred"),),
+            (Symbol::new(&env, router_common::EVENT_ADMIN_TRANSFERRED),),
             (current, new_admin),
         );
         Ok(())
@@ -440,7 +440,7 @@ impl RouterQuote {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use soroban_sdk::{testutils::Address as _, Env, String};
+    use soroban_sdk::{testutils::Address as _, testutils::Events, Env, IntoVal, String, Symbol};
 
     fn setup() -> (Env, Address, RouterQuoteClient<'static>) {
         let env = Env::default();
@@ -560,6 +560,29 @@ mod tests {
         };
         let response = client.get_quote(&request);
         assert_eq!(response.price_impact_bps, response.fee_bps as i128);
+    }
+
+    #[test]
+    fn test_get_quote_emits_quote_generated_event() {
+        // Regression test for Issue #193: the event emitted by `get_quote` must
+        // use the canonical topic `router_common::EVENT_QUOTE_GENERATED` — this
+        // fails if the emitted name ever drifts from the shared constant.
+        let (env, _admin, client) = setup();
+        let request = QuoteRequest {
+            route: String::from_str(&env, "uniswap"),
+            token_in: Address::generate(&env),
+            token_out: Address::generate(&env),
+            amount_in: 10000,
+        };
+        client.get_quote(&request);
+
+        let events = env.events().all();
+        let last = events.last().unwrap();
+        let topic: Symbol = last.1.get(0).unwrap().into_val(&env);
+        assert_eq!(
+            topic,
+            Symbol::new(&env, router_common::EVENT_QUOTE_GENERATED)
+        );
     }
 
     #[test]
@@ -891,6 +914,24 @@ mod tests {
         let new_admin = Address::generate(&env);
         client.transfer_admin(&admin, &new_admin);
         assert_eq!(client.admin(), new_admin);
+    }
+
+    #[test]
+    fn test_transfer_admin_emits_admin_transferred_event() {
+        // Regression test for Issue #189: the event emitted by `transfer_admin`
+        // must use the canonical topic `router_common::EVENT_ADMIN_TRANSFERRED`
+        // — this fails if the emitted name ever drifts from the shared constant.
+        let (env, admin, client) = setup();
+        let new_admin = Address::generate(&env);
+        client.transfer_admin(&admin, &new_admin);
+
+        let events = env.events().all();
+        let last = events.last().unwrap();
+        let topic: Symbol = last.1.get(0).unwrap().into_val(&env);
+        assert_eq!(
+            topic,
+            Symbol::new(&env, router_common::EVENT_ADMIN_TRANSFERRED)
+        );
     }
 
     #[test]

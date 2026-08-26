@@ -32,6 +32,7 @@
 //! - `admin_transferred`      — Admin transferred (old, new)
 //! - `min_delay_updated`      — Min delay changed (new_delay)
 
+use router_common::{EVENT_ADMIN_TRANSFERRED, EVENT_OP_QUEUED};
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, xdr::ToXdr, Address, Bytes, Env, String,
     Symbol, Vec,
@@ -191,7 +192,7 @@ impl RouterTimelock {
             .set(&DataKey::PendingCount, &(count + 1));
 
         env.events().publish(
-            (Symbol::new(&env, "op_queued"),),
+            (Symbol::new(&env, EVENT_OP_QUEUED),),
             (op_id.clone(), target, eta, grace_period_seconds),
         );
 
@@ -567,7 +568,7 @@ impl RouterTimelock {
         Self::require_admin(&env, &current)?;
         env.storage().instance().set(&DataKey::Admin, &new_admin);
         env.events().publish(
-            (Symbol::new(&env, "admin_transferred"),),
+            (Symbol::new(&env, EVENT_ADMIN_TRANSFERRED),),
             (current, new_admin),
         );
         Ok(())

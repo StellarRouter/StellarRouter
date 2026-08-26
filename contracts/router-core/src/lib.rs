@@ -111,13 +111,13 @@ impl soroban_sdk::TryFromVal<soroban_sdk::Env, RouteRegisterInput> for soroban_s
         use soroban_sdk::{EnvBase, TryIntoVal, Val};
         const KEYS: [&str; 3] = ["address", "metadata", "name"];
         let vals: [Val; 3] = [
-            (&val.address)
+            val.address
                 .try_into_val(env)
                 .map_err(|_| soroban_sdk::ConversionError)?,
-            (&val.metadata)
+            val.metadata
                 .try_into_val(env)
                 .map_err(|_| soroban_sdk::ConversionError)?,
-            (&val.name)
+            val.name
                 .try_into_val(env)
                 .map_err(|_| soroban_sdk::ConversionError)?,
         ];
@@ -498,6 +498,11 @@ impl RouterCore {
             env.storage()
                 .instance()
                 .set(&DataKey::Route(route.name.clone()), &entry);
+            if let Some(meta) = route.metadata.clone() {
+                env.storage()
+                    .instance()
+                    .set(&DataKey::Metadata(route.name.clone()), &meta);
+            }
 
             route_names.push_back(route.name.clone());
 
@@ -510,6 +515,14 @@ impl RouterCore {
         env.storage()
             .instance()
             .set(&DataKey::RouteNames, &route_names);
+        let count: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::RouteCount)
+            .unwrap_or(0);
+        env.storage()
+            .instance()
+            .set(&DataKey::RouteCount, &(count + routes.len()));
 
         Ok(())
     }
@@ -588,10 +601,22 @@ impl RouterCore {
             env.storage()
                 .instance()
                 .remove(&DataKey::Route(name.clone()));
+            env.storage()
+                .instance()
+                .remove(&DataKey::Metadata(name.clone()));
 
             env.events()
                 .publish((Symbol::new(&env, "route_removed"),), name.clone());
         }
+
+        let count: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::RouteCount)
+            .unwrap_or(0);
+        env.storage()
+            .instance()
+            .set(&DataKey::RouteCount, &count.saturating_sub(names.len()));
 
         Ok(())
     }
@@ -1244,6 +1269,9 @@ impl RouterCore {
         if len == 0 {
             return true;
         }
+        if len > 64 {
+            return false;
+        }
         let mut buf = [0u8; 64];
         name.copy_into_slice(&mut buf[..len]);
         buf[..len]
@@ -1304,12 +1332,14 @@ impl RouterCore {
 
 #[cfg(test)]
 mod tests {
+    extern crate alloc;
     extern crate std;
     use super::*;
     use soroban_sdk::{
         testutils::{Address as _, Events},
         vec, Env, IntoVal, String,
     };
+    use std::string::ToString;
 
     fn setup() -> (Env, Address, RouterCoreClient<'static>) {
         let env = Env::default();
@@ -1918,11 +1948,7 @@ mod tests {
         let name = String::from_str(&env, "oracle");
         let addr = Address::generate(&env);
         let description = String::from_str(&env, "Oracle price feed");
-        let tags = vec![
-            &env,
-            Symbol::new(&env, "defi"),
-            Symbol::new(&env, "oracle"),
-        ];
+        let tags = vec![&env, Symbol::new(&env, "defi"), Symbol::new(&env, "oracle")];
         let owner = admin.clone();
 
         let metadata = Some(RouteMetadata {
@@ -2101,7 +2127,7 @@ mod tests {
         // 6 tags — must fail
         let mut tags = Vec::new(&env);
         for i in 0..6u32 {
-            tags.push_back(String::from_str(&env, &i.to_string()));
+            tags.push_back(Symbol::new(&env, &i.to_string()));
         }
         let metadata = Some(RouteMetadata {
             description: String::from_str(&env, "valid"),
@@ -2233,7 +2259,10 @@ mod tests {
             tags,
             owner: Address::generate(&env),
         });
-        assert!(client.try_update_metadata(&admin, &name, &metadata).is_ok());
+        assert_eq!(
+            client.try_update_metadata(&admin, &name, &metadata),
+            Err(Ok(RouterError::InvalidMetadata))
+        );
     }
 
     #[test]
@@ -2360,8 +2389,8 @@ mod tests {
         // because the intermediate alias is not a registered route.
         let (env, admin, client) = setup();
         let oracle = String::from_str(&env, "oracle");
-        let alias_a = String::from_str(&env, "oracle_a");
-        let alias_b = String::from_str(&env, "oracle_b");
+        let alias_a = String::from_str(&env, "oracle-a");
+        let alias_b = String::from_str(&env, "oracle-b");
         let addr = Address::generate(&env);
 
         client.register_route(&admin, &oracle, &addr, &None);
@@ -2377,7 +2406,7 @@ mod tests {
         // After remove_route, the alias is cleaned up and resolving it returns RouteNotFound.
         let (env, admin, client) = setup();
         let oracle = String::from_str(&env, "oracle");
-        let alias = String::from_str(&env, "oracle_v1");
+        let alias = String::from_str(&env, "oracle-v1");
         let addr = Address::generate(&env);
 
         client.register_route(&admin, &oracle, &addr, &None);
@@ -2399,7 +2428,7 @@ mod tests {
         // Creating an alias with the same name as an existing alias returns RouteAlreadyExists.
         let (env, admin, client) = setup();
         let oracle = String::from_str(&env, "oracle");
-        let alias = String::from_str(&env, "oracle_v1");
+        let alias = String::from_str(&env, "oracle-v1");
         let addr = Address::generate(&env);
 
         client.register_route(&admin, &oracle, &addr, &None);
@@ -3038,7 +3067,7 @@ mod tests {
         let addr2 = Address::generate(&env);
 
         let description = String::from_str(&env, "Oracle price feed");
-        let tags = vec![&env, String::from_str(&env, "defi"), String::from_str(&env, "oracle")];
+        let tags = vec![&env, Symbol::new(&env, "defi"), Symbol::new(&env, "oracle")];
         let metadata = Some(RouteMetadata {
             description: description.clone(),
             tags: tags.clone(),
@@ -3241,8 +3270,14 @@ mod tests {
         client.remove_routes_batch(&admin, &names);
 
         // Verify routes were removed
-        assert_eq!(client.try_resolve(&oracle), Err(Ok(RouterError::RouteNotFound)));
-        assert_eq!(client.try_resolve(&vault), Err(Ok(RouterError::RouteNotFound)));
+        assert_eq!(
+            client.try_resolve(&oracle),
+            Err(Ok(RouterError::RouteNotFound))
+        );
+        assert_eq!(
+            client.try_resolve(&vault),
+            Err(Ok(RouterError::RouteNotFound))
+        );
         assert_eq!(client.resolve(&swap), addr);
         assert_eq!(client.route_count(), 1);
     }
