@@ -165,11 +165,9 @@ struct JsonRpcError {
 #[derive(Deserialize, Debug)]
 pub struct SimulateTransactionResult {
     #[serde(rename = "minResourceFee", default)]
-    #[allow(dead_code)]
     pub min_resource_fee: String,
     pub error: Option<String>,
     #[serde(default)]
-    #[allow(dead_code)]
     pub events: Vec<serde_json::Value>,
 }
 
@@ -191,6 +189,7 @@ struct InvokeResult {
 
 /// Raw response from the `getTransaction` RPC method.
 #[derive(Deserialize, Debug)]
+#[allow(dead_code)]
 pub struct GetTransactionResult {
     /// Transaction status: "SUCCESS", "FAILED", "NOT_FOUND", "PENDING"
     pub status: String,
@@ -212,6 +211,9 @@ pub struct FeeBreakdown {
     pub surge_multiplier: u32,
     pub high_load: bool,
     pub would_succeed: bool,
+    /// Diagnostic events emitted during Soroban simulation.
+    /// Empty when the heuristic fee estimator was used as a fallback.
+    pub simulation_events: Vec<serde_json::Value>,
 }
 
 impl SorobanRpcClient {
@@ -264,6 +266,7 @@ impl SorobanRpcClient {
                     surge_multiplier,
                     high_load,
                     would_succeed,
+                    simulation_events: result.events,
                 })
             }
             Err(_) => Ok(self.heuristic_estimate(amount, network_load_bps)),
@@ -492,6 +495,7 @@ impl SorobanRpcClient {
             surge_multiplier,
             high_load,
             would_succeed: true,
+            simulation_events: vec![],
         }
     }
 }

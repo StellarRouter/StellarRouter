@@ -334,7 +334,7 @@ impl RouterExecution {
                         simulated: request.simulate_first,
                     };
                     env.events().publish(
-                        (Symbol::new(&env, "execution_result"),),
+                        (Symbol::new(&env, router_common::EVENT_EXECUTION_RESULT),),
                         (&request.target, &request.function, true, attempts),
                     );
                     return Ok(exec_result);
@@ -350,7 +350,7 @@ impl RouterExecution {
                             attempts - 1,
                         );
                         env.events().publish(
-                            (Symbol::new(&env, "execution_retry"),),
+                            (Symbol::new(&env, router_common::EVENT_EXECUTION_RETRY),),
                             (&request.target, &request.function, attempts, delay_ms),
                         );
                         // Retry
@@ -425,7 +425,7 @@ impl RouterExecution {
         let total_fee = (base_fee + resource_fee) * surge_multiplier as i128 / 100;
 
         env.events().publish(
-            (Symbol::new(&env, "fee_estimated"),),
+            (Symbol::new(&env, router_common::EVENT_FEE_ESTIMATED),),
             (total_fee, high_load),
         );
 
@@ -481,7 +481,7 @@ impl RouterExecution {
         };
 
         env.events().publish(
-            (Symbol::new(&env, "simulation_result"),),
+            (Symbol::new(&env, router_common::EVENT_SIMULATION_RESULT),),
             (&target, &function, sim_ok),
         );
 
@@ -557,11 +557,7 @@ impl RouterExecution {
             .get(&DataKey::ExecHistory)
             .unwrap_or(Vec::new(&env));
         let len = history.len();
-        let take = if limit as u32 > len {
-            len
-        } else {
-            limit as u32
-        };
+        let take = if limit > len { len } else { limit };
         let mut result = Vec::new(&env);
         // Return newest-first: iterate from the end
         let mut i = len;
@@ -629,7 +625,7 @@ impl RouterExecution {
         // Emit a structured error event; does not leak internal details beyond
         // the error code and attempt count.
         env.events().publish(
-            (Symbol::new(env, "execution_error"),),
+            (Symbol::new(env, router_common::EVENT_EXECUTION_ERROR),),
             (target, function, error as u32, attempts),
         );
     }
@@ -733,7 +729,7 @@ mod tests {
             let topic: soroban_sdk::Vec<soroban_sdk::Val> = event.1;
             if topic.len() > 0 {
                 if let Ok(sym) = Symbol::try_from_val(&env, &topic.get(0).unwrap()) {
-                    if sym == Symbol::new(&env, "execution_retry") {
+                    if sym == Symbol::new(&env, router_common::EVENT_EXECUTION_RETRY) {
                         retry_count += 1;
                     }
                 }
@@ -910,7 +906,10 @@ mod tests {
         client.transfer_admin(&admin, &new_admin);
         let event = env.events().all().last().unwrap().clone();
         let topic: Symbol = event.1.get(0).unwrap().into_val(&env);
-        assert_eq!(topic, Symbol::new(&env, "admin_transferred"));
+        assert_eq!(
+            topic,
+            Symbol::new(&env, router_common::EVENT_ADMIN_TRANSFERRED)
+        );
     }
 
     #[test]

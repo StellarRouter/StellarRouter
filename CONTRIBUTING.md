@@ -11,6 +11,7 @@ Thank you for your interest in contributing! This document covers everything you
 | Rust (stable, 1.75+) | `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \| sh` |
 | wasm32 target | `rustup target add wasm32-unknown-unknown` |
 | Stellar CLI | `cargo install --locked stellar-cli` |
+| cargo-tarpaulin (for coverage) | `cargo install cargo-tarpaulin` |
 | Docker (optional) | [docs.docker.com](https://docs.docker.com/get-docker/) |
 
 ### Clone and build
@@ -112,6 +113,16 @@ See [INTEGRATION_TESTS.md](INTEGRATION_TESTS.md) for full details.
 ```bash
 cargo build --target wasm32-unknown-unknown --release
 ```
+
+### Code coverage
+
+```bash
+make coverage
+```
+
+Requires [cargo-tarpaulin](https://github.com/xd009642/tarpaulin) (install with `cargo install cargo-tarpaulin`).
+Runs coverage for the off-chain crates and writes an HTML report (`tarpaulin-report.html`) plus a
+Cobertura XML report (`cobertura.xml`) under `./coverage`.
 
 ## Code Style
 

@@ -18,12 +18,13 @@ use axum::{
     extract::DefaultBodyLimit,
     middleware::from_fn_with_state,
     routing::{get, post},
-    Json, Router,
+    Router,
 };
 use utoipa::OpenApi;
 use utoipa_swagger_ui::SwaggerUi;
 
 use clap::Parser;
+use router_off_chain_common::logging::init_logging;
 use std::net::SocketAddr;
 use tracing::info;
 
@@ -50,10 +51,6 @@ struct Args {
     #[arg(long, env = "SOROBAN_RPC_URL")]
     rpc_url: String,
 
-    /// Router execution contract ID
-    #[arg(long, env = "ROUTER_EXECUTION_CONTRACT_ID")]
-    execution_contract_id: String,
-
     /// Router core contract ID (for GET /routes)
     #[arg(long, env = "ROUTER_CORE_CONTRACT_ID", default_value = "")]
     router_core_contract_id: String,
@@ -61,12 +58,12 @@ struct Args {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::from_default_env()
-                .add_directive(tracing::Level::INFO.into()),
-        )
-        .init();
+    // Use the shared structured JSON logger from router-off-chain-common.
+    // JSON output means every field value — including any attacker-controlled
+    // strings that reach a log call — is serialized as a JSON string literal.
+    // A newline inside a field becomes the two-character sequence `\n`, not a
+    // real line break, so it can never start a forged log record.
+    init_logging("router_api_server=info").context("failed to initialise logging")?;
 
     let args = Args::parse();
 
@@ -105,13 +102,7 @@ async fn main() -> Result<()> {
         "Router fee-estimation config loaded"
     );
 
-    let state = AppState::new(
-        args.rpc_url,
-        args.execution_contract_id,
-        args.router_core_contract_id,
-        auth_config.clone(),
-        fee_config,
-    );
+    let state = AppState::new(args.rpc_url, args.router_core_contract_id, fee_config);
 
     // Spawn the RPC polling producer. It queries the Soroban RPC for each
     // actively-subscribed transaction and forwards status updates into the
@@ -131,14 +122,15 @@ async fn main() -> Result<()> {
         .route("/routes", get(handlers::list_routes))
         .route("/routes/:name", get(handlers::get_route))
         .route("/ws", get(websocket::ws_handler))
-        .route_layer(from_fn_with_state(rate_limiter, rate_limit_middleware))
-        .route_layer(from_fn_with_state(auth_config, auth::auth_middleware));
+        // SECURITY: rate_limit_middleware must be the outermost layer (added last)
+        // so that every request — including those with an invalid or missing API key
+        // — is counted and throttled before auth runs.  Reversing this order would
+        // let an attacker brute-force ROUTER_API_KEY with unlimited attempts per
+        // second because failed-auth responses would never reach the rate limiter.
+        .route_layer(from_fn_with_state(auth_config, auth::auth_middleware))
+        .route_layer(from_fn_with_state(rate_limiter, rate_limit_middleware));
 
     let app = Router::new()
-        .route(
-            "/api-docs/openapi.json",
-            get(|| async { Json(openapi::ApiDoc::openapi()) }),
-        )
         .merge(
             SwaggerUi::new("/swagger-ui").url("/api-docs/openapi.json", openapi::ApiDoc::openapi()),
         )

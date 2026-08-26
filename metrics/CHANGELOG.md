@@ -48,6 +48,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- XDR/strkey/base64 parsing consolidated into the shared `router-off-chain-common::xdr`
+  module; the metrics exporter no longer maintains an independent copy of
+  `decode_contract_id`, `base64_encode`, or the `build_invoke_xdr` helper.
+
+### Added
+- **Metric cardinality limits**: Configurable cap on distinct label values per high-cardinality metric (`--max-cardinality` / `ROUTER_MAX_CARDINALITY`, default: 100). When the cap is exceeded, overflow values are grouped into an `_other` bucket to prevent Prometheus label explosion. Affects: `router_core_route_paused`, `router_middleware_circuit_open`, `router_middleware_failure_count`, `router_middleware_route_calls_total`, `router_middleware_route_failures_total`, `router_registry_version_count`. See README.md for details.
+- **Real-time event streaming via Stellar SSE** (`--event-mode sse` / `ROUTER_EVENT_MODE=sse`):
+  - New `EventMode` CLI flag (`poll` | `sse`) and companion env var `ROUTER_EVENT_MODE`.
+  - `--horizon-url` / `ROUTER_HORIZON_URL` — Horizon base URL for SSE subscriptions.
+  - `--sse-max-reconnects` / `ROUTER_SSE_MAX_RECONNECTS` — max reconnect attempts (0 = unlimited).
+  - `--sse-reconnect-delay-ms` / `ROUTER_SSE_RECONNECT_DELAY_MS` — base back-off delay.
+  - `--sse-reconnect-max-delay-ms` / `ROUTER_SSE_RECONNECT_MAX_DELAY_MS` — back-off ceiling.
+  - Bootstrap poll on startup (same as poll mode) so state-based metrics are immediately available.
+  - Automatic reconnect with exponential back-off when the SSE connection drops.
+  - New SSE health metrics:
+    - `router_sse_connected{contract}` — 1 while the SSE stream is active, 0 otherwise.
+    - `router_sse_reconnects_total{contract}` — cumulative reconnect attempts.
+    - `router_sse_events_total{contract}` — cumulative events received over SSE.
+  - Poll mode is **fully unaffected** and remains the default.
+- **Multi-endpoint RPC failover** (`--rpc-urls` / `ROUTER_RPC_URLS`):
+  - Accepts a comma-separated list or repeated `--rpc-urls` flags.
+  - Automatic failover with per-endpoint retry budgets when an endpoint is unreachable.
+  - Backward compatible: `--rpc-url` / `ROUTER_RPC_URL` still works as a single endpoint.
+
+### Fixed
+- Fixed pre-existing unclosed delimiter in `rpc.rs` (`retry_on_transient_failure_mock` test)
+- Fixed pre-existing syntax error in `server.rs` (`ready_handler` function)
+
 ### Planned
 - Support for custom metric labels via configuration
 - Support for scraping `router-access` contract metrics (role counts, blacklist size)
@@ -56,8 +85,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Alerting rule templates for Prometheus
 - Helm chart for Kubernetes deployment
 - Integration with Stellar Horizon for transaction-level metrics
-- Real-time event streaming via Stellar SSE
 - Proper XDR encoding/decoding using `stellar-xdr` crate
-- Metric cardinality limits to prevent label explosion
 - Support for multiple network endpoints (failover)
 - Metric aggregation across multiple contract instances
