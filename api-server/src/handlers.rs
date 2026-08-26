@@ -13,6 +13,7 @@ use tracing::{error, info};
 
 use crate::{
     state::AppState,
+    types::{ErrorResponse, FeeEstimate, RouteBreakdown, SimulateRequest, SimulateResponse, SimulationDetail, StatsResponse},
     types::{
         ErrorResponse, FeeEstimate, RouteBreakdown, SimulateRequest, SimulateResponse,
         SimulationDetail, StatsResponse,
@@ -137,6 +138,7 @@ pub async fn simulate(
         } else {
             "Simulation indicates transaction would fail".to_string()
         },
+        simulation_events: breakdown.simulation_events,
     }))
 }
 
