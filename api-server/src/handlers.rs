@@ -10,7 +10,7 @@ use tracing::{error, info};
 
 use crate::{
     state::AppState,
-    types::{ErrorResponse, FeeEstimate, SimulateRequest, SimulateResponse, SimulationDetail, StatsResponse},
+    types::{ErrorResponse, FeeEstimate, RouteBreakdown, SimulateRequest, SimulateResponse, SimulationDetail, StatsResponse},
 };
 
 #[utoipa::path(
@@ -102,6 +102,13 @@ pub async fn simulate(
             )
         })?;
 
+    let route_breakdown = req.route_details.as_ref().map(|details| RouteBreakdown {
+        route_name: details.name.clone(),
+        version: details.version.unwrap_or(0),
+        target_contract: req.target.clone(),
+        function: req.function.clone(),
+    });
+
     Ok(Json(SimulateResponse {
         success: breakdown.would_succeed,
         estimated_fees: FeeEstimate {
@@ -116,11 +123,13 @@ pub async fn simulate(
             function: req.function,
             would_succeed: breakdown.would_succeed,
         },
+        route_breakdown,
         message: if breakdown.would_succeed {
             "Simulation successful".to_string()
         } else {
             "Simulation indicates transaction would fail".to_string()
         },
+        simulation_events: breakdown.simulation_events,
     }))
 }
 

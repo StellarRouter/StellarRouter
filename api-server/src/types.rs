@@ -41,7 +41,13 @@ pub struct SimulateResponse {
     pub success: bool,
     pub estimated_fees: FeeEstimate,
     pub simulation: SimulationDetail,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub route_breakdown: Option<RouteBreakdown>,
     pub message: String,
+    /// Diagnostic events emitted during Soroban simulation.
+    /// Omitted from JSON when empty (heuristic fallback path).
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub simulation_events: Vec<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -60,7 +66,6 @@ pub struct SimulationDetail {
     pub would_succeed: bool,
 }
 
-#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RouteBreakdown {
     pub route_name: String,
