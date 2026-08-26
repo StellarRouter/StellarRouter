@@ -2603,4 +2603,52 @@ mod tests {
         let state = client.rate_limit_state(&route, &caller).unwrap();
         assert_eq!(state.total_violations, 0);
     }
+
+    // ── Issue #160: reset_route_call_log ─────────────────────────────────────
+
+    #[test]
+    fn test_reset_route_call_log_clears_existing_entries() {
+        let (env, admin, client) = setup();
+        let route = String::from_str(&env, "oracle/get_price");
+        let caller = Address::generate(&env);
+        client.configure_route(&admin, &route, &0, &0, &true, &0, &0, &5);
+
+        client.post_call(&caller, &route, &true);
+        client.post_call(&caller, &route, &false);
+        assert_eq!(client.get_call_log(&route).len(), 2);
+
+        client.reset_route_call_log(&admin, &route);
+
+        assert_eq!(client.get_call_log(&route).len(), 0);
+        assert_eq!(client.get_call_log_length(&route), 0);
+    }
+
+    #[test]
+    fn test_reset_route_call_log_unauthorized_fails() {
+        let (env, admin, client) = setup();
+        let route = String::from_str(&env, "oracle/get_price");
+        let caller = Address::generate(&env);
+        client.configure_route(&admin, &route, &0, &0, &true, &0, &0, &5);
+
+        client.post_call(&caller, &route, &true);
+
+        let attacker = Address::generate(&env);
+        let result = client.try_reset_route_call_log(&attacker, &route);
+        assert_eq!(result, Err(Ok(MiddlewareError::Unauthorized)));
+
+        // Log must be untouched by the unauthorized attempt
+        assert_eq!(client.get_call_log(&route).len(), 1);
+    }
+
+    #[test]
+    fn test_reset_route_call_log_no_existing_log_is_noop() {
+        let (env, admin, client) = setup();
+        let route = String::from_str(&env, "oracle/get_price");
+        client.configure_route(&admin, &route, &0, &0, &true, &0, &0, &5);
+
+        // No calls have been logged yet — resetting must succeed as a no-op.
+        client.reset_route_call_log(&admin, &route);
+
+        assert_eq!(client.get_call_log(&route).len(), 0);
+    }
 }
