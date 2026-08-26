@@ -158,6 +158,84 @@ impl IntoResponse for AuthError {
 mod tests {
     use super::*;
     use axum::http::HeaderMap;
+    use std::sync::Mutex;
+
+    // Guard serialises tests that mutate environment variables so they don't
+    // interfere with each other when the test suite runs in parallel.
+    static ENV_MUTEX: Mutex<()> = Mutex::new(());
+
+    // ── AuthConfig::from_env tests ────────────────────────────────────
+
+    #[test]
+    fn test_from_env_auth_disabled_by_default() {
+        let _guard = ENV_MUTEX.lock().unwrap();
+        env::remove_var("ROUTER_AUTH_ENABLED");
+        env::remove_var("ROUTER_API_KEY");
+
+        let config = AuthConfig::from_env().expect("should succeed when auth is disabled");
+        assert!(!config.enabled);
+        assert!(config.api_key.is_none());
+    }
+
+    #[test]
+    fn test_from_env_auth_enabled_with_key() {
+        let _guard = ENV_MUTEX.lock().unwrap();
+        env::set_var("ROUTER_AUTH_ENABLED", "true");
+        env::set_var("ROUTER_API_KEY", "my-secret-key");
+
+        let config = AuthConfig::from_env().expect("should succeed when auth is enabled and key is set");
+        assert!(config.enabled);
+        assert_eq!(config.api_key.as_deref(), Some("my-secret-key"));
+
+        env::remove_var("ROUTER_AUTH_ENABLED");
+        env::remove_var("ROUTER_API_KEY");
+    }
+
+    #[test]
+    fn test_from_env_auth_enabled_without_key_fails() {
+        let _guard = ENV_MUTEX.lock().unwrap();
+        env::set_var("ROUTER_AUTH_ENABLED", "true");
+        env::remove_var("ROUTER_API_KEY");
+
+        let result = AuthConfig::from_env();
+        assert!(
+            result.is_err(),
+            "should fail when ROUTER_AUTH_ENABLED=true but ROUTER_API_KEY is unset"
+        );
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("ROUTER_AUTH_ENABLED=true") && err.contains("ROUTER_API_KEY"),
+            "error message should mention both variables; got: {err}"
+        );
+
+        env::remove_var("ROUTER_AUTH_ENABLED");
+    }
+
+    #[test]
+    fn test_from_env_auth_explicitly_disabled_no_key() {
+        let _guard = ENV_MUTEX.lock().unwrap();
+        env::set_var("ROUTER_AUTH_ENABLED", "false");
+        env::remove_var("ROUTER_API_KEY");
+
+        let config = AuthConfig::from_env()
+            .expect("should succeed when auth is explicitly disabled");
+        assert!(!config.enabled);
+
+        env::remove_var("ROUTER_AUTH_ENABLED");
+    }
+
+    #[test]
+    fn test_from_env_key_set_but_auth_disabled() {
+        let _guard = ENV_MUTEX.lock().unwrap();
+        env::remove_var("ROUTER_AUTH_ENABLED");
+        env::set_var("ROUTER_API_KEY", "unused-key");
+
+        // Key present but auth not explicitly enabled — auth stays off.
+        let config = AuthConfig::from_env().expect("should succeed");
+        assert!(!config.enabled);
+
+        env::remove_var("ROUTER_API_KEY");
+    }
 
     #[test]
     fn test_extract_bearer_token() {
