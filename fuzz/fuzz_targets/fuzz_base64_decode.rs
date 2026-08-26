@@ -1,9 +1,9 @@
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
-use router_api_server::xdr::{base64_decode, base64_encode};
+use router_off_chain_common::xdr::{base64_decode, base64_encode};
 
-// Fuzz the base64 decoder with arbitrary string input and verify the
+// Fuzz the shared base64 decoder with arbitrary string input and verify the
 // encode→decode round-trip is stable.
 //
 // `base64_decode` must never panic regardless of input.

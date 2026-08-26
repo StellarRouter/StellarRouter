@@ -189,6 +189,7 @@ struct InvokeResult {
 
 /// Raw response from the `getTransaction` RPC method.
 #[derive(Deserialize, Debug)]
+#[allow(dead_code)]
 pub struct GetTransactionResult {
     /// Transaction status: "SUCCESS", "FAILED", "NOT_FOUND", "PENDING"
     pub status: String,

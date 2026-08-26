@@ -89,14 +89,12 @@ Real-time transaction status updates via WebSocket.
 
 - Rust 1.78+
 - Soroban RPC endpoint URL
-- Router execution contract ID
 
 ### Environment Variables
 
 ```bash
 export LISTEN_ADDR="127.0.0.1:8080"
 export SOROBAN_RPC_URL="https://soroban-testnet.stellar.org"
-export ROUTER_EXECUTION_CONTRACT_ID="CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4"
 export ROUTER_API_MAX_REQUESTS="60"
 export ROUTER_API_RATE_WINDOW_SECS="60"
 ```
@@ -130,7 +128,6 @@ cargo run --release -p router-api-server
 docker build -t router-api-server -f Dockerfile.api .
 docker run -p 8080:8080 \
   -e SOROBAN_RPC_URL="https://soroban-testnet.stellar.org" \
-  -e ROUTER_EXECUTION_CONTRACT_ID="CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4" \
   router-api-server
 ```
 

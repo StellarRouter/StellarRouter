@@ -6,7 +6,6 @@ use axum::{
     response::IntoResponse,
 };
 use futures_util::{SinkExt, StreamExt};
-use serde_json::json;
 use tokio::sync::{
     broadcast::{error::RecvError, Receiver},
     mpsc::Sender,
@@ -15,7 +14,7 @@ use tracing::{error, info, warn};
 
 use crate::{
     state::AppState,
-    types::{SubscribeMessage, TransactionStatusEvent},
+    types::{SubscribeMessage, TransactionStatusEvent, WsMessage},
 };
 
 const DEFAULT_WS_FAN_IN_CAPACITY: usize = 1000;
@@ -68,29 +67,25 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
 
                                     let already = subscriptions.iter().any(|(id, _)| id == &sub_msg.tx_id);
                                     if !already {
-                    if subscriptions.len() >= MAX_SUBSCRIPTIONS_PER_CONNECTION {
-                           warn!(
-                                "WebSocket subscription limit reached ({})",
-                                 MAX_SUBSCRIPTIONS_PER_CONNECTION
-                            );
+                                        if subscriptions.len() >= MAX_SUBSCRIPTIONS_PER_CONNECTION {
+                                            warn!(
+                                                "WebSocket subscription limit reached ({})",
+                                                MAX_SUBSCRIPTIONS_PER_CONNECTION
+                                            );
 
-                            let response = json!({
-                                    "msg_type": "error",
-                                    "data": {
-                                    "message": "Maximum subscription limit reached"
-                                    }
-                            });
+                                            let response =
+                                                WsMessage::error("Maximum subscription limit reached");
 
-                            if let Err(e) = sender
-                                    .send(Message::Text(response.to_string()))
-                                 .await
-                            {
-                                     error!("Failed to send subscription limit error: {}", e);
-                                     break;
-                            }
+                                            if let Err(e) = sender
+                                                .send(Message::Text(response.to_json_string()))
+                                                .await
+                                            {
+                                                error!("Failed to send subscription limit error: {}", e);
+                                                break;
+                                            }
 
-                            continue;
-                    }
+                                            continue;
+                                        }
                                         let cancel = tokio_util::sync::CancellationToken::new();
                                         subscriptions.push((sub_msg.tx_id.clone(), cancel.clone()));
                                         state.add_subscriber(sub_msg.tx_id.clone());
@@ -128,16 +123,10 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                                         state.add_subscriber(sub_msg.tx_id.clone());
                                     }
 
-                                    let response = json!({
-                                        "msg_type": "subscribed",
-                                        "data": {
-                                            "tx_id": sub_msg.tx_id,
-                                            "status": "subscribed",
-                                        },
-                                    });
+                                    let response = WsMessage::subscribed(sub_msg.tx_id);
 
                                     if let Err(e) = sender
-                                        .send(Message::Text(response.to_string()))
+                                        .send(Message::Text(response.to_json_string()))
                                         .await
                                     {
                                         error!("Failed to send subscription confirmation: {}", e);
@@ -154,12 +143,9 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
 
                                     // Send ack so the client can synchronize before
                                     // checking that no further events arrive.
-                                    let response = json!({
-                                        "msg_type": "unsubscribed",
-                                        "data": { "tx_id": sub_msg.tx_id },
-                                    });
+                                    let response = WsMessage::unsubscribed(sub_msg.tx_id);
                                     if let Err(e) = sender
-                                        .send(Message::Text(response.to_string()))
+                                        .send(Message::Text(response.to_json_string()))
                                         .await
                                     {
                                         error!("Failed to send unsubscribe ack: {}", e);
@@ -193,17 +179,9 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                 // Guard: only forward if the subscription is still active.
                 let still_subscribed = subscriptions.iter().any(|(id, _)| id == &event.tx_id);
                 if still_subscribed {
-                    let response = json!({
-                        "msg_type": "status_update",
-                        "data": {
-                            "tx_id": event.tx_id,
-                            "status": event.status,
-                            "timestamp": event.timestamp,
-                            "message": event.message,
-                        },
-                    });
+                    let response = WsMessage::status_update(&event);
 
-                    if let Err(e) = sender.send(Message::Text(response.to_string())).await {
+                    if let Err(e) = sender.send(Message::Text(response.to_json_string())).await {
                         error!("Failed to send status update: {}", e);
                         break;
                     }

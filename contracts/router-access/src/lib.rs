@@ -54,6 +54,8 @@ pub enum DataKey {
     RoleExpiry(String, Address),
     BlacklistReason(Address),
     BlacklistExpiry(Address),
+    BlacklistCount, // instance -> total distinct blacklisted addresses
+    AllRoles,       // instance -> Vec<String> of every role name ever granted
 }
 
 // ── Errors ────────────────────────────────────────────────────────────────────
@@ -129,6 +131,8 @@ impl RouterAccess {
         env.storage()
             .instance()
             .set(&DataKey::HasRole(role.clone(), account.clone()), &true);
+
+        Self::record_role_name(&env, &role);
 
         // Add to indexed member storage (append-only; stale entries filtered at read time)
         if !env
@@ -385,6 +389,21 @@ impl RouterAccess {
             return Err(AccessError::CannotBlacklistAdmin);
         }
 
+        if !env
+            .storage()
+            .instance()
+            .has(&DataKey::Blacklisted(target.clone()))
+        {
+            let c: u32 = env
+                .storage()
+                .instance()
+                .get(&DataKey::BlacklistCount)
+                .unwrap_or(0);
+            env.storage()
+                .instance()
+                .set(&DataKey::BlacklistCount, &(c + 1));
+        }
+
         env.storage()
             .instance()
             .set(&DataKey::Blacklisted(target.clone()), &true);
@@ -416,6 +435,20 @@ impl RouterAccess {
     pub fn unblacklist(env: Env, caller: Address, target: Address) -> Result<(), AccessError> {
         caller.require_auth();
         Self::require_super_admin(&env, &caller)?;
+        if env
+            .storage()
+            .instance()
+            .has(&DataKey::Blacklisted(target.clone()))
+        {
+            let c: u32 = env
+                .storage()
+                .instance()
+                .get(&DataKey::BlacklistCount)
+                .unwrap_or(1);
+            env.storage()
+                .instance()
+                .set(&DataKey::BlacklistCount, &(c.saturating_sub(1)));
+        }
         env.storage()
             .instance()
             .remove(&DataKey::Blacklisted(target.clone()));
@@ -473,6 +506,51 @@ impl RouterAccess {
         env.storage()
             .instance()
             .get(&DataKey::AddressRoles(addr))
+            .unwrap_or_else(|| Vec::new(&env))
+    }
+
+    /// Record a role name so it can be enumerated later via [`get_all_roles`].
+    fn record_role_name(env: &Env, role: &String) {
+        let key = DataKey::AllRoles;
+        let mut roles: Vec<String> = env
+            .storage()
+            .instance()
+            .get(&key)
+            .unwrap_or_else(|| Vec::new(env));
+        if !roles.iter().any(|r| &r == role) {
+            roles.push_back(role.clone());
+            env.storage().instance().set(&key, &roles);
+        }
+    }
+
+    /// Return the number of indexed members ever added for `role`.
+    ///
+    /// This is the storage-level member count (`RoleMemberCount`) and may
+    /// include entries that have since been revoked or expired; it is intended
+    /// for operational monitoring rather than exact active membership.
+    pub fn get_role_count(env: Env, role: String) -> u32 {
+        env.storage()
+            .instance()
+            .get(&DataKey::RoleMemberCount(role))
+            .unwrap_or(0)
+    }
+
+    /// Return the total number of distinct addresses currently stored on the
+    /// blacklist (including any entries whose expiry has not been garbage
+    /// collected).
+    pub fn get_blacklist_count(env: Env) -> u32 {
+        env.storage()
+            .instance()
+            .get(&DataKey::BlacklistCount)
+            .unwrap_or(0)
+    }
+
+    /// Return every role name that has ever been granted, for enumeration by
+    /// off-chain tooling (e.g. the metrics exporter).
+    pub fn get_all_roles(env: Env) -> Vec<String> {
+        env.storage()
+            .instance()
+            .get(&DataKey::AllRoles)
             .unwrap_or_else(|| Vec::new(&env))
     }
 
@@ -772,6 +850,8 @@ impl RouterAccess {
             .instance()
             .set(&DataKey::HasRole(role.clone(), account.clone()), &true);
 
+        Self::record_role_name(env, role);
+
         // Add to indexed member storage
         if !env
             .storage()
@@ -1003,7 +1083,6 @@ mod tests {
 
         let expires_at = env.ledger().timestamp() + 100;
         client.grant_role(&admin, &user, &role, &Some(expires_at));
-        client.grant_role(&admin, &user, &role, &Some(100));
 
         client.revoke_role(&admin, &role, &user);
 
@@ -1245,7 +1324,6 @@ mod tests {
         let user = Address::generate(&env);
         let expires_at = env.ledger().timestamp() + 9999;
         client.grant_role(&admin, &user, &role, &Some(expires_at));
-        client.grant_role(&admin, &user, &role, &Some(9999));
         assert!(client.has_role(&role, &user));
         client.expire_role(&admin, &role, &user);
         assert!(!client.has_role(&role, &user));
@@ -1302,7 +1380,6 @@ mod tests {
 
         let expires_at = env.ledger().timestamp() + 10;
         client.grant_role(&admin, &user, &role, &Some(expires_at));
-        client.grant_role(&admin, &user, &role, &Some(10));
 
         let members_before = client.get_role_members(&role, &0, &50);
         assert!(members_before.contains(&user));
@@ -1702,5 +1779,61 @@ mod tests {
         // Both should fail
         assert_eq!(results.get(0).unwrap(), Err(AccessError::Blacklisted));
         assert_eq!(results.get(1).unwrap(), Err(AccessError::Blacklisted));
+    }
+
+    // ── Issue #159: bulk_revoke_role tests ───────────────────────────────────
+
+    #[test]
+    fn test_bulk_revoke_role_empty_targets() {
+        let (env, admin, client) = setup();
+        let role = String::from_str(&env, "operator");
+        let targets = soroban_sdk::Vec::new(&env);
+        // No targets to process, so the all-or-nothing call trivially succeeds.
+        client.bulk_revoke_role(&admin, &role, &targets);
+    }
+
+    #[test]
+    fn test_bulk_revoke_role_all_succeed() {
+        let (env, admin, client) = setup();
+        let role = String::from_str(&env, "operator");
+        let u1 = Address::generate(&env);
+        let u2 = Address::generate(&env);
+        client.grant_role(&admin, &u1, &role, &None);
+        client.grant_role(&admin, &u2, &role, &None);
+        let targets = soroban_sdk::vec![&env, u1.clone(), u2.clone()];
+        client.bulk_revoke_role(&admin, &role, &targets);
+        assert!(!client.has_role(&role, &u1));
+        assert!(!client.has_role(&role, &u2));
+    }
+
+    #[test]
+    fn test_bulk_revoke_role_unauthorized_fails() {
+        let (env, admin, client) = setup();
+        let role = String::from_str(&env, "operator");
+        let u1 = Address::generate(&env);
+        client.grant_role(&admin, &u1, &role, &None);
+        let attacker = Address::generate(&env);
+        let targets = soroban_sdk::vec![&env, u1.clone()];
+        let result = client.try_bulk_revoke_role(&attacker, &role, &targets);
+        assert_eq!(result, Err(Ok(AccessError::Unauthorized)));
+        // Unauthorized call must not have revoked anything.
+        assert!(client.has_role(&role, &u1));
+    }
+
+    #[test]
+    fn test_bulk_revoke_role_partial_failure_rolls_back_all() {
+        let (env, admin, client) = setup();
+        let role = String::from_str(&env, "operator");
+        let u1 = Address::generate(&env);
+        let u2 = Address::generate(&env); // never granted the role
+        client.grant_role(&admin, &u1, &role, &None);
+        let targets = soroban_sdk::vec![&env, u1.clone(), u2.clone()];
+
+        // u1 is processed (and would be revoked) before the loop hits u2 and
+        // errors out. Because bulk_revoke_role is all-or-nothing, the whole
+        // invocation must revert -- u1's role grant must survive untouched.
+        let result = client.try_bulk_revoke_role(&admin, &role, &targets);
+        assert_eq!(result, Err(Ok(AccessError::RoleNotFound)));
+        assert!(client.has_role(&role, &u1));
     }
 }

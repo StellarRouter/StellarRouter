@@ -171,7 +171,7 @@ fn test_access_blacklist_state_is_independent_of_core() {
 #[test]
 fn test_middleware_pre_call_passes_for_enabled_route() {
     let s = setup();
-    let route = String::from_str(&s.env, "oracle/get_price");
+    let route = String::from_str(&s.env, "oracle/get-price");
     let addr = Address::generate(&s.env);
     let caller = Address::generate(&s.env);
 
@@ -186,7 +186,7 @@ fn test_middleware_pre_call_passes_for_enabled_route() {
 #[test]
 fn test_middleware_rate_limit_blocks_after_threshold() {
     let s = setup();
-    let route = String::from_str(&s.env, "oracle/get_price");
+    let route = String::from_str(&s.env, "oracle/get-price");
     let addr = Address::generate(&s.env);
     let caller = Address::generate(&s.env);
 
@@ -207,7 +207,7 @@ fn test_middleware_rate_limit_blocks_after_threshold() {
 #[test]
 fn test_middleware_disabled_route_blocks_pre_call() {
     let s = setup();
-    let route = String::from_str(&s.env, "oracle/get_price");
+    let route = String::from_str(&s.env, "oracle/get-price");
     let addr = Address::generate(&s.env);
     let caller = Address::generate(&s.env);
 

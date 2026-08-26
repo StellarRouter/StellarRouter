@@ -4,13 +4,20 @@ use axum::{
     response::IntoResponse,
     Json,
 };
-use router_off_chain_common::validation::validate_contract_id;
+use router_off_chain_common::logging::sanitize_for_log;
+use router_off_chain_common::validation::{
+    validate_contract_id, validate_function_name, validate_route_name,
+};
 use serde_json::json;
 use tracing::{error, info};
 
 use crate::{
     state::AppState,
     types::{ErrorResponse, FeeEstimate, RouteBreakdown, SimulateRequest, SimulateResponse, SimulationDetail, StatsResponse},
+    types::{
+        ErrorResponse, FeeEstimate, RouteBreakdown, SimulateRequest, SimulateResponse,
+        SimulationDetail, StatsResponse,
+    },
 };
 
 #[utoipa::path(
@@ -65,15 +72,6 @@ pub async fn simulate(
     State(state): State<AppState>,
     Json(req): Json<SimulateRequest>,
 ) -> Result<Json<SimulateResponse>, (StatusCode, Json<ErrorResponse>)> {
-    if req.target.is_empty() || req.function.is_empty() {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            Json(ErrorResponse {
-                error: "target and function are required".to_string(),
-            }),
-        ));
-    }
-
     // Use shared validation from router-off-chain-common
     if let Err(e) = validate_contract_id(&req.target) {
         return Err((
@@ -87,7 +85,18 @@ pub async fn simulate(
         ));
     }
 
-    info!(target = %req.target, function = %req.function, "simulating transaction");
+    if let Err(e) = validate_function_name(&req.function) {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse { error: e.message }),
+        ));
+    }
+
+    info!(
+        target = %req.target,
+        function = %sanitize_for_log(&req.function),
+        "simulating transaction"
+    );
 
     let breakdown = state
         .rpc
@@ -141,6 +150,7 @@ pub async fn simulate(
     ),
     responses(
         (status = 200, description = "Route entry", body = RouteEntryResponse),
+        (status = 400, description = "Bad request", body = ErrorResponse),
         (status = 404, description = "Route not found", body = ErrorResponse),
         (status = 500, description = "Internal server error", body = ErrorResponse)
     )
@@ -153,6 +163,19 @@ pub async fn get_route(
     State(state): State<AppState>,
     Path(name): Path<String>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<ErrorResponse>)> {
+    // Validate before logging to prevent log injection via a malicious route
+    // name containing newlines or other control characters.
+    if let Err(e) = validate_route_name(&name) {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: format!("invalid route name: {}", e.message),
+            }),
+        ));
+    }
+
+    // `name` is now guaranteed to be alphanumeric/underscore/hyphen only —
+    // safe to log directly.
     info!(route = %name, "fetching route");
 
     match state.rpc.get_route(&name).await {
