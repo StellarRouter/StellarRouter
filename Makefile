@@ -1,3 +1,4 @@
+.PHONY: test-all lint deny build-wasm
 .PHONY: test-all lint fmt-check audit deny build-wasm coverage
 .PHONY: test-all lint build-wasm coverage
 .PHONY: test-all lint audit build-wasm
