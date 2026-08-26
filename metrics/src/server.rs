@@ -43,7 +43,7 @@ pub async fn serve(listen: String, registry: Registry, limiter: RateLimiter) -> 
         .with_context(|| format!("invalid listen address: {listen}"))?;
 
     let state = AppState { registry };
-    let auth_config = AuthConfig::from_env();
+    let auth_config = AuthConfig::from_env().context("invalid auth configuration")?;
     let replay_config = ReplayProtectionConfig::from_env();
     let nonce_cache = NonceCache::new(replay_config);
 
