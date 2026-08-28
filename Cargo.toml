@@ -11,6 +11,7 @@ members = [
     "contracts/router-multicall",
     "contracts/router-quote",
     "contracts/router-execution",
+    "contracts/router-plugin-interface",
     "contracts/liquidity-plugin-example-fixed-rate",
     "metrics",
     "router-off-chain-common",

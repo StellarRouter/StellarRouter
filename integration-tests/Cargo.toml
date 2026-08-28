@@ -28,6 +28,10 @@ path = "tests/quote_execution_tests.rs"
 name = "liquidity_plugin_tests"
 path = "tests/liquidity_plugin_tests.rs"
 
+[[test]]
+name = "plugin_interface_tests"
+path = "tests/plugin_interface_tests.rs"
+
 [dependencies]
 
 [dev-dependencies]
@@ -43,4 +47,5 @@ router-multicall = { path = "../contracts/router-multicall" }
 router-execution = { path = "../contracts/router-execution" }
 router-quote     = { path = "../contracts/router-quote" }
 router-common    = { path = "../contracts/router-common" }
+router-plugin-interface = { path = "../contracts/router-plugin-interface" }
 liquidity-plugin-example-fixed-rate = { path = "../contracts/liquidity-plugin-example-fixed-rate" }
