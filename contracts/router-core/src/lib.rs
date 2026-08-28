@@ -292,7 +292,7 @@ impl RouterCore {
             .set(&DataKey::RouteCount, &(count + 1));
 
         env.events().publish(
-            (Symbol::new(&env, "route_registered"),),
+            (Symbol::new(&env, router_common::EVENT_ROUTE_REGISTERED),),
             (name.clone(), entry.address.clone()),
         );
 
@@ -341,11 +341,13 @@ impl RouterCore {
             .instance()
             .set(&DataKey::Route(name.clone()), &entry);
 
-        env.events()
-            .publish((Symbol::new(&env, "route_updated"),), name.clone());
+        env.events().publish(
+            (Symbol::new(&env, router_common::EVENT_ROUTE_UPDATED),),
+            name.clone(),
+        );
 
         env.events().publish(
-            (Symbol::new(&env, "route_overwritten"),),
+            (Symbol::new(&env, router_common::EVENT_ROUTE_OVERWRITTEN),),
             (name.clone(), old_address, new_address),
         );
 
@@ -507,7 +509,7 @@ impl RouterCore {
             route_names.push_back(route.name.clone());
 
             env.events().publish(
-                (Symbol::new(&env, "route_registered"),),
+                (Symbol::new(&env, router_common::EVENT_ROUTE_REGISTERED),),
                 (route.name.clone(), entry.address.clone()),
             );
         }
@@ -676,7 +678,7 @@ impl RouterCore {
 
         if entry.paused {
             env.events().publish(
-                (Symbol::new(&env, "route_resolve_paused"),),
+                (Symbol::new(&env, router_common::EVENT_ROUTE_RESOLVE_PAUSED),),
                 (final_name.clone(),),
             );
             return Err(RouterError::RoutePaused);
@@ -693,7 +695,7 @@ impl RouterCore {
             .set(&DataKey::TotalRouted, &(total + 1));
 
         env.events().publish(
-            (Symbol::new(&env, "routed"),),
+            (Symbol::new(&env, router_common::EVENT_ROUTED),),
             (name.clone(), entry.address.clone()),
         );
 
@@ -840,7 +842,7 @@ impl RouterCore {
         }
 
         env.events().publish(
-            (Symbol::new(&env, "metadata_updated"),),
+            (Symbol::new(&env, router_common::EVENT_METADATA_UPDATED),),
             (name.clone(), metadata.is_some()),
         );
 
@@ -949,7 +951,7 @@ impl RouterCore {
         }
 
         env.events().publish(
-            (Symbol::new(&env, "alias_added"),),
+            (Symbol::new(&env, router_common::EVENT_ALIAS_ADDED),),
             (existing_name, alias_name),
         );
 
@@ -1115,7 +1117,7 @@ impl RouterCore {
             .set(&DataKey::Score(name.clone()), &score);
 
         env.events().publish(
-            (Symbol::new(&env, "route_scored"),),
+            (Symbol::new(&env, router_common::EVENT_ROUTE_SCORED),),
             (
                 name,
                 score.liquidity_score,
@@ -1204,7 +1206,7 @@ impl RouterCore {
         let result = if best_score >= min_score {
             if let Some(ref name) = best_name {
                 env.events().publish(
-                    (Symbol::new(&env, "best_route_selected"),),
+                    (Symbol::new(&env, router_common::EVENT_BEST_ROUTE_SELECTED),),
                     (name.clone(), best_score),
                 );
             }
