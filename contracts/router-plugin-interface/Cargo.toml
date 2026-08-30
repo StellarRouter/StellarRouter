@@ -1,0 +1,14 @@
+[package]
+name = "router-plugin-interface"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+soroban-sdk = { workspace = true }
+
+[dev-dependencies]
+soroban-sdk = { version = "21.7.6", features = ["testutils"] }

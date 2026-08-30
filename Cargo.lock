@@ -1265,6 +1265,7 @@ dependencies = [
  "router-execution",
  "router-middleware",
  "router-multicall",
+ "router-plugin-interface",
  "router-quote",
  "router-registry",
  "router-timelock",
@@ -2128,6 +2129,13 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "uuid",
+]
+
+[[package]]
+name = "router-plugin-interface"
+version = "0.1.0"
+dependencies = [
+ "soroban-sdk",
 ]
 
 [[package]]

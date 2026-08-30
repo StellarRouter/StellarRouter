@@ -65,6 +65,7 @@ jobs:
           -p router-multicall
           -p router-execution
           -p router-quote
+          -p router-plugin-interface
           -p liquidity-plugin-example-fixed-rate
 
       # Clippy across all workspace crates.
@@ -100,7 +101,8 @@ jobs:
           cargo test -p router-metrics-exporter --verbose
           # Run Soroban contract unit tests with testutils feature
           for pkg in router-core router-registry router-access router-middleware \
-                     router-timelock router-multicall router-execution router-quote; do
+                     router-timelock router-multicall router-execution router-quote \
+                     router-plugin-interface; do
             cargo test -p $pkg --verbose
           done
 
