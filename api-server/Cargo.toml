@@ -11,7 +11,7 @@ path = "src/main.rs"
 
 [dependencies]
 # HTTP server
-axum = { version = "0.7.9", features = ["tokio", "ws"] }
+axum = { version = "0.8.9", features = ["tokio", "ws"] }
 tokio = { version = "1.44.2", features = ["full"] }
 tokio-tungstenite = { version = "0.24" }
 
@@ -49,8 +49,8 @@ dashmap = { version = "6.1.0" }
 futures-util = { version = "0.3" }
 
 # OpenAPI / Swagger
-utoipa = { version = "4.2.3", features = ["axum_extras"] }
-utoipa-swagger-ui = { version = "7.1.0", features = ["axum"] }
+utoipa = { version = "5.5.0", features = ["axum_extras"] }
+utoipa-swagger-ui = { version = "9.0.0", features = ["axum"] }
 
 # Async utilities
 tokio-util = { version = "0.7.15" }
