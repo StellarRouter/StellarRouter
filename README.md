@@ -149,7 +149,8 @@ does not abort). Returns a `BatchSummary` with success/failure counts.
 can call it, not just the admin. This is intentional: `router-multicall` is designed
 as a public batching service where any caller can batch their own cross-contract
 calls to reduce round-trips. The admin role is only used for configuration (e.g.,
-setting `max_batch_size`).
+setting `max_batch_size`). See the [router-multicall crate guide](contracts/router-multicall/README.md)
+for call descriptors, result counts, the execution flags and admin configuration.
 
 ### router-quote
 Quote calculation and route comparison. Provides configurable fee-based quote
