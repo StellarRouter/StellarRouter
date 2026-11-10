@@ -425,3 +425,5 @@ Only move to **mainnet** when your contracts are fully tested and audited.
 ## License
 
 MIT
+
+<!-- Updated documentation reference -->

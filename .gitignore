@@ -5,6 +5,6 @@ benches/src/scrap-menu/
 *.wasm
 artifacts/
 coverage/
-.env
-.env.*
 *.log
+config.bat
+node_modules
